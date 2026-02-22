@@ -1,13 +1,15 @@
+use std::path::Path;
+
 use anyhow::{bail, Context, Result};
 use parc_core::config::{get_editor, load_config};
 use parc_core::fragment::{self, parse_fragment, serialize_fragment, validate_fragment};
 use parc_core::index;
 use parc_core::schema::{load_schemas, load_template};
-use parc_core::vault::discover_vault;
 use serde_json::Value;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
+    vault: &Path,
     type_name: &str,
     title: Option<String>,
     tags: Vec<String>,
@@ -17,9 +19,8 @@ pub fn run(
     status: Option<String>,
     assignee: Option<String>,
 ) -> Result<()> {
-    let vault = discover_vault()?;
-    let config = load_config(&vault)?;
-    let schemas = load_schemas(&vault)?;
+    let config = load_config(vault)?;
+    let schemas = load_schemas(vault)?;
 
     let schema = schemas
         .resolve(type_name)
@@ -66,26 +67,26 @@ pub fn run(
 
     if should_open_editor {
         // Prepare template content
-        let template = load_template(&vault, resolved_type).unwrap_or_default();
+        let template = load_template(vault, resolved_type).unwrap_or_default();
 
         // If we have a template, parse it and merge with our fragment data
         let editor_content = build_editor_content(&fragment, &template);
 
-        let fragment = run_editor_loop(&vault, &editor_content, schema, &config)?;
-        let id = fragment::create_fragment(&vault, &fragment)?;
+        let fragment = run_editor_loop(vault, &editor_content, schema, &config)?;
+        let id = fragment::create_fragment(vault, &fragment)?;
 
         // Index
-        let conn = index::open_index(&vault)?;
-        index::index_fragment_auto(&conn, &fragment, &vault)?;
+        let conn = index::open_index(vault)?;
+        index::index_fragment_auto(&conn, &fragment, vault)?;
 
         println!("{}", id);
     } else {
         // Skip editor — create directly
         validate_fragment(&fragment, schema)?;
-        let id = fragment::create_fragment(&vault, &fragment)?;
+        let id = fragment::create_fragment(vault, &fragment)?;
 
-        let conn = index::open_index(&vault)?;
-        index::index_fragment_auto(&conn, &fragment, &vault)?;
+        let conn = index::open_index(vault)?;
+        index::index_fragment_auto(&conn, &fragment, vault)?;
 
         println!("{}", id);
     }
@@ -130,7 +131,7 @@ fn parse_template_parts(template: &str) -> Result<(String, String)> {
 }
 
 fn run_editor_loop(
-    vault: &std::path::Path,
+    vault: &Path,
     initial_content: &str,
     schema: &parc_core::schema::Schema,
     config: &parc_core::config::Config,

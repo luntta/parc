@@ -1,14 +1,13 @@
+use std::path::Path;
+
 use anyhow::{bail, Result};
 use chrono::Utc;
 use parc_core::fragment::{read_fragment, write_fragment};
 use parc_core::index;
-use parc_core::vault::discover_vault;
 
-pub fn run(id_a: &str, id_b: &str) -> Result<()> {
-    let vault = discover_vault()?;
-
-    let mut frag_a = read_fragment(&vault, id_a)?;
-    let mut frag_b = read_fragment(&vault, id_b)?;
+pub fn run(vault: &Path, id_a: &str, id_b: &str) -> Result<()> {
+    let mut frag_a = read_fragment(vault, id_a)?;
+    let mut frag_b = read_fragment(vault, id_b)?;
 
     if frag_a.id == frag_b.id {
         bail!("Cannot link a fragment to itself.");
@@ -25,18 +24,18 @@ pub fn run(id_a: &str, id_b: &str) -> Result<()> {
     if !a_has_b {
         frag_a.links.push(frag_b.id.clone());
         frag_a.updated_at = Utc::now();
-        write_fragment(&vault, &frag_a)?;
+        write_fragment(vault, &frag_a)?;
     }
 
     if !b_has_a {
         frag_b.links.push(frag_a.id.clone());
         frag_b.updated_at = Utc::now();
-        write_fragment(&vault, &frag_b)?;
+        write_fragment(vault, &frag_b)?;
     }
 
-    let conn = index::open_index(&vault)?;
-    index::index_fragment_auto(&conn, &frag_a, &vault)?;
-    index::index_fragment_auto(&conn, &frag_b, &vault)?;
+    let conn = index::open_index(vault)?;
+    index::index_fragment_auto(&conn, &frag_a, vault)?;
+    index::index_fragment_auto(&conn, &frag_b, vault)?;
 
     println!(
         "Linked {} \u{2194} {}",

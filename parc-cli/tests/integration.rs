@@ -3,6 +3,7 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 
 fn parc() -> Command {
+    #[allow(deprecated)]
     Command::cargo_bin("parc").unwrap()
 }
 
@@ -456,9 +457,9 @@ fn test_link_and_backlinks() {
     let id_a = create_fragment_directly(&tmp, "note", "Note A", "First note");
     let id_b = create_fragment_directly(&tmp, "note", "Note B", "Second note");
 
-    // Link A <-> B
+    // Link A <-> B (use full IDs to avoid ULID prefix collisions)
     parc()
-        .args(["link", &id_a[..8], &id_b[..8]])
+        .args(["link", &id_a, &id_b])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -466,7 +467,7 @@ fn test_link_and_backlinks() {
 
     // Show A should have B in links metadata
     parc()
-        .args(["show", &id_a[..8]])
+        .args(["show", &id_a])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -475,7 +476,7 @@ fn test_link_and_backlinks() {
     // Show B should have A in backlinks (frontmatter link is bidirectional)
     // After linking, B's frontmatter also has A, so show B should mention A
     parc()
-        .args(["show", &id_b[..8]])
+        .args(["show", &id_b])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -483,7 +484,7 @@ fn test_link_and_backlinks() {
 
     // Backlinks of B should include A
     parc()
-        .args(["backlinks", &id_b[..8]])
+        .args(["backlinks", &id_b])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -491,7 +492,7 @@ fn test_link_and_backlinks() {
 
     // Backlinks --json
     parc()
-        .args(["backlinks", &id_b[..8], "--json"])
+        .args(["backlinks", &id_b, "--json"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -499,7 +500,7 @@ fn test_link_and_backlinks() {
 
     // Already linked — idempotent
     parc()
-        .args(["link", &id_a[..8], &id_b[..8]])
+        .args(["link", &id_a, &id_b])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -514,15 +515,15 @@ fn test_unlink() {
     let id_a = create_fragment_directly(&tmp, "note", "Note A", "First");
     let id_b = create_fragment_directly(&tmp, "note", "Note B", "Second");
 
-    // Link then unlink
+    // Link then unlink (use full IDs to avoid ULID prefix collisions)
     parc()
-        .args(["link", &id_a[..8], &id_b[..8]])
+        .args(["link", &id_a, &id_b])
         .current_dir(tmp.path())
         .assert()
         .success();
 
     parc()
-        .args(["unlink", &id_a[..8], &id_b[..8]])
+        .args(["unlink", &id_a, &id_b])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -530,7 +531,7 @@ fn test_unlink() {
 
     // Backlinks should be empty
     parc()
-        .args(["backlinks", &id_b[..8]])
+        .args(["backlinks", &id_b])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -538,7 +539,7 @@ fn test_unlink() {
 
     // Unlink again — not linked
     parc()
-        .args(["unlink", &id_a[..8], &id_b[..8]])
+        .args(["unlink", &id_a, &id_b])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -568,16 +569,16 @@ fn test_show_backlinks_section() {
     let id_a = create_fragment_directly(&tmp, "note", "Target note", "I am the target");
     let id_b = create_fragment_directly(&tmp, "note", "Linking note", "I link to target");
 
-    // Create link B -> A
+    // Create link B -> A (use full IDs to avoid ULID prefix collisions)
     parc()
-        .args(["link", &id_b[..8], &id_a[..8]])
+        .args(["link", &id_b, &id_a])
         .current_dir(tmp.path())
         .assert()
         .success();
 
     // Show A should have backlinks section with B
     parc()
-        .args(["show", &id_a[..8]])
+        .args(["show", &id_a])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -586,7 +587,7 @@ fn test_show_backlinks_section() {
 
     // Show A --json should include backlinks
     parc()
-        .args(["show", &id_a[..8], "--json"])
+        .args(["show", &id_a, "--json"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -632,7 +633,7 @@ fn test_wiki_link_in_body_creates_backlink() {
 
     // Backlinks of A should include B (via body wiki-link)
     parc()
-        .args(["backlinks", &id_a[..8]])
+        .args(["backlinks", &id_a])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -640,7 +641,7 @@ fn test_wiki_link_in_body_creates_backlink() {
 
     // Show A should have backlinks section
     parc()
-        .args(["show", &id_a[..8]])
+        .args(["show", &id_a])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -658,9 +659,9 @@ fn test_doctor_healthy() {
     let id_a = create_fragment_directly(&tmp, "note", "Note A", "Body A");
     let id_b = create_fragment_directly(&tmp, "note", "Note B", "Body B");
 
-    // Link them so neither is orphan
+    // Link them so neither is orphan (use full IDs to avoid ULID prefix collisions)
     parc()
-        .args(["link", &id_a[..8], &id_b[..8]])
+        .args(["link", &id_a, &id_b])
         .current_dir(tmp.path())
         .assert()
         .success();
@@ -730,4 +731,314 @@ fn test_doctor_orphan() {
         .failure()
         .stdout(predicate::str::contains("Orphan"))
         .stdout(predicate::str::contains("Orphan note"));
+}
+
+// ===== M2: Multi-Vault =====
+
+#[test]
+fn test_vault_flag_overrides_discovery() {
+    let tmp = TempDir::new().unwrap();
+    let vault_path = tmp.path().join(".parc");
+
+    // Init via --vault flag
+    parc()
+        .args(["--vault", tmp.path().to_str().unwrap(), "init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized new vault"));
+
+    assert!(vault_path.join("config.yml").exists());
+
+    // Create fragment via --vault
+    let vault_str = vault_path.to_str().unwrap();
+    create_fragment_directly(&tmp, "note", "Vault flag test", "Body");
+
+    // List via --vault flag (from a different CWD)
+    let other_dir = TempDir::new().unwrap();
+    parc()
+        .args(["--vault", vault_str, "list"])
+        .current_dir(other_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Vault flag test"));
+}
+
+#[test]
+fn test_vault_flag_without_parc_suffix() {
+    let tmp = TempDir::new().unwrap();
+
+    // --vault /path (without .parc) should append .parc for init
+    parc()
+        .args(["--vault", tmp.path().to_str().unwrap(), "init"])
+        .assert()
+        .success();
+
+    assert!(tmp.path().join(".parc/config.yml").exists());
+
+    // --vault /path (without .parc) should find the vault for other commands
+    parc()
+        .args(["--vault", tmp.path().to_str().unwrap(), "types"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("note"));
+}
+
+#[test]
+fn test_vault_flag_with_parc_suffix() {
+    let tmp = TempDir::new().unwrap();
+    let vault_path = tmp.path().join(".parc");
+
+    // Init normally
+    parc()
+        .args(["init"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // --vault with .parc suffix should work
+    parc()
+        .args(["--vault", vault_path.to_str().unwrap(), "types"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("note"));
+}
+
+#[test]
+fn test_parc_vault_env() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Env var test", "Body");
+
+    let vault_path = tmp.path().join(".parc");
+    let other_dir = TempDir::new().unwrap();
+
+    // PARC_VAULT env var should override discovery
+    parc()
+        .args(["list"])
+        .env("PARC_VAULT", vault_path.to_str().unwrap())
+        .current_dir(other_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Env var test"));
+}
+
+#[test]
+fn test_vault_flag_overrides_env() {
+    let tmp1 = TempDir::new().unwrap();
+    init_vault(&tmp1);
+    create_fragment_directly(&tmp1, "note", "From vault1", "Body");
+
+    let tmp2 = TempDir::new().unwrap();
+    init_vault(&tmp2);
+    create_fragment_directly(&tmp2, "note", "From vault2", "Body");
+
+    let vault1_path = tmp1.path().join(".parc");
+    let vault2_path = tmp2.path().join(".parc");
+
+    // --vault flag should override PARC_VAULT env
+    parc()
+        .args(["--vault", vault1_path.to_str().unwrap(), "list"])
+        .env("PARC_VAULT", vault2_path.to_str().unwrap())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("From vault1"))
+        .stdout(predicate::str::contains("From vault2").not());
+}
+
+#[test]
+fn test_init_vault_at_arbitrary_path() {
+    let tmp = TempDir::new().unwrap();
+    let target = tmp.path().join("custom-location");
+    std::fs::create_dir_all(&target).unwrap();
+
+    parc()
+        .args(["--vault", target.to_str().unwrap(), "init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized new vault"));
+
+    assert!(target.join(".parc/config.yml").exists());
+    assert!(target.join(".parc/fragments").is_dir());
+
+    // Use the newly created vault
+    let vault_path = target.join(".parc");
+    parc()
+        .args(["--vault", vault_path.to_str().unwrap(), "types"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("note"));
+}
+
+#[test]
+fn test_init_vault_global_and_vault_conflict() {
+    let tmp = TempDir::new().unwrap();
+
+    parc()
+        .args(["--vault", tmp.path().to_str().unwrap(), "init", "--global"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("mutually exclusive"));
+}
+
+#[test]
+fn test_vault_command_shows_info() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Info test", "Body");
+
+    parc()
+        .args(["vault"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Active vault:"))
+        .stdout(predicate::str::contains("Scope:"))
+        .stdout(predicate::str::contains("Fragments:"));
+}
+
+#[test]
+fn test_vault_command_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    parc()
+        .args(["vault", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"path\""))
+        .stdout(predicate::str::contains("\"scope\""))
+        .stdout(predicate::str::contains("\"fragment_count\""));
+}
+
+#[test]
+fn test_vault_command_with_vault_flag() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let vault_path = tmp.path().join(".parc");
+
+    // parc --vault <path> vault should work from any CWD
+    let other_dir = TempDir::new().unwrap();
+    parc()
+        .args(["--vault", vault_path.to_str().unwrap(), "vault"])
+        .current_dir(other_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Active vault:"));
+}
+
+#[test]
+fn test_vault_list() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    parc()
+        .args(["vault", "list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SCOPE"))
+        .stdout(predicate::str::contains("PATH"))
+        .stdout(predicate::str::contains("FRAGMENTS"));
+}
+
+#[test]
+fn test_vault_list_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    parc()
+        .args(["vault", "list", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"path\""))
+        .stdout(predicate::str::contains("\"scope\""));
+}
+
+#[test]
+fn test_local_vault_discovery_from_subdir() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Deep discovery", "Body");
+
+    // Create a deep subdirectory
+    let subdir = tmp.path().join("a/b/c");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    // Commands from subdirectory should find the vault
+    parc()
+        .args(["list"])
+        .current_dir(&subdir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deep discovery"));
+}
+
+#[test]
+fn test_all_commands_accept_vault_flag() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    let vault_path = tmp.path().join(".parc");
+    let vault_str = vault_path.to_str().unwrap();
+
+    let id = create_fragment_directly(&tmp, "note", "Vault flag all cmds", "Body");
+    let short_id = &id[..8];
+
+    // list
+    parc()
+        .args(["--vault", vault_str, "list"])
+        .assert()
+        .success();
+
+    // show
+    parc()
+        .args(["--vault", vault_str, "show", short_id])
+        .assert()
+        .success();
+
+    // search
+    parc()
+        .args(["--vault", vault_str, "search", "Vault"])
+        .assert()
+        .success();
+
+    // types
+    parc()
+        .args(["--vault", vault_str, "types"])
+        .assert()
+        .success();
+
+    // reindex
+    parc()
+        .args(["--vault", vault_str, "reindex"])
+        .assert()
+        .success();
+
+    // doctor
+    let _ = parc()
+        .args(["--vault", vault_str, "doctor"])
+        .assert();
+
+    // backlinks
+    parc()
+        .args(["--vault", vault_str, "backlinks", short_id])
+        .assert()
+        .success();
+
+    // set
+    parc()
+        .args(["--vault", vault_str, "set", short_id, "title", "New title"])
+        .assert()
+        .success();
+
+    // vault
+    parc()
+        .args(["--vault", vault_str, "vault"])
+        .assert()
+        .success();
 }

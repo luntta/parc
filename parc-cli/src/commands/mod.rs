@@ -12,3 +12,4 @@ pub mod set;
 pub mod show;
 pub mod types;
 pub mod unlink;
+pub mod vault;

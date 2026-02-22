@@ -1,11 +1,18 @@
 mod commands;
 mod render;
 
+use std::path::PathBuf;
+
 use clap::Parser;
+use parc_core::vault::resolve_vault;
 
 #[derive(Parser)]
 #[command(name = "parc", about = "Personal Archive — structured fragments of thought")]
 struct Cli {
+    /// Path to vault (overrides PARC_VAULT and vault discovery)
+    #[arg(global = true, long)]
+    vault: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -145,58 +152,96 @@ enum Commands {
     Reindex,
     /// List registered fragment types
     Types,
+    /// Show active vault info, or manage vaults
+    Vault {
+        #[command(subcommand)]
+        subcommand: Option<VaultCommands>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum VaultCommands {
+    /// List all known vaults
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { global } => commands::init::run(global),
-        Commands::New {
-            type_name,
-            title,
-            title_flag,
-            tag,
-            link,
-            due,
-            priority,
-            status,
-            assignee,
-        } => commands::new::run(
-            &type_name,
-            title.or(title_flag),
-            tag,
-            link,
-            due,
-            priority,
-            status,
-            assignee,
-        ),
-        Commands::List {
-            type_name,
-            status,
-            tag,
-            json,
-            limit,
-        } => commands::list::run(type_name, status, tag, json, limit),
-        Commands::Show { id, json } => commands::show::run(&id, json),
-        Commands::Edit { id } => commands::edit::run(&id),
-        Commands::Set { id, field, value } => commands::set::run(&id, &field, &value),
-        Commands::Search {
-            query,
-            type_filter,
-            status,
-            tag,
-            json,
-            sort,
-            limit,
-        } => commands::search::run(query, type_filter, status, tag, json, sort, limit),
-        Commands::Delete { id } => commands::delete::run(&id),
-        Commands::Link { id_a, id_b } => commands::link::run(&id_a, &id_b),
-        Commands::Unlink { id_a, id_b } => commands::unlink::run(&id_a, &id_b),
-        Commands::Backlinks { id, json } => commands::backlinks::run(&id, json),
-        Commands::Doctor { json } => commands::doctor::run(json),
-        Commands::Reindex => commands::reindex::run(),
-        Commands::Types => commands::types::run(),
+        Commands::Init { global } => {
+            if global && cli.vault.is_some() {
+                anyhow::bail!("--vault and --global are mutually exclusive");
+            }
+            commands::init::run(global, cli.vault.as_deref())
+        }
+        Commands::Vault { subcommand, json } => {
+            // Vault command can work even with resolve_vault
+            let vault = resolve_vault(cli.vault.as_deref())?;
+            commands::vault::run(&vault, subcommand.map(|s| match s {
+                VaultCommands::List { json } => commands::vault::VaultSubcommand::List { json },
+            }), json)
+        }
+        _ => {
+            // All other commands: resolve vault once, pass to command
+            let vault = resolve_vault(cli.vault.as_deref())?;
+            match cli.command {
+                Commands::New {
+                    type_name,
+                    title,
+                    title_flag,
+                    tag,
+                    link,
+                    due,
+                    priority,
+                    status,
+                    assignee,
+                } => commands::new::run(
+                    &vault,
+                    &type_name,
+                    title.or(title_flag),
+                    tag,
+                    link,
+                    due,
+                    priority,
+                    status,
+                    assignee,
+                ),
+                Commands::List {
+                    type_name,
+                    status,
+                    tag,
+                    json,
+                    limit,
+                } => commands::list::run(&vault, type_name, status, tag, json, limit),
+                Commands::Show { id, json } => commands::show::run(&vault, &id, json),
+                Commands::Edit { id } => commands::edit::run(&vault, &id),
+                Commands::Set { id, field, value } => commands::set::run(&vault, &id, &field, &value),
+                Commands::Search {
+                    query,
+                    type_filter,
+                    status,
+                    tag,
+                    json,
+                    sort,
+                    limit,
+                } => commands::search::run(&vault, query, type_filter, status, tag, json, sort, limit),
+                Commands::Delete { id } => commands::delete::run(&vault, &id),
+                Commands::Link { id_a, id_b } => commands::link::run(&vault, &id_a, &id_b),
+                Commands::Unlink { id_a, id_b } => commands::unlink::run(&vault, &id_a, &id_b),
+                Commands::Backlinks { id, json } => commands::backlinks::run(&vault, &id, json),
+                Commands::Doctor { json } => commands::doctor::run(&vault, json),
+                Commands::Reindex => commands::reindex::run(&vault),
+                Commands::Types => commands::types::run(&vault),
+                Commands::Init { .. } | Commands::Vault { .. } => unreachable!(),
+            }
+        }
     }
 }

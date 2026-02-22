@@ -1,21 +1,22 @@
+use std::path::Path;
+
 use anyhow::Result;
 use parc_core::config::load_config;
 use parc_core::index::open_index;
 use parc_core::search::{self, SearchParams, SortOrder};
-use parc_core::vault::discover_vault;
 
 use crate::render;
 
 pub fn run(
+    vault: &Path,
     type_name: Option<String>,
     status: Option<String>,
     tags: Vec<String>,
     json: bool,
     limit: Option<usize>,
 ) -> Result<()> {
-    let vault = discover_vault()?;
-    let config = load_config(&vault)?;
-    let conn = open_index(&vault)?;
+    let config = load_config(vault)?;
+    let conn = open_index(vault)?;
 
     let params = SearchParams {
         query: None,

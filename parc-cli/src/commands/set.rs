@@ -1,15 +1,15 @@
+use std::path::Path;
+
 use anyhow::{bail, Result};
 use chrono::Utc;
 use parc_core::fragment::{read_fragment, validate_fragment, write_fragment};
 use parc_core::index;
 use parc_core::schema::load_schemas;
-use parc_core::vault::discover_vault;
 use serde_json::Value;
 
-pub fn run(id: &str, field: &str, value: &str) -> Result<()> {
-    let vault = discover_vault()?;
-    let schemas = load_schemas(&vault)?;
-    let mut fragment = read_fragment(&vault, id)?;
+pub fn run(vault: &Path, id: &str, field: &str, value: &str) -> Result<()> {
+    let schemas = load_schemas(vault)?;
+    let mut fragment = read_fragment(vault, id)?;
 
     // Set the field
     match field {
@@ -49,10 +49,10 @@ pub fn run(id: &str, field: &str, value: &str) -> Result<()> {
     }
 
     fragment.updated_at = Utc::now();
-    write_fragment(&vault, &fragment)?;
+    write_fragment(vault, &fragment)?;
 
-    let conn = index::open_index(&vault)?;
-    index::index_fragment_auto(&conn, &fragment, &vault)?;
+    let conn = index::open_index(vault)?;
+    index::index_fragment_auto(&conn, &fragment, vault)?;
 
     println!("Updated {} field '{}' to '{}'", &fragment.id[..8], field, value);
     Ok(())

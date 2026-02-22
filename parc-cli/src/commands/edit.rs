@@ -1,16 +1,16 @@
+use std::path::Path;
+
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use parc_core::config::{get_editor, load_config};
 use parc_core::fragment::{self, parse_fragment, read_fragment, serialize_fragment, validate_fragment};
 use parc_core::index;
 use parc_core::schema::load_schemas;
-use parc_core::vault::discover_vault;
 
-pub fn run(id: &str) -> Result<()> {
-    let vault = discover_vault()?;
-    let config = load_config(&vault)?;
-    let schemas = load_schemas(&vault)?;
-    let original = read_fragment(&vault, id)?;
+pub fn run(vault: &Path, id: &str) -> Result<()> {
+    let config = load_config(vault)?;
+    let schemas = load_schemas(vault)?;
+    let original = read_fragment(vault, id)?;
     let full_id = original.id.clone();
 
     let content = serialize_fragment(&original);
@@ -57,10 +57,10 @@ pub fn run(id: &str) -> Result<()> {
                     match validate_fragment(&frag, s) {
                         Ok(()) => {
                             frag.updated_at = Utc::now();
-                            fragment::write_fragment(&vault, &frag)?;
+                            fragment::write_fragment(vault, &frag)?;
 
-                            let conn = index::open_index(&vault)?;
-                            index::index_fragment_auto(&conn, &frag, &vault)?;
+                            let conn = index::open_index(vault)?;
+                            index::index_fragment_auto(&conn, &frag, vault)?;
 
                             let _ = std::fs::remove_file(&tmp_path);
                             println!("Updated {}", frag.id);
@@ -73,10 +73,10 @@ pub fn run(id: &str) -> Result<()> {
                 } else {
                     // No schema found — accept anyway (could be custom type)
                     frag.updated_at = Utc::now();
-                    fragment::write_fragment(&vault, &frag)?;
+                    fragment::write_fragment(vault, &frag)?;
 
-                    let conn = index::open_index(&vault)?;
-                    index::index_fragment_auto(&conn, &frag, &vault)?;
+                    let conn = index::open_index(vault)?;
+                    index::index_fragment_auto(&conn, &frag, vault)?;
 
                     let _ = std::fs::remove_file(&tmp_path);
                     println!("Updated {}", frag.id);

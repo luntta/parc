@@ -1,12 +1,15 @@
+use std::path::Path;
+
 use anyhow::Result;
 use parc_core::config::load_config;
 use parc_core::index::open_index;
 use parc_core::search::{self, SearchParams, SortOrder};
-use parc_core::vault::discover_vault;
 
 use crate::render;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
+    vault: &Path,
     query: Vec<String>,
     type_filter: Option<String>,
     status: Option<String>,
@@ -15,9 +18,8 @@ pub fn run(
     sort: Option<String>,
     limit: Option<usize>,
 ) -> Result<()> {
-    let vault = discover_vault()?;
-    let config = load_config(&vault)?;
-    let conn = open_index(&vault)?;
+    let config = load_config(vault)?;
+    let conn = open_index(vault)?;
 
     let query_str = if query.is_empty() {
         None

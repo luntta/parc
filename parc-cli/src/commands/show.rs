@@ -1,19 +1,19 @@
+use std::path::Path;
+
 use anyhow::Result;
 use parc_core::config::load_config;
 use parc_core::fragment::read_fragment;
 use parc_core::index;
 use parc_core::tag;
-use parc_core::vault::discover_vault;
 
 use crate::render;
 
-pub fn run(id: &str, json: bool) -> Result<()> {
-    let vault = discover_vault()?;
-    let config = load_config(&vault)?;
-    let fragment = read_fragment(&vault, id)?;
+pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
+    let config = load_config(vault)?;
+    let fragment = read_fragment(vault, id)?;
 
     // Query backlinks from index
-    let conn = index::open_index(&vault)?;
+    let conn = index::open_index(vault)?;
     let backlinks = index::get_backlinks(&conn, &fragment.id)?;
 
     if json {

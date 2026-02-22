@@ -1,10 +1,10 @@
+use std::path::Path;
+
 use anyhow::Result;
 use parc_core::schema::{load_schemas, FieldType};
-use parc_core::vault::discover_vault;
 
-pub fn run() -> Result<()> {
-    let vault = discover_vault()?;
-    let schemas = load_schemas(&vault)?;
+pub fn run(vault: &Path) -> Result<()> {
+    let schemas = load_schemas(vault)?;
     let types = schemas.list();
 
     println!("{:<12} {:<7} FIELDS", "NAME", "ALIAS");

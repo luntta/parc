@@ -1,16 +1,15 @@
+use std::path::Path;
+
 use anyhow::Result;
 use parc_core::doctor::{self, DoctorFinding};
-use parc_core::vault::discover_vault;
 
-pub fn run(json: bool) -> Result<()> {
-    let vault = discover_vault()?;
-
+pub fn run(vault: &Path, json: bool) -> Result<()> {
     if !json {
         println!("Checking vault health...");
         println!();
     }
 
-    let report = doctor::run_doctor(&vault)?;
+    let report = doctor::run_doctor(vault)?;
 
     if json {
         let findings: Vec<serde_json::Value> = report
