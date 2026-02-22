@@ -1,0 +1,13 @@
+# parc vault configuration
+# user: alice
+# editor: vim
+default_tags: []
+date_format: relative
+id_display_length: 8
+color: auto
+aliases:
+  n: note
+  t: todo
+  d: decision
+  r: risk
+  i: idea

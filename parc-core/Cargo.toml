@@ -1,0 +1,18 @@
+[package]
+name = "parc-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+rusqlite = { version = "0.34", features = ["bundled"] }
+ulid = "1"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+comrak = "0.28"
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"

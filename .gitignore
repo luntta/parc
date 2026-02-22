@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Vault artifacts
+index.db
+trash/
+server.sock
