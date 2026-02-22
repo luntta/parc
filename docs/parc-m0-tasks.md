@@ -101,13 +101,13 @@ pub enum ParcError {
 
 ### T1.1 — Vault module (`vault.rs`)
 
-The vault module handles vault discovery and initialization. For M0, only the global vault (`~/.parc`) is supported.
+The vault module handles vault discovery and initialization.
 
 **Functions:**
 
 ```rust
 /// Returns the path to the active vault.
-/// M0: always returns ~/.parc
+/// Walks up from CWD looking for `.parc/`, falls back to `~/.parc`.
 pub fn discover_vault() -> Result<PathBuf, ParcError>
 
 /// Creates a new vault at the given path with the default directory structure
@@ -125,14 +125,19 @@ pub fn is_vault(path: &Path) -> bool
 ├── schemas/            (5 built-in schema files)
 ├── templates/          (5 built-in template files)
 ├── fragments/          (empty)
+├── attachments/        (empty, forward-compat with M5)
+├── history/            (empty, forward-compat with M5)
 ├── trash/              (empty)
 └── index.db            (empty, initialized with schema)
 ```
 
+Note: `attachments/` and `history/` directories are created during init for forward-compatibility with M5, even though they are unused in M0.
+
 **Acceptance criteria:**
 - `init_vault` creates the full directory structure.
 - `init_vault` on an existing vault returns `VaultAlreadyExists`.
-- `discover_vault` returns `~/.parc`.
+- `discover_vault` walks up from CWD looking for `.parc/`, falls back to `~/.parc`.
+- If both local and global vaults exist, local takes precedence.
 - Built-in schema YAML files are written correctly (embed them in the binary with `include_str!`).
 
 **Estimated effort:** 2–3 hours.
@@ -149,6 +154,7 @@ Loads and validates fragment type definitions from YAML files.
 # schemas/todo.yml
 name: todo
 alias: t
+editor_skip: false
 fields:
   - name: status
     type: enum
@@ -168,12 +174,15 @@ fields:
     required: false
 ```
 
+`editor_skip` (default `false`): When `true` AND `--title` is provided, `parc new` creates the fragment without opening `$EDITOR`. When `false`, `$EDITOR` always opens even with `--title` (title is pre-filled in the template).
+
 **Data structures:**
 
 ```rust
 pub struct Schema {
     pub name: String,
     pub alias: Option<String>,
+    pub editor_skip: bool,  // default false
     pub fields: Vec<FieldDef>,
 }
 
@@ -222,7 +231,7 @@ impl SchemaRegistry {
 Create the five YAML schema files and five Markdown template files.
 
 **Schemas:** `note.yml`, `todo.yml`, `decision.yml`, `risk.yml`, `idea.yml`
-(Following the field definitions from the PRD §5.)
+(Following the field definitions from the PRD §5. All built-in schemas set `editor_skip: false`.)
 
 **Templates** (example for decision):
 ```markdown
@@ -254,6 +263,39 @@ tags: []
 
 ---
 
+### T1.4 — Configuration loading (`config.rs`)
+
+Load `config.yml` from the vault. Needed early because `parc new` uses `created_by`, `default_tags`, and `editor`, and `parc list` uses `id_display_length` and `date_format`.
+
+```rust
+pub struct Config {
+    pub user: Option<String>,
+    pub editor: Option<String>,
+    pub default_tags: Vec<String>,
+    pub date_format: DateFormat,
+    pub id_display_length: usize,
+    pub color: ColorMode,
+    pub aliases: BTreeMap<String, String>,
+}
+```
+
+**Functions:**
+
+```rust
+/// Load config from the vault's config.yml. Missing file → defaults.
+pub fn load_config(vault: &Path) -> Result<Config, ParcError>
+```
+
+**Acceptance criteria:**
+- Missing config file → use defaults.
+- Partial config → merge with defaults.
+- `editor` field respected (falls back to `$EDITOR`, then `vim`).
+- `default_tags` applied to new fragments.
+
+**Estimated effort:** 1–2 hours.
+
+---
+
 ## Phase 2: Fragment Engine
 
 ### T2.1 — Fragment data model (`fragment.rs`)
@@ -272,7 +314,7 @@ pub struct Fragment {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub created_by: Option<String>,
-    pub extra_fields: BTreeMap<String, serde_yaml::Value>,  // type-specific fields
+    pub extra_fields: BTreeMap<String, serde_json::Value>,  // type-specific fields (serde_json::Value to avoid leaking serde_yaml into core's public API)
     pub body: String,                  // Markdown content below frontmatter
 }
 ```
@@ -300,7 +342,7 @@ pub fn new_fragment(
 
 **Frontmatter parsing strategy:**
 - Split on `---` delimiters.
-- Deserialize YAML into a `BTreeMap<String, serde_yaml::Value>`.
+- Deserialize YAML into a `BTreeMap<String, serde_json::Value>` (YAML → `serde_json::Value` via serde's data model — JSON values are a subset that covers our needs: strings, numbers, bools, lists).
 - Extract known envelope fields (id, type, title, tags, links, created_at, updated_at, created_by).
 - Remaining keys go into `extra_fields`.
 - Everything after the closing `---` is the body.
@@ -315,11 +357,20 @@ pub fn new_fragment(
 
 ---
 
-### T2.2 — Fragment CRUD operations
+### T2.2 — Fragment validation and CRUD operations
 
-File-system operations for creating, reading, updating, and deleting fragments.
+Fragment validation and file-system operations for creating, reading, updating, and deleting fragments.
 
-**Functions:**
+**Validation function (lives in `parc-core`):**
+
+```rust
+/// Validate a fragment against its schema.
+/// Checks: required fields present, enum values valid, date formats correct.
+/// Called by CLI in `new`, `edit`, `set` commands.
+pub fn validate_fragment(fragment: &Fragment, schema: &Schema) -> Result<(), ParcError>
+```
+
+**CRUD functions:**
 
 ```rust
 /// Write a new fragment to disk. Returns the fragment ID.
@@ -427,18 +478,15 @@ CREATE TABLE fragments (
 CREATE TABLE fragment_tags (
     fragment_id TEXT NOT NULL REFERENCES fragments(id),
     tag         TEXT NOT NULL,
-    source      TEXT NOT NULL CHECK(source IN ('frontmatter', 'inline')),
     PRIMARY KEY (fragment_id, tag)
 );
 
--- Full-text search index
+-- Full-text search index (standalone FTS5 — manages its own storage, simpler for M0, index is rebuildable anyway)
 CREATE VIRTUAL TABLE fragments_fts USING fts5(
-    id,
+    id UNINDEXED,
     title,
     body,
-    tags,              -- space-separated merged tags for FTS
-    content=fragments,
-    content_rowid=rowid
+    tags
 );
 
 -- Links table
@@ -561,8 +609,11 @@ enum Commands {
     },
     New {
         type_name: String,
-        #[arg(long)]
+        /// Positional title — mutually exclusive with --title (positional takes precedence).
+        /// Enables: `parc new note "quick thought"` or `parc n "quick thought"`
         title: Option<String>,
+        #[arg(long, name = "title")]
+        title_flag: Option<String>,
         #[arg(long)]
         tag: Vec<String>,
         #[arg(long)]
@@ -637,7 +688,14 @@ enum Commands {
 
 Calls `vault::init_vault`. Prints the created path.
 
+- `parc init` (without `--global`) creates a **local vault** in `$CWD/.parc`.
+- `parc init --global` creates `~/.parc`.
+- If both exist, vault discovery prefers local (handled by `discover_vault` in T1.1).
+
 ```
+$ parc init
+Initialized local vault at /home/alice/project/.parc
+
 $ parc init --global
 Initialized global vault at /home/alice/.parc
 ```
@@ -648,27 +706,30 @@ Initialized global vault at /home/alice/.parc
 
 ### T4.3 — `parc new`
 
-Creates a new fragment.
+Creates a new fragment. Title can be provided as a positional argument (`parc new note "thought"`) or via `--title`.
 
-**Two paths:**
-1. **With `--title`:** Creates the fragment directly, prints the ID.
-2. **Without `--title`:** Opens `$EDITOR` with a pre-filled template (frontmatter + body). On save, parses the file and creates the fragment.
+**Editor behavior (schema-driven):**
+- If `editor_skip` is `true` in the schema AND a title is provided → create the fragment directly, print the ID, skip `$EDITOR`.
+- If `editor_skip` is `false` (default for all built-in types) AND a title is provided → open `$EDITOR` with the title pre-filled in the template.
+- If no title is provided → always open `$EDITOR`.
 
 **Editor flow:**
-- Write a temp file with the template content.
+- Write a temp file with the template content (title pre-filled if provided).
 - Spawn `$EDITOR` (or config editor, or `vim` fallback) on the temp file.
 - Wait for editor to exit.
 - Read the temp file, parse it as a fragment.
 - Validate against schema.
+- **If validation fails:** display the error and re-open the editor with the invalid content (don't delete the temp file). Loop until valid or user saves empty/unchanged content (abort signal).
 - Write to `fragments/`, update index.
 - Delete temp file.
 
 **Acceptance criteria:**
-- `parc new note --title "Test"` creates a file, prints the ID.
-- `parc new todo --title "Task" --due 2026-03-01 --priority high` creates with correct extra fields.
+- `parc new note "Test"` (positional) opens editor with title pre-filled (since built-in schemas have `editor_skip: false`).
+- `parc new todo --title "Task" --due 2026-03-01 --priority high` opens editor with fields pre-filled.
 - `--tag` flags are added to frontmatter.
-- Without `--title`, opens editor with template. Fragment created on save.
+- Without title, opens editor with empty template. Fragment created on save.
 - If editor exits without changes (or empty title), abort with message.
+- Invalid frontmatter re-opens editor with error message displayed.
 - Fragment is indexed immediately after creation.
 
 **Estimated effort:** 3–4 hours.
@@ -751,7 +812,7 @@ Opens a fragment in `$EDITOR`.
 - Changes are persisted after editor closes.
 - `updated_at` is refreshed.
 - Index is updated.
-- Invalid edits (broken frontmatter) produce a clear error and don't overwrite.
+- Invalid edits (broken frontmatter) display the error and re-open the editor with the invalid content. Loop until valid or user saves empty/unchanged content (abort signal).
 
 **Estimated effort:** 2–3 hours.
 
@@ -778,7 +839,7 @@ parc set 01JQ7V3X title "New title"
 - Setting a valid enum field works.
 - Setting an invalid enum value produces a clear error.
 - Setting `title` works.
-- Setting `tags` works (comma-separated? Or require `--tag` on `new`?). **Decision: `set` handles single-value fields only. Use `edit` for tags and lists.**
+- Setting `tags` works (comma-separated? Or require `--tag` on `new`?). **Decision: `set` handles single-value fields only. Use `edit` for tags and lists.** Tag management (`parc tag add/remove`) is deferred to a later milestone.
 - `updated_at` is refreshed.
 - Index is updated.
 
@@ -886,75 +947,6 @@ End-to-end tests using `assert_cmd` and `tempfile`:
 
 ---
 
-### T5.2 — Configuration loading
-
-Load `config.yml` from the vault.
-
-```rust
-pub struct Config {
-    pub user: Option<String>,
-    pub editor: Option<String>,
-    pub default_tags: Vec<String>,
-    pub date_format: DateFormat,
-    pub id_display_length: usize,
-    pub color: ColorMode,
-    pub aliases: BTreeMap<String, String>,
-}
-```
-
-**Acceptance criteria:**
-- Missing config file → use defaults.
-- Partial config → merge with defaults.
-- `editor` field respected (falls back to `$EDITOR`, then `vim`).
-- `default_tags` applied to new fragments.
-
-**Estimated effort:** 1–2 hours.
-
----
-
-## Dependency Graph
-
-```
-T0.1 (workspace setup)
-  │
-  ├── T0.2 (error types)
-  │     │
-  │     ├── T1.1 (vault module)
-  │     │     │
-  │     │     ├── T1.2 (schema module)
-  │     │     │     │
-  │     │     │     └── T1.3 (built-in schemas + templates)
-  │     │     │
-  │     │     └── T5.2 (config loading)
-  │     │
-  │     ├── T2.1 (fragment data model)
-  │     │     │
-  │     │     ├── T2.2 (fragment CRUD)
-  │     │     │
-  │     │     └── T2.3 (tag extraction)
-  │     │
-  │     └── T3.1 (index schema)
-  │           │
-  │           └── T3.2 (search module)
-  │
-  └── T4.1 (CLI scaffolding)
-        │
-        ├── T4.2  (init)        ← depends on T1.1
-        ├── T4.3  (new)         ← depends on T2.1, T2.2, T1.2, T3.1
-        ├── T4.4  (list)        ← depends on T3.2
-        ├── T4.5  (show)        ← depends on T2.2, T2.3
-        ├── T4.6  (edit)        ← depends on T2.2, T3.1
-        ├── T4.7  (set)         ← depends on T2.2, T1.2, T3.1
-        ├── T4.8  (search)      ← depends on T3.2
-        ├── T4.9  (delete)      ← depends on T2.2, T3.1
-        ├── T4.10 (reindex)     ← depends on T3.1
-        └── T4.11 (types)       ← depends on T1.2
-              │
-              └── T5.1 (integration tests) ← depends on all T4.*
-```
-
----
-
 ## Suggested Implementation Order
 
 | Order | Task | Depends on | Est. Hours |
@@ -964,17 +956,17 @@ T0.1 (workspace setup)
 | 3 | T1.1 — Vault module | T0.2 | 2.5 |
 | 4 | T1.2 — Schema module | T0.2 | 3.5 |
 | 5 | T1.3 — Built-in schemas | T1.2 | 1.5 |
-| 6 | T5.2 — Config loading | T1.1 | 1.5 |
+| 6 | T1.4 — Config loading | T1.1 | 1.5 |
 | 7 | T2.1 — Fragment model | T0.2 | 4.5 |
-| 8 | T2.2 — Fragment CRUD | T2.1 | 3.5 |
+| 8 | T2.2 — Fragment validation + CRUD | T2.1 | 3.5 |
 | 9 | T2.3 — Tag extraction | T2.1 | 3.5 |
 | 10 | T3.1 — Index schema | T0.2 | 4.5 |
 | 11 | T3.2 — Search module | T3.1 | 4.5 |
 | 12 | T4.1 — CLI scaffolding | T0.1 | 2.5 |
 | 13 | T4.2 — `init` command | T1.1, T4.1 | 0.5 |
-| 14 | T4.3 — `new` command | T2.*, T1.2, T3.1, T4.1 | 3.5 |
+| 14 | T4.3 — `new` command | T2.*, T1.2, T1.4, T3.1, T4.1 | 3.5 |
 | 15 | T4.11 — `types` command | T1.2, T4.1 | 0.5 |
-| 16 | T4.4 — `list` command | T3.2, T4.1 | 2.5 |
+| 16 | T4.4 — `list` command | T3.2, T1.4, T4.1 | 2.5 |
 | 17 | T4.5 — `show` command | T2.2, T2.3, T4.1 | 2.5 |
 | 18 | T4.8 — `search` command | T3.2, T4.1 | 1.5 |
 | 19 | T4.6 — `edit` command | T2.2, T3.1, T4.1 | 2.5 |
