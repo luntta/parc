@@ -4,6 +4,7 @@ use rusqlite::Connection;
 
 use crate::error::ParcError;
 use crate::fragment::{self, Fragment};
+use crate::link;
 use crate::tag;
 
 const SCHEMA_SQL: &str = "
@@ -45,6 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_fragments_type ON fragments(type);
 CREATE INDEX IF NOT EXISTS idx_fragments_status ON fragments(status);
 CREATE INDEX IF NOT EXISTS idx_fragments_due ON fragments(due);
 CREATE INDEX IF NOT EXISTS idx_fragment_tags_tag ON fragment_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_fragment_links_target ON fragment_links(target_id);
 ";
 
 /// Initialize the database schema (create tables if not exist).
@@ -61,10 +63,12 @@ pub fn open_index(vault: &Path) -> Result<Connection, ParcError> {
 }
 
 /// Index a single fragment (upsert into all tables).
+/// `merged_links` should include both frontmatter links and resolved body wiki-links.
 pub fn index_fragment(
     conn: &Connection,
     fragment: &Fragment,
     merged_tags: &[String],
+    merged_links: &[String],
 ) -> Result<(), ParcError> {
     let extra_json = serde_json::to_string(&fragment.extra_fields)?;
 
@@ -111,15 +115,15 @@ pub fn index_fragment(
         rusqlite::params![fragment.id, fragment.title, fragment.body, tags_str],
     )?;
 
-    // Update links
+    // Update links (using merged frontmatter + body wiki-links)
     conn.execute(
         "DELETE FROM fragment_links WHERE source_id = ?1",
         [&fragment.id],
     )?;
-    for link in &fragment.links {
+    for link_id in merged_links {
         conn.execute(
             "INSERT OR IGNORE INTO fragment_links (source_id, target_id) VALUES (?1, ?2)",
-            rusqlite::params![fragment.id, link],
+            rusqlite::params![fragment.id, link_id],
         )?;
     }
 
@@ -147,18 +151,24 @@ pub fn reindex(vault: &Path) -> Result<usize, ParcError> {
          DELETE FROM fragments;",
     )?;
 
-    let ids = fragment::list_fragment_ids(vault)?;
+    let all_ids = fragment::list_fragment_ids(vault)?;
     let mut count = 0;
     let mut warnings = Vec::new();
 
-    for id in &ids {
+    for id in &all_ids {
         let path = vault.join("fragments").join(format!("{}.md", id));
         match std::fs::read_to_string(&path) {
             Ok(content) => match fragment::parse_fragment(&content) {
                 Ok(frag) => {
                     let inline_tags = tag::extract_inline_tags(&frag.body);
-                    let merged = tag::merge_tags(&frag.tags, &inline_tags);
-                    if let Err(e) = index_fragment(&conn, &frag, &merged) {
+                    let merged_tags = tag::merge_tags(&frag.tags, &inline_tags);
+
+                    let body_links = link::parse_wiki_links(&frag.body);
+                    let merged_links = link::merge_links(&frag.links, &body_links, |prefix| {
+                        resolve_prefix(prefix, &all_ids)
+                    });
+
+                    if let Err(e) = index_fragment(&conn, &frag, &merged_tags, &merged_links) {
                         warnings.push(format!("warning: failed to index {}: {}", id, e));
                     } else {
                         count += 1;
@@ -174,15 +184,70 @@ pub fn reindex(vault: &Path) -> Result<usize, ParcError> {
         }
     }
 
-    // We don't print warnings here (core has no I/O), caller can handle them
     Ok(count)
 }
 
-/// Index a fragment with automatic tag merging.
-pub fn index_fragment_auto(conn: &Connection, fragment: &Fragment) -> Result<(), ParcError> {
+/// Index a fragment with automatic tag and link merging.
+/// Uses the vault's fragment list for wiki-link prefix resolution.
+pub fn index_fragment_auto(
+    conn: &Connection,
+    fragment: &Fragment,
+    vault: &Path,
+) -> Result<(), ParcError> {
     let inline_tags = tag::extract_inline_tags(&fragment.body);
-    let merged = tag::merge_tags(&fragment.tags, &inline_tags);
-    index_fragment(conn, fragment, &merged)
+    let merged_tags = tag::merge_tags(&fragment.tags, &inline_tags);
+
+    let all_ids = fragment::list_fragment_ids(vault)?;
+    let body_links = link::parse_wiki_links(&fragment.body);
+    let merged_links = link::merge_links(&fragment.links, &body_links, |prefix| {
+        resolve_prefix(prefix, &all_ids)
+    });
+
+    index_fragment(conn, fragment, &merged_tags, &merged_links)
+}
+
+/// Resolve a prefix against a list of known IDs.
+/// Returns Some(full_id) if exactly one match, None otherwise.
+fn resolve_prefix(prefix: &str, all_ids: &[String]) -> Option<String> {
+    let upper = prefix.to_uppercase();
+    let matches: Vec<&String> = all_ids.iter().filter(|id| id.starts_with(&upper)).collect();
+    if matches.len() == 1 {
+        Some(matches[0].clone())
+    } else {
+        None
+    }
+}
+
+// --- Backlink queries ---
+
+#[derive(Debug, Clone)]
+pub struct BacklinkInfo {
+    pub source_id: String,
+    pub source_type: String,
+    pub source_title: String,
+}
+
+/// Find all fragments that link to the given target ID.
+pub fn get_backlinks(conn: &Connection, target_id: &str) -> Result<Vec<BacklinkInfo>, ParcError> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.type, f.title
+         FROM fragment_links fl
+         JOIN fragments f ON f.id = fl.source_id
+         WHERE fl.target_id = ?1
+         ORDER BY f.updated_at DESC",
+    )?;
+
+    let results = stmt
+        .query_map([target_id], |row| {
+            Ok(BacklinkInfo {
+                source_id: row.get(0)?,
+                source_type: row.get(1)?,
+                source_title: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -224,15 +289,13 @@ mod tests {
         let conn = init_index(&vault).unwrap();
 
         let frag = make_fragment("SQLite indexing", "Using FTS5 for search");
-        index_fragment(&conn, &frag, &["test".to_string()]).unwrap();
+        index_fragment(&conn, &frag, &["test".to_string()], &[]).unwrap();
 
-        // Verify fragment is in the index
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM fragments", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
 
-        // Verify FTS works
         let fts_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM fragments_fts WHERE fragments_fts MATCH 'SQLite'",
@@ -251,7 +314,7 @@ mod tests {
         let conn = init_index(&vault).unwrap();
 
         let frag = make_fragment("To remove", "Content here");
-        index_fragment(&conn, &frag, &["tag1".to_string()]).unwrap();
+        index_fragment(&conn, &frag, &["tag1".to_string()], &[]).unwrap();
         remove_from_index(&conn, &frag.id).unwrap();
 
         let count: i64 = conn
@@ -266,11 +329,82 @@ mod tests {
         let vault = tmp.path().join(".parc");
         crate::vault::init_vault(&vault).unwrap();
 
-        // Create a fragment file
         let frag = make_fragment("Reindex test", "Body with #hashtag");
         fragment::create_fragment(&vault, &frag).unwrap();
 
         let count = reindex(&vault).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_backlinks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+        let conn = init_index(&vault).unwrap();
+
+        let frag_a = make_fragment("Fragment A", "Body A");
+        let mut frag_b = make_fragment("Fragment B", "Body B");
+        frag_b.links = vec![frag_a.id.clone()];
+
+        index_fragment(&conn, &frag_a, &[], &[]).unwrap();
+        index_fragment(&conn, &frag_b, &[], &[frag_a.id.clone()]).unwrap();
+
+        let backlinks = get_backlinks(&conn, &frag_a.id).unwrap();
+        assert_eq!(backlinks.len(), 1);
+        assert_eq!(backlinks[0].source_id, frag_b.id);
+        assert_eq!(backlinks[0].source_title, "Fragment B");
+    }
+
+    #[test]
+    fn test_backlinks_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+        let conn = init_index(&vault).unwrap();
+
+        let frag = make_fragment("Lonely", "No links here");
+        index_fragment(&conn, &frag, &[], &[]).unwrap();
+
+        let backlinks = get_backlinks(&conn, &frag.id).unwrap();
+        assert!(backlinks.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_prefix() {
+        let ids = vec![
+            "01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string(),
+            "01JQ7V4YAB1234567890ABCDEF".to_string(),
+        ];
+        assert_eq!(
+            resolve_prefix("01JQ7V3X", &ids),
+            Some("01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string())
+        );
+        assert_eq!(resolve_prefix("01JQ7V", &ids), None); // ambiguous
+        assert_eq!(resolve_prefix("ZZZZZ", &ids), None); // not found
+    }
+
+    #[test]
+    fn test_reindex_with_wiki_links() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+
+        let frag_a = make_fragment("Target", "I am the target.");
+        fragment::create_fragment(&vault, &frag_a).unwrap();
+
+        // Use full ID to avoid ambiguity (ULIDs generated close together share prefixes)
+        let mut frag_b = make_fragment("Linker", &format!("Links to [[{}]].", frag_a.id));
+        frag_b.links = Vec::new();
+        fragment::create_fragment(&vault, &frag_b).unwrap();
+
+        let count = reindex(&vault).unwrap();
+        assert_eq!(count, 2);
+
+        // Verify backlink was created from body wiki-link
+        let conn = open_index(&vault).unwrap();
+        let backlinks = get_backlinks(&conn, &frag_a.id).unwrap();
+        assert_eq!(backlinks.len(), 1);
+        assert_eq!(backlinks[0].source_id, frag_b.id);
     }
 }

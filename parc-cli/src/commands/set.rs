@@ -52,7 +52,7 @@ pub fn run(id: &str, field: &str, value: &str) -> Result<()> {
     write_fragment(&vault, &fragment)?;
 
     let conn = index::open_index(&vault)?;
-    index::index_fragment_auto(&conn, &fragment)?;
+    index::index_fragment_auto(&conn, &fragment, &vault)?;
 
     println!("Updated {} field '{}' to '{}'", &fragment.id[..8], field, value);
     Ok(())

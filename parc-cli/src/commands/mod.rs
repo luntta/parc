@@ -1,6 +1,9 @@
+pub mod backlinks;
 pub mod delete;
+pub mod doctor;
 pub mod edit;
 pub mod init;
+pub mod link;
 pub mod list;
 pub mod new;
 pub mod reindex;
@@ -8,3 +11,4 @@ pub mod search;
 pub mod set;
 pub mod show;
 pub mod types;
+pub mod unlink;

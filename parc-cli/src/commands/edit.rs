@@ -60,7 +60,7 @@ pub fn run(id: &str) -> Result<()> {
                             fragment::write_fragment(&vault, &frag)?;
 
                             let conn = index::open_index(&vault)?;
-                            index::index_fragment_auto(&conn, &frag)?;
+                            index::index_fragment_auto(&conn, &frag, &vault)?;
 
                             let _ = std::fs::remove_file(&tmp_path);
                             println!("Updated {}", frag.id);
@@ -76,7 +76,7 @@ pub fn run(id: &str) -> Result<()> {
                     fragment::write_fragment(&vault, &frag)?;
 
                     let conn = index::open_index(&vault)?;
-                    index::index_fragment_auto(&conn, &frag)?;
+                    index::index_fragment_auto(&conn, &frag, &vault)?;
 
                     let _ = std::fs::remove_file(&tmp_path);
                     println!("Updated {}", frag.id);

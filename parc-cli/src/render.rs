@@ -1,4 +1,5 @@
 use parc_core::fragment::Fragment;
+use parc_core::index::BacklinkInfo;
 use parc_core::search::SearchResult;
 use parc_core::tag;
 
@@ -39,7 +40,7 @@ pub fn print_table(results: &[SearchResult], id_len: usize) {
     }
 }
 
-pub fn print_fragment(fragment: &Fragment) {
+pub fn print_fragment(fragment: &Fragment, backlinks: &[BacklinkInfo], id_len: usize) {
     let inline_tags = tag::extract_inline_tags(&fragment.body);
     let merged_tags = tag::merge_tags(&fragment.tags, &inline_tags);
 
@@ -79,6 +80,20 @@ pub fn print_fragment(fragment: &Fragment) {
     if !fragment.body.is_empty() {
         let skin = termimad::MadSkin::default();
         skin.print_text(&fragment.body);
+    }
+
+    // Backlinks section
+    if !backlinks.is_empty() {
+        println!();
+        println!("\u{2500}\u{2500}\u{2500} Backlinks \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+        for bl in backlinks {
+            let short = if bl.source_id.len() > id_len {
+                &bl.source_id[..id_len]
+            } else {
+                &bl.source_id
+            };
+            println!("  {}  {}  {}", short, bl.source_type, bl.source_title);
+        }
     }
 }
 

@@ -188,7 +188,7 @@ mod tests {
     fn test_fts_search() {
         let (_tmp, conn) = setup_test_vault();
         let frag = make_todo("SQLite indexing", "open", vec!["search".to_string()]);
-        index::index_fragment(&conn, &frag, &["search".to_string()]).unwrap();
+        index::index_fragment(&conn, &frag, &["search".to_string()], &[]).unwrap();
 
         let results = search(
             &conn,
@@ -206,7 +206,7 @@ mod tests {
     fn test_type_filter() {
         let (_tmp, conn) = setup_test_vault();
         let todo = make_todo("A todo", "open", vec![]);
-        index::index_fragment(&conn, &todo, &[]).unwrap();
+        index::index_fragment(&conn, &todo, &[], &[]).unwrap();
 
         let results = search(
             &conn,
@@ -233,10 +233,10 @@ mod tests {
     fn test_tag_filter_and() {
         let (_tmp, conn) = setup_test_vault();
         let frag = make_todo("Tagged", "open", vec!["a".to_string(), "b".to_string()]);
-        index::index_fragment(&conn, &frag, &["a".to_string(), "b".to_string()]).unwrap();
+        index::index_fragment(&conn, &frag, &["a".to_string(), "b".to_string()], &[]).unwrap();
 
         let frag2 = make_todo("Only a", "open", vec!["a".to_string()]);
-        index::index_fragment(&conn, &frag2, &["a".to_string()]).unwrap();
+        index::index_fragment(&conn, &frag2, &["a".to_string()], &[]).unwrap();
 
         // Search for both tags (AND)
         let results = search(

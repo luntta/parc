@@ -76,7 +76,7 @@ pub fn run(
 
         // Index
         let conn = index::open_index(&vault)?;
-        index::index_fragment_auto(&conn, &fragment)?;
+        index::index_fragment_auto(&conn, &fragment, &vault)?;
 
         println!("{}", id);
     } else {
@@ -85,7 +85,7 @@ pub fn run(
         let id = fragment::create_fragment(&vault, &fragment)?;
 
         let conn = index::open_index(&vault)?;
-        index::index_fragment_auto(&conn, &fragment)?;
+        index::index_fragment_auto(&conn, &fragment, &vault)?;
 
         println!("{}", id);
     }

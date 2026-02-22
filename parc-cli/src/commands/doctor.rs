@@ -1,0 +1,100 @@
+use anyhow::Result;
+use parc_core::doctor::{self, DoctorFinding};
+use parc_core::vault::discover_vault;
+
+pub fn run(json: bool) -> Result<()> {
+    let vault = discover_vault()?;
+
+    if !json {
+        println!("Checking vault health...");
+        println!();
+    }
+
+    let report = doctor::run_doctor(&vault)?;
+
+    if json {
+        let findings: Vec<serde_json::Value> = report
+            .findings
+            .iter()
+            .map(|f| match f {
+                DoctorFinding::BrokenLink {
+                    source_id,
+                    source_title,
+                    target_ref,
+                } => serde_json::json!({
+                    "type": "broken_link",
+                    "source_id": source_id,
+                    "source_title": source_title,
+                    "target_ref": target_ref,
+                }),
+                DoctorFinding::OrphanFragment { id, title } => serde_json::json!({
+                    "type": "orphan",
+                    "id": id,
+                    "title": title,
+                }),
+                DoctorFinding::SchemaViolation { id, title, message } => serde_json::json!({
+                    "type": "schema_violation",
+                    "id": id,
+                    "title": title,
+                    "message": message,
+                }),
+            })
+            .collect();
+
+        let json_val = serde_json::json!({
+            "fragments_checked": report.fragments_checked,
+            "healthy": report.is_healthy(),
+            "findings": findings,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_val)?);
+    } else {
+        for finding in &report.findings {
+            match finding {
+                DoctorFinding::BrokenLink {
+                    source_id,
+                    source_title,
+                    target_ref,
+                } => {
+                    println!(
+                        "\u{2717} Broken link: {} \"{}\" \u{2192} {} (not found)",
+                        &source_id[..8.min(source_id.len())],
+                        source_title,
+                        target_ref
+                    );
+                }
+                DoctorFinding::SchemaViolation { id, title, message } => {
+                    println!(
+                        "\u{2717} Schema violation: {} \"{}\" \u{2014} {}",
+                        &id[..8.min(id.len())],
+                        title,
+                        message
+                    );
+                }
+                DoctorFinding::OrphanFragment { id, title } => {
+                    println!(
+                        "! Orphan: {} \"{}\" (no links in or out)",
+                        &id[..8.min(id.len())],
+                        title
+                    );
+                }
+            }
+        }
+
+        if report.findings.is_empty() {
+            println!("Checked {} fragments: no issues found.", report.fragments_checked);
+        } else {
+            println!();
+            println!(
+                "Checked {} fragments: {} issues found.",
+                report.fragments_checked,
+                report.findings.len()
+            );
+        }
+    }
+
+    if !report.is_healthy() {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}

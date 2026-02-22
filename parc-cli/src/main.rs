@@ -113,6 +113,34 @@ enum Commands {
         /// Fragment ID or prefix
         id: String,
     },
+    /// Create a bidirectional link between two fragments
+    Link {
+        /// First fragment ID or prefix
+        id_a: String,
+        /// Second fragment ID or prefix
+        id_b: String,
+    },
+    /// Remove a bidirectional link between two fragments
+    Unlink {
+        /// First fragment ID or prefix
+        id_a: String,
+        /// Second fragment ID or prefix
+        id_b: String,
+    },
+    /// List all fragments linking to a given fragment
+    Backlinks {
+        /// Fragment ID or prefix
+        id: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check vault health (broken links, orphans, schema violations)
+    Doctor {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Rebuild the search index from fragment files
     Reindex,
     /// List registered fragment types
@@ -164,6 +192,10 @@ fn main() -> anyhow::Result<()> {
             limit,
         } => commands::search::run(query, type_filter, status, tag, json, sort, limit),
         Commands::Delete { id } => commands::delete::run(&id),
+        Commands::Link { id_a, id_b } => commands::link::run(&id_a, &id_b),
+        Commands::Unlink { id_a, id_b } => commands::unlink::run(&id_a, &id_b),
+        Commands::Backlinks { id, json } => commands::backlinks::run(&id, json),
+        Commands::Doctor { json } => commands::doctor::run(json),
         Commands::Reindex => commands::reindex::run(),
         Commands::Types => commands::types::run(),
     }

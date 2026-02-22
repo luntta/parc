@@ -34,7 +34,7 @@ fn create_fragment_directly(dir: &TempDir, type_name: &str, title: &str, body: &
 
     // Index it
     let conn = parc_core::index::open_index(&vault_path).unwrap();
-    parc_core::index::index_fragment_auto(&conn, &fragment).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
 
     id
 }
@@ -215,7 +215,7 @@ fn test_todo_with_fields() {
 
     let id = parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
     let conn = parc_core::index::open_index(&vault_path).unwrap();
-    parc_core::index::index_fragment_auto(&conn, &fragment).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
 
     // List with type filter
     parc()
@@ -308,7 +308,7 @@ fn test_hashtag_extraction() {
 
     let id = parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
     let conn = parc_core::index::open_index(&vault_path).unwrap();
-    parc_core::index::index_fragment_auto(&conn, &fragment).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
 
     // Search by inline tag
     parc()
@@ -407,12 +407,12 @@ fn test_list_with_tag_filter() {
     frag1.tags = vec!["alpha".to_string(), "beta".to_string()];
     parc_core::fragment::create_fragment(&vault_path, &frag1).unwrap();
     let conn = parc_core::index::open_index(&vault_path).unwrap();
-    parc_core::index::index_fragment_auto(&conn, &frag1).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &frag1, &vault_path).unwrap();
 
     let mut frag2 = parc_core::fragment::new_fragment("note", "Tagged B", schema, &config);
     frag2.tags = vec!["alpha".to_string()];
     parc_core::fragment::create_fragment(&vault_path, &frag2).unwrap();
-    parc_core::index::index_fragment_auto(&conn, &frag2).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &frag2, &vault_path).unwrap();
 
     // Filter by alpha — both should appear
     parc()
@@ -444,4 +444,290 @@ fn test_search_no_results() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No fragments found"));
+}
+
+// ===== M1: Links & Navigation =====
+
+#[test]
+fn test_link_and_backlinks() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id_a = create_fragment_directly(&tmp, "note", "Note A", "First note");
+    let id_b = create_fragment_directly(&tmp, "note", "Note B", "Second note");
+
+    // Link A <-> B
+    parc()
+        .args(["link", &id_a[..8], &id_b[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Linked"));
+
+    // Show A should have B in links metadata
+    parc()
+        .args(["show", &id_a[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&id_b));
+
+    // Show B should have A in backlinks (frontmatter link is bidirectional)
+    // After linking, B's frontmatter also has A, so show B should mention A
+    parc()
+        .args(["show", &id_b[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&id_a));
+
+    // Backlinks of B should include A
+    parc()
+        .args(["backlinks", &id_b[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Note A"));
+
+    // Backlinks --json
+    parc()
+        .args(["backlinks", &id_b[..8], "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"title\": \"Note A\""));
+
+    // Already linked — idempotent
+    parc()
+        .args(["link", &id_a[..8], &id_b[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Already linked"));
+}
+
+#[test]
+fn test_unlink() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id_a = create_fragment_directly(&tmp, "note", "Note A", "First");
+    let id_b = create_fragment_directly(&tmp, "note", "Note B", "Second");
+
+    // Link then unlink
+    parc()
+        .args(["link", &id_a[..8], &id_b[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    parc()
+        .args(["unlink", &id_a[..8], &id_b[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unlinked"));
+
+    // Backlinks should be empty
+    parc()
+        .args(["backlinks", &id_b[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No backlinks found"));
+
+    // Unlink again — not linked
+    parc()
+        .args(["unlink", &id_a[..8], &id_b[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Not linked"));
+}
+
+#[test]
+fn test_link_self_error() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Self", "Body");
+
+    parc()
+        .args(["link", &id[..8], &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Cannot link a fragment to itself"));
+}
+
+#[test]
+fn test_show_backlinks_section() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id_a = create_fragment_directly(&tmp, "note", "Target note", "I am the target");
+    let id_b = create_fragment_directly(&tmp, "note", "Linking note", "I link to target");
+
+    // Create link B -> A
+    parc()
+        .args(["link", &id_b[..8], &id_a[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Show A should have backlinks section with B
+    parc()
+        .args(["show", &id_a[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Backlinks"))
+        .stdout(predicate::str::contains("Linking note"));
+
+    // Show A --json should include backlinks
+    parc()
+        .args(["show", &id_a[..8], "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"backlinks\""))
+        .stdout(predicate::str::contains("\"title\": \"Linking note\""));
+}
+
+#[test]
+fn test_show_no_backlinks_section_when_empty() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Lonely note", "No links");
+
+    // Show should NOT have backlinks section
+    parc()
+        .args(["show", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Backlinks").not());
+}
+
+#[test]
+fn test_wiki_link_in_body_creates_backlink() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id_a = create_fragment_directly(&tmp, "note", "Target", "I am the target");
+
+    // Create a note with a wiki-link to A in the body
+    let vault_path = tmp.path().join(".parc");
+    let config = parc_core::config::load_config(&vault_path).unwrap();
+    let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
+    let schema = schemas.resolve("note").unwrap();
+
+    let mut fragment = parc_core::fragment::new_fragment("note", "Linker via body", schema, &config);
+    fragment.body = format!("Check out [[{}]] for details.", id_a);
+
+    let id_b = parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
+    let conn = parc_core::index::open_index(&vault_path).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
+
+    // Backlinks of A should include B (via body wiki-link)
+    parc()
+        .args(["backlinks", &id_a[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Linker via body"));
+
+    // Show A should have backlinks section
+    parc()
+        .args(["show", &id_a[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Backlinks"))
+        .stdout(predicate::str::contains("Linker via body"));
+
+    let _ = id_b; // suppress unused warning
+}
+
+#[test]
+fn test_doctor_healthy() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id_a = create_fragment_directly(&tmp, "note", "Note A", "Body A");
+    let id_b = create_fragment_directly(&tmp, "note", "Note B", "Body B");
+
+    // Link them so neither is orphan
+    parc()
+        .args(["link", &id_a[..8], &id_b[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    parc()
+        .args(["doctor"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no issues found"));
+}
+
+#[test]
+fn test_doctor_broken_link() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    // Create a fragment with a broken frontmatter link
+    let vault_path = tmp.path().join(".parc");
+    let config = parc_core::config::load_config(&vault_path).unwrap();
+    let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
+    let schema = schemas.resolve("note").unwrap();
+
+    let mut fragment = parc_core::fragment::new_fragment("note", "Broken linker", schema, &config);
+    fragment.links = vec!["NONEXISTENT_ID_12345".to_string()];
+    parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
+    let conn = parc_core::index::open_index(&vault_path).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
+
+    // Doctor should find the broken link and exit nonzero
+    parc()
+        .args(["doctor"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Broken link"));
+}
+
+#[test]
+fn test_doctor_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Solo note", "Body");
+
+    parc()
+        .args(["doctor", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        // Orphan note will cause findings, but JSON output should work either way
+        .stdout(predicate::str::contains("\"fragments_checked\""))
+        .stdout(predicate::str::contains("\"findings\""));
+}
+
+#[test]
+fn test_doctor_orphan() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Orphan note", "No links at all");
+
+    // Doctor should report the orphan (exit nonzero since orphans are findings)
+    parc()
+        .args(["doctor"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Orphan"))
+        .stdout(predicate::str::contains("Orphan note"));
 }
