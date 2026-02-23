@@ -275,9 +275,9 @@ fn test_search_fts() {
         .stdout(predicate::str::contains("SQLite indexing"))
         .stdout(predicate::str::contains("Redis").not());
 
-    // Search with type filter
+    // Search with type filter (DSL syntax)
     parc()
-        .args(["search", "caching", "--type", "note"])
+        .args(["search", "caching", "type:note"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -311,17 +311,17 @@ fn test_hashtag_extraction() {
     let conn = parc_core::index::open_index(&vault_path).unwrap();
     parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
 
-    // Search by inline tag
+    // Search by inline tag (DSL syntax)
     parc()
-        .args(["search", "--tag", "inline-tag"])
+        .args(["search", "#inline-tag"])
         .current_dir(tmp.path())
         .assert()
         .success()
         .stdout(predicate::str::contains("Hashtag test"));
 
-    // Search by explicit tag
+    // Search by explicit tag (DSL syntax)
     parc()
-        .args(["search", "--tag", "explicit"])
+        .args(["search", "tag:explicit"])
         .current_dir(tmp.path())
         .assert()
         .success()
@@ -1041,4 +1041,681 @@ fn test_all_commands_accept_vault_flag() {
         .args(["--vault", vault_str, "vault"])
         .assert()
         .success();
+}
+
+// ===== M4: Templates, Aliases & Hooks =====
+
+#[test]
+fn test_schema_add() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    // Create a custom schema file
+    let schema_content = r#"
+name: snippet
+alias: s
+fields:
+  - name: language
+    type: string
+    required: true
+    default: text
+"#;
+    let schema_file = tmp.path().join("snippet.yml");
+    std::fs::write(&schema_file, schema_content).unwrap();
+
+    // Add the schema
+    parc()
+        .args(["schema", "add", schema_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added schema 'snippet'"));
+
+    // Types should now include snippet
+    parc()
+        .args(["types"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("snippet"));
+
+    // Adding again should fail (duplicate)
+    parc()
+        .args(["schema", "add", schema_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+
+    // Template should have been created
+    assert!(tmp.path().join(".parc/templates/snippet.md").exists());
+}
+
+#[test]
+fn test_schema_add_invalid() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    // Create an invalid schema file
+    let bad_file = tmp.path().join("bad.yml");
+    std::fs::write(&bad_file, "not: valid: yaml: [[[").unwrap();
+
+    parc()
+        .args(["schema", "add", bad_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_schema_add_nonexistent_file() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    parc()
+        .args(["schema", "add", "/nonexistent/path.yml"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("file not found"));
+}
+
+#[test]
+fn test_due_date_today() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let vault_path = tmp.path().join(".parc");
+    let config = parc_core::config::load_config(&vault_path).unwrap();
+    let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
+    let schema = schemas.resolve("todo").unwrap();
+
+    let mut fragment = parc_core::fragment::new_fragment("todo", "Due today", schema, &config);
+    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let resolved = parc_core::date::resolve_due_date("today").unwrap();
+    assert_eq!(resolved, today);
+
+    fragment.extra_fields.insert(
+        "due".to_string(),
+        serde_json::Value::String(resolved),
+    );
+
+    let id = parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
+    let conn = parc_core::index::open_index(&vault_path).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
+
+    // Show should display today's date
+    parc()
+        .args(["show", &id[..8], "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&today));
+}
+
+#[test]
+fn test_due_date_tomorrow() {
+    let resolved = parc_core::date::resolve_due_date("tomorrow").unwrap();
+    let expected = (chrono::Local::now().date_naive() + chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    assert_eq!(resolved, expected);
+}
+
+#[test]
+fn test_due_date_in_n_days() {
+    let resolved = parc_core::date::resolve_due_date("in-5-days").unwrap();
+    let expected = (chrono::Local::now().date_naive() + chrono::Duration::days(5))
+        .format("%Y-%m-%d")
+        .to_string();
+    assert_eq!(resolved, expected);
+}
+
+#[test]
+fn test_due_date_passthrough_iso() {
+    let resolved = parc_core::date::resolve_due_date("2026-06-15").unwrap();
+    assert_eq!(resolved, "2026-06-15");
+}
+
+#[test]
+fn test_due_date_invalid() {
+    assert!(parc_core::date::resolve_due_date("not-a-date").is_err());
+}
+
+#[test]
+fn test_set_due_with_relative_date() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "todo", "Due test", "Body");
+    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+
+    parc()
+        .args(["set", &id[..8], "due", "today"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated"));
+
+    // Verify the resolved date
+    parc()
+        .args(["show", &id[..8], "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&today));
+}
+
+#[test]
+fn test_hook_post_create() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let hooks_dir = tmp.path().join(".parc/hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+
+    // Create a post-create hook that writes to a marker file
+    let hook_script = hooks_dir.join("post-create");
+    std::fs::write(
+        &hook_script,
+        "#!/bin/sh\ntouch \"$(dirname \"$0\")/../hook-fired\"\n",
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let id = create_fragment_directly(&tmp, "note", "Hook test", "Body");
+
+    // The hook should have fired (marker file exists)
+    // Note: create_fragment_directly bypasses CLI, so hooks won't fire there.
+    // Let's verify hook discovery works
+    let hooks = parc_core::hook::discover_hooks(
+        &tmp.path().join(".parc"),
+        parc_core::hook::HookEvent::PostCreate,
+        "note",
+    );
+    assert_eq!(hooks.len(), 1);
+    assert!(hooks[0].type_filter.is_none());
+
+    let _ = id;
+}
+
+#[test]
+fn test_hook_type_specific_discovery() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let hooks_dir = tmp.path().join(".parc/hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+
+    // Create a generic and a type-specific hook
+    std::fs::write(hooks_dir.join("pre-create"), "#!/bin/sh\n").unwrap();
+    std::fs::write(hooks_dir.join("pre-create.todo"), "#!/bin/sh\n").unwrap();
+
+    let vault_path = tmp.path().join(".parc");
+
+    // For todos: both hooks
+    let hooks = parc_core::hook::discover_hooks(
+        &vault_path,
+        parc_core::hook::HookEvent::PreCreate,
+        "todo",
+    );
+    assert_eq!(hooks.len(), 2);
+
+    // For notes: only generic
+    let hooks = parc_core::hook::discover_hooks(
+        &vault_path,
+        parc_core::hook::HookEvent::PreCreate,
+        "note",
+    );
+    assert_eq!(hooks.len(), 1);
+}
+
+#[test]
+fn test_hook_no_hooks_dir() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let vault_path = tmp.path().join(".parc");
+
+    // No hooks dir — should return empty
+    let hooks = parc_core::hook::discover_hooks(
+        &vault_path,
+        parc_core::hook::HookEvent::PostCreate,
+        "note",
+    );
+    assert!(hooks.is_empty());
+}
+
+#[test]
+fn test_completions_bash() {
+    let tmp = TempDir::new().unwrap();
+
+    parc()
+        .args(["completions", "bash"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("parc"));
+}
+
+#[test]
+fn test_completions_zsh() {
+    let tmp = TempDir::new().unwrap();
+
+    parc()
+        .args(["completions", "zsh"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("parc"));
+}
+
+#[test]
+fn test_completions_fish() {
+    let tmp = TempDir::new().unwrap();
+
+    parc()
+        .args(["completions", "fish"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("parc"));
+}
+
+#[test]
+fn test_completions_invalid_shell() {
+    let tmp = TempDir::new().unwrap();
+
+    parc()
+        .args(["completions", "tcsh"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsupported shell"));
+}
+
+// ===== M5: History & Attachments =====
+
+#[test]
+fn test_history_no_versions() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "No history", "Body");
+
+    parc()
+        .args(["history", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No history"));
+}
+
+#[test]
+fn test_history_after_set() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "History test", "Original body");
+
+    // Edit via set (triggers history snapshot)
+    parc()
+        .args(["set", &id[..8], "title", "Updated title"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // History should now list 1 version
+    parc()
+        .args(["history", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 versions"))
+        .stdout(predicate::str::contains("TIMESTAMP"));
+}
+
+#[test]
+fn test_history_show() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Show test", "Original body");
+
+    // Set triggers snapshot
+    parc()
+        .args(["set", &id[..8], "title", "New title"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Get the timestamp from history list
+    let output = parc()
+        .args(["history", &id[..8]])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Extract timestamp (ISO format line)
+    let timestamp = stdout
+        .lines()
+        .find(|l| l.contains("2026") || l.contains("202"))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap()
+        .to_string();
+
+    // Show the old version
+    parc()
+        .args(["history", &id[..8], "--show", &timestamp])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Show test"));
+}
+
+#[test]
+fn test_history_diff() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Diff test", "Line one\nLine two\n");
+
+    // Change title
+    parc()
+        .args(["set", &id[..8], "title", "Changed title"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Diff should show changes
+    parc()
+        .args(["history", &id[..8], "--diff"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("-title: Diff test"))
+        .stdout(predicate::str::contains("+title: Changed title"));
+}
+
+#[test]
+fn test_history_restore() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Restore me", "Original");
+
+    // Change title
+    parc()
+        .args(["set", &id[..8], "title", "Changed"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Get the timestamp
+    let output = parc()
+        .args(["history", &id[..8]])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let timestamp = stdout
+        .lines()
+        .find(|l| l.contains("202"))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap()
+        .to_string();
+
+    // Restore
+    parc()
+        .args(["history", &id[..8], "--restore", &timestamp])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Restored"));
+
+    // Verify the title is back
+    parc()
+        .args(["show", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Restore me"));
+
+    // Should now have 2 versions (original + pre-restore)
+    parc()
+        .args(["history", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 versions"));
+}
+
+#[test]
+fn test_attach_and_list() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Attach test", "Body");
+
+    // Create a test file to attach
+    let test_file = tmp.path().join("test-file.txt");
+    std::fs::write(&test_file, "attachment content").unwrap();
+
+    // Attach
+    parc()
+        .args(["attach", &id[..8], test_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Attached 'test-file.txt'"));
+
+    // List attachments
+    parc()
+        .args(["attachments", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test-file.txt"));
+
+    // Source file should still exist (copy mode)
+    assert!(test_file.exists());
+}
+
+#[test]
+fn test_attach_move() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Move test", "Body");
+
+    let test_file = tmp.path().join("moveme.txt");
+    std::fs::write(&test_file, "move content").unwrap();
+
+    parc()
+        .args(["attach", &id[..8], test_file.to_str().unwrap(), "--mv"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Source should be gone
+    assert!(!test_file.exists());
+
+    // Attachment should be listed
+    parc()
+        .args(["attachments", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("moveme.txt"));
+}
+
+#[test]
+fn test_detach() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Detach test", "Body");
+
+    let test_file = tmp.path().join("removeme.txt");
+    std::fs::write(&test_file, "data").unwrap();
+
+    parc()
+        .args(["attach", &id[..8], test_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    parc()
+        .args(["detach", &id[..8], "removeme.txt"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Detached"));
+
+    parc()
+        .args(["attachments", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No attachments"));
+}
+
+#[test]
+fn test_attach_duplicate_error() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Dup test", "Body");
+
+    let test_file = tmp.path().join("dup.txt");
+    std::fs::write(&test_file, "data").unwrap();
+
+    parc()
+        .args(["attach", &id[..8], test_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    parc()
+        .args(["attach", &id[..8], test_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn test_show_with_attachments() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Show attach", "Body");
+
+    let test_file = tmp.path().join("screenshot.png");
+    std::fs::write(&test_file, "fake png data").unwrap();
+
+    parc()
+        .args(["attach", &id[..8], test_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Show should display attachments section
+    parc()
+        .args(["show", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Attachments"))
+        .stdout(predicate::str::contains("screenshot.png"));
+
+    // Show --json should include attachments
+    parc()
+        .args(["show", &id[..8], "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"attachments\""))
+        .stdout(predicate::str::contains("screenshot.png"));
+}
+
+#[test]
+fn test_attachments_empty() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "No attach", "Body");
+
+    parc()
+        .args(["attachments", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No attachments"));
+}
+
+#[test]
+fn test_show_no_attachments_section_when_empty() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "No attach show", "Body");
+
+    parc()
+        .args(["show", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Attachments").not());
+}
+
+#[test]
+fn test_doctor_attachment_mismatch() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let vault_path = tmp.path().join(".parc");
+    let id = create_fragment_directly(&tmp, "note", "Mismatch test", "Body");
+
+    // Create an attachment directory with an unreferenced file
+    let attach_dir = vault_path.join("attachments").join(&id);
+    std::fs::create_dir_all(&attach_dir).unwrap();
+    std::fs::write(attach_dir.join("orphan.txt"), "orphan data").unwrap();
+
+    parc()
+        .args(["doctor"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Attachment"))
+        .stdout(predicate::str::contains("not listed in frontmatter"));
+}
+
+#[test]
+fn test_attachments_roundtrip_in_frontmatter() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let vault_path = tmp.path().join(".parc");
+    let id = create_fragment_directly(&tmp, "note", "Frontmatter test", "Body");
+
+    let test_file = tmp.path().join("doc.pdf");
+    std::fs::write(&test_file, "pdf data").unwrap();
+
+    parc()
+        .args(["attach", &id[..8], test_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Read the raw file and verify attachments in frontmatter
+    let fragment_path = vault_path.join("fragments").join(format!("{}.md", id));
+    let content = std::fs::read_to_string(&fragment_path).unwrap();
+    assert!(content.contains("attachments:"));
+    assert!(content.contains("  - doc.pdf"));
 }

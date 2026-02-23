@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::path::Path;
 
+use crate::attachment;
 use crate::error::ParcError;
 use crate::fragment::{self, Fragment};
 use crate::link;
@@ -20,6 +22,13 @@ pub enum DoctorFinding {
         id: String,
         title: String,
         message: String,
+    },
+    AttachmentMismatch {
+        fragment_id: String,
+        detail: String,
+    },
+    VaultSizeWarning {
+        total_bytes: u64,
     },
 }
 
@@ -141,6 +150,114 @@ pub fn check_schema_violations(
     findings
 }
 
+/// Check for attachment mismatches.
+pub fn check_attachments(
+    vault: &Path,
+    fragments: &[Fragment],
+) -> Vec<DoctorFinding> {
+    let mut findings = Vec::new();
+    let mut referenced_dirs = HashSet::new();
+
+    for frag in fragments {
+        let attach_dir = vault.join("attachments").join(&frag.id);
+
+        // Check frontmatter attachments have corresponding files
+        for filename in &frag.attachments {
+            let file_path = attach_dir.join(filename);
+            if !file_path.exists() {
+                findings.push(DoctorFinding::AttachmentMismatch {
+                    fragment_id: frag.id.clone(),
+                    detail: format!("frontmatter lists '{}' but file not found on disk", filename),
+                });
+            }
+        }
+
+        // Check body ![[attach:...]] refs have corresponding files
+        let body_refs = attachment::parse_attachment_refs(&frag.body);
+        for aref in &body_refs {
+            let file_path = attach_dir.join(&aref.filename);
+            if !file_path.exists() && !frag.attachments.contains(&aref.filename) {
+                findings.push(DoctorFinding::AttachmentMismatch {
+                    fragment_id: frag.id.clone(),
+                    detail: format!(
+                        "body references ![[attach:{}]] but file not found",
+                        aref.filename
+                    ),
+                });
+            }
+        }
+
+        // Check for files on disk not referenced in frontmatter
+        if attach_dir.is_dir() {
+            referenced_dirs.insert(frag.id.clone());
+            if let Ok(entries) = std::fs::read_dir(&attach_dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                        if !frag.attachments.contains(&name.to_string()) {
+                            findings.push(DoctorFinding::AttachmentMismatch {
+                                fragment_id: frag.id.clone(),
+                                detail: format!(
+                                    "file '{}' on disk but not listed in frontmatter",
+                                    name
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for attachment directories belonging to non-existent fragments
+    let fragment_ids: HashSet<&str> = fragments.iter().map(|f| f.id.as_str()).collect();
+    let attachments_dir = vault.join("attachments");
+    if attachments_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&attachments_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    if let Some(dir_name) = entry.file_name().to_str() {
+                        if !fragment_ids.contains(dir_name) {
+                            findings.push(DoctorFinding::AttachmentMismatch {
+                                fragment_id: dir_name.to_string(),
+                                detail: "attachment directory exists but fragment not found".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+/// Check vault total size.
+pub fn check_vault_size(vault: &Path) -> Vec<DoctorFinding> {
+    const WARN_THRESHOLD: u64 = 500 * 1024 * 1024; // 500 MB
+
+    let total = dir_size(vault);
+    if total > WARN_THRESHOLD {
+        vec![DoctorFinding::VaultSizeWarning { total_bytes: total }]
+    } else {
+        Vec::new()
+    }
+}
+
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                total += dir_size(&path);
+            } else if let Ok(meta) = entry.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
 /// Run all checks and return a combined report.
 pub fn run_doctor(vault: &Path) -> Result<DoctorReport, ParcError> {
     let all_ids = fragment::list_fragment_ids(vault)?;
@@ -163,6 +280,8 @@ pub fn run_doctor(vault: &Path) -> Result<DoctorReport, ParcError> {
     findings.extend(check_broken_links(&fragments, &all_ids));
     findings.extend(check_schema_violations(&fragments, &schemas));
     findings.extend(check_orphans(&fragments, &all_ids));
+    findings.extend(check_attachments(vault, &fragments));
+    findings.extend(check_vault_size(vault));
 
     Ok(DoctorReport {
         findings,
@@ -184,6 +303,7 @@ mod tests {
             title: title.to_string(),
             tags: Vec::new(),
             links: Vec::new(),
+            attachments: Vec::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             created_by: None,

@@ -264,6 +264,7 @@ mod tests {
             title: title.to_string(),
             tags: vec!["test".to_string()],
             links: Vec::new(),
+            attachments: Vec::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             created_by: None,

@@ -8,13 +8,15 @@ use crate::config::Config;
 use crate::error::ParcError;
 use crate::schema::{FieldType, Schema};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Fragment {
     pub id: String,
     pub fragment_type: String,
     pub title: String,
     pub tags: Vec<String>,
     pub links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub created_by: Option<String>,
@@ -52,6 +54,7 @@ pub fn new_fragment(
         title: title.to_string(),
         tags,
         links: Vec::new(),
+        attachments: Vec::new(),
         created_at: now,
         updated_at: now,
         created_by: config.user.clone(),
@@ -109,6 +112,16 @@ pub fn parse_fragment(content: &str) -> Result<Fragment, ParcError> {
         })
         .unwrap_or_default();
 
+    let attachments = map
+        .get("attachments")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let created_at = map
         .get("created_at")
         .and_then(|v| v.as_str())
@@ -132,6 +145,7 @@ pub fn parse_fragment(content: &str) -> Result<Fragment, ParcError> {
         "title",
         "tags",
         "links",
+        "attachments",
         "created_at",
         "updated_at",
         "created_by",
@@ -149,6 +163,7 @@ pub fn parse_fragment(content: &str) -> Result<Fragment, ParcError> {
         title,
         tags,
         links,
+        attachments,
         created_at,
         updated_at,
         created_by,
@@ -180,6 +195,13 @@ pub fn serialize_fragment(fragment: &Fragment) -> String {
         lines.push("links:".to_string());
         for link in &fragment.links {
             lines.push(format!("  - {}", link));
+        }
+    }
+    // Attachments
+    if !fragment.attachments.is_empty() {
+        lines.push("attachments:".to_string());
+        for attachment in &fragment.attachments {
+            lines.push(format!("  - {}", attachment));
         }
     }
     // Extra fields (type-specific)
@@ -302,8 +324,15 @@ pub fn read_fragment(vault: &Path, id_or_prefix: &str) -> Result<Fragment, ParcE
     parse_fragment(&content)
 }
 
-/// Overwrite a fragment file.
+/// Overwrite a fragment file. Saves a history snapshot before overwriting
+/// if history is enabled in config.
 pub fn write_fragment(vault: &Path, fragment: &Fragment) -> Result<(), ParcError> {
+    // Save history snapshot of the current version before overwriting
+    let config = crate::config::load_config(vault)?;
+    if config.history_enabled {
+        crate::history::save_snapshot(vault, &fragment.id)?;
+    }
+
     let content = serialize_fragment(fragment);
     let path = vault
         .join("fragments")
@@ -418,6 +447,7 @@ mod tests {
             title: "Test task".to_string(),
             tags: vec!["backend".to_string(), "search".to_string()],
             links: vec!["01JQ7V4Y".to_string()],
+            attachments: Vec::new(),
             created_at: DateTime::parse_from_rfc3339("2026-02-21T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),

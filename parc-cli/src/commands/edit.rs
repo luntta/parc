@@ -4,14 +4,18 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use parc_core::config::{get_editor, load_config};
 use parc_core::fragment::{self, parse_fragment, read_fragment, serialize_fragment, validate_fragment};
+use parc_core::hook::{self, HookEvent};
 use parc_core::index;
 use parc_core::schema::load_schemas;
+
+use crate::hooks::CliHookRunner;
 
 pub fn run(vault: &Path, id: &str) -> Result<()> {
     let config = load_config(vault)?;
     let schemas = load_schemas(vault)?;
     let original = read_fragment(vault, id)?;
     let full_id = original.id.clone();
+    let runner = CliHookRunner;
 
     let content = serialize_fragment(&original);
     let editor = get_editor(&config);
@@ -57,10 +61,17 @@ pub fn run(vault: &Path, id: &str) -> Result<()> {
                     match validate_fragment(&frag, s) {
                         Ok(()) => {
                             frag.updated_at = Utc::now();
+
+                            // Run pre-update hooks
+                            let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
+
                             fragment::write_fragment(vault, &frag)?;
 
                             let conn = index::open_index(vault)?;
                             index::index_fragment_auto(&conn, &frag, vault)?;
+
+                            // Run post-update hooks
+                            hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
 
                             let _ = std::fs::remove_file(&tmp_path);
                             println!("Updated {}", frag.id);
@@ -73,10 +84,15 @@ pub fn run(vault: &Path, id: &str) -> Result<()> {
                 } else {
                     // No schema found — accept anyway (could be custom type)
                     frag.updated_at = Utc::now();
+
+                    let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
+
                     fragment::write_fragment(vault, &frag)?;
 
                     let conn = index::open_index(vault)?;
                     index::index_fragment_auto(&conn, &frag, vault)?;
+
+                    hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
 
                     let _ = std::fs::remove_file(&tmp_path);
                     println!("Updated {}", frag.id);

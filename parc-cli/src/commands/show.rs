@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use parc_core::attachment;
 use parc_core::config::load_config;
 use parc_core::fragment::read_fragment;
 use parc_core::index;
@@ -16,6 +17,9 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     let conn = index::open_index(vault)?;
     let backlinks = index::get_backlinks(&conn, &fragment.id)?;
 
+    // Get attachments
+    let attachments = attachment::list_attachments(vault, &fragment.id).unwrap_or_default();
+
     if json {
         let inline_tags = tag::extract_inline_tags(&fragment.body);
         let merged_tags = tag::merge_tags(&fragment.tags, &inline_tags);
@@ -29,22 +33,33 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
                 })
             })
             .collect();
+        let attachments_json: Vec<serde_json::Value> = attachments
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "filename": a.filename,
+                    "size": a.size,
+                })
+            })
+            .collect();
         let json_val = serde_json::json!({
             "id": fragment.id,
             "type": fragment.fragment_type,
             "title": fragment.title,
             "tags": merged_tags,
             "links": fragment.links,
+            "attachments": fragment.attachments,
             "created_at": fragment.created_at.to_rfc3339(),
             "updated_at": fragment.updated_at.to_rfc3339(),
             "created_by": fragment.created_by,
             "extra_fields": fragment.extra_fields,
             "body": fragment.body,
             "backlinks": backlinks_json,
+            "attachment_files": attachments_json,
         });
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        render::print_fragment(&fragment, &backlinks, config.id_display_length);
+        render::print_fragment(&fragment, &backlinks, &attachments, config.id_display_length);
     }
 
     Ok(())

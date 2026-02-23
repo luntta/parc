@@ -37,6 +37,15 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     "title": title,
                     "message": message,
                 }),
+                DoctorFinding::AttachmentMismatch { fragment_id, detail } => serde_json::json!({
+                    "type": "attachment_mismatch",
+                    "fragment_id": fragment_id,
+                    "detail": detail,
+                }),
+                DoctorFinding::VaultSizeWarning { total_bytes } => serde_json::json!({
+                    "type": "vault_size_warning",
+                    "total_bytes": total_bytes,
+                }),
             })
             .collect();
 
@@ -74,6 +83,23 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                         "! Orphan: {} \"{}\" (no links in or out)",
                         &id[..8.min(id.len())],
                         title
+                    );
+                }
+                DoctorFinding::AttachmentMismatch {
+                    fragment_id,
+                    detail,
+                } => {
+                    println!(
+                        "\u{2717} Attachment: {} \u{2014} {}",
+                        &fragment_id[..8.min(fragment_id.len())],
+                        detail
+                    );
+                }
+                DoctorFinding::VaultSizeWarning { total_bytes } => {
+                    let size_mb = *total_bytes as f64 / (1024.0 * 1024.0);
+                    println!(
+                        "! Vault size: {:.1} MB (exceeds 500 MB warning threshold)",
+                        size_mb
                     );
                 }
             }

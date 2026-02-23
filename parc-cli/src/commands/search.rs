@@ -3,17 +3,13 @@ use std::path::Path;
 use anyhow::Result;
 use parc_core::config::load_config;
 use parc_core::index::open_index;
-use parc_core::search::{self, SearchParams, SortOrder};
+use parc_core::search::{self, parse_query, SortOrder};
 
 use crate::render;
 
-#[allow(clippy::too_many_arguments)]
 pub fn run(
     vault: &Path,
     query: Vec<String>,
-    type_filter: Option<String>,
-    status: Option<String>,
-    tags: Vec<String>,
     json: bool,
     sort: Option<String>,
     limit: Option<usize>,
@@ -21,29 +17,19 @@ pub fn run(
     let config = load_config(vault)?;
     let conn = open_index(vault)?;
 
-    let query_str = if query.is_empty() {
-        None
-    } else {
-        Some(query.join(" "))
-    };
+    let query_str = query.join(" ");
+    let mut search_query = parse_query(&query_str)?;
 
-    let sort_order = match sort.as_deref() {
+    search_query.sort = match sort.as_deref() {
         Some("updated-asc") => SortOrder::UpdatedAsc,
         Some("created") => SortOrder::CreatedDesc,
         Some("created-asc") => SortOrder::CreatedAsc,
         _ => SortOrder::UpdatedDesc,
     };
 
-    let params = SearchParams {
-        query: query_str,
-        type_filter,
-        status_filter: status,
-        tag_filter: tags,
-        sort: sort_order,
-        limit,
-    };
+    search_query.limit = limit;
 
-    let results = search::search(&conn, &params)?;
+    let results = search::search(&conn, &search_query)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&results)?);

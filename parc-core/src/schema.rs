@@ -60,7 +60,7 @@ fn parse_field_type(type_str: &str, values: Vec<String>) -> FieldType {
     }
 }
 
-fn parse_schema(yaml: &str) -> Result<Schema, ParcError> {
+pub fn parse_schema(yaml: &str) -> Result<Schema, ParcError> {
     let raw: SchemaFile = serde_yaml::from_str(yaml)?;
     let fields = raw
         .fields
@@ -151,6 +151,52 @@ pub fn load_template(vault_path: &Path, type_name: &str) -> Option<String> {
     } else {
         get_builtin_template(type_name).map(|s| s.to_string())
     }
+}
+
+/// Validate a schema YAML file at the given path. Returns the parsed Schema.
+pub fn validate_schema_file(source_path: &Path) -> Result<Schema, ParcError> {
+    let content = std::fs::read_to_string(source_path)?;
+    parse_schema(&content)
+}
+
+/// Register a user-defined schema by copying it into the vault's schemas/ directory.
+/// Returns the schema name. Errors if a schema with the same name already exists.
+pub fn add_schema(vault_path: &Path, source_path: &Path) -> Result<String, ParcError> {
+    let schema = validate_schema_file(source_path)?;
+    let registry = load_schemas(vault_path)?;
+
+    if registry.get_by_name(&schema.name).is_some() {
+        return Err(ParcError::ValidationError(format!(
+            "schema '{}' already exists in vault",
+            schema.name
+        )));
+    }
+
+    // Copy to schemas/
+    let dest = vault_path
+        .join("schemas")
+        .join(format!("{}.yml", schema.name));
+    std::fs::copy(source_path, &dest)?;
+
+    // Create empty template if none exists
+    let template_path = vault_path
+        .join("templates")
+        .join(format!("{}.md", schema.name));
+    if !template_path.exists() {
+        let template_dir = vault_path.join("templates");
+        if !template_dir.exists() {
+            std::fs::create_dir_all(&template_dir)?;
+        }
+        std::fs::write(
+            &template_path,
+            format!(
+                "---\ntype: {}\ntitle: \"\"\n---\n\n",
+                schema.name
+            ),
+        )?;
+    }
+
+    Ok(schema.name)
 }
 
 #[cfg(test)]

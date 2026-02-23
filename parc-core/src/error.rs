@@ -23,6 +23,9 @@ pub enum ParcError {
     #[error("index error: {0}")]
     IndexError(String),
 
+    #[error("parse error: {0}")]
+    ParseError(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

@@ -3,9 +3,12 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use parc_core::config::{get_editor, load_config};
 use parc_core::fragment::{self, parse_fragment, serialize_fragment, validate_fragment};
+use parc_core::hook::{self, HookEvent};
 use parc_core::index;
 use parc_core::schema::{load_schemas, load_template};
 use serde_json::Value;
+
+use crate::hooks::CliHookRunner;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -47,9 +50,10 @@ pub fn run(
             .insert("status".to_string(), Value::String(s));
     }
     if let Some(d) = due {
+        let resolved = parc_core::date::resolve_due_date(&d)?;
         fragment
             .extra_fields
-            .insert("due".to_string(), Value::String(d));
+            .insert("due".to_string(), Value::String(resolved));
     }
     if let Some(p) = priority {
         fragment
@@ -65,6 +69,8 @@ pub fn run(
     // Decide whether to open editor
     let should_open_editor = !schema.editor_skip || title.is_none();
 
+    let runner = CliHookRunner;
+
     if should_open_editor {
         // Prepare template content
         let template = load_template(vault, resolved_type).unwrap_or_default();
@@ -73,20 +79,34 @@ pub fn run(
         let editor_content = build_editor_content(&fragment, &template);
 
         let fragment = run_editor_loop(vault, &editor_content, schema, &config)?;
+
+        // Run pre-create hooks
+        let fragment = hook::run_pre_hooks(&runner, vault, HookEvent::PreCreate, &fragment)?;
+
         let id = fragment::create_fragment(vault, &fragment)?;
 
         // Index
         let conn = index::open_index(vault)?;
         index::index_fragment_auto(&conn, &fragment, vault)?;
 
+        // Run post-create hooks
+        hook::run_post_hooks(&runner, vault, HookEvent::PostCreate, &fragment);
+
         println!("{}", id);
     } else {
         // Skip editor — create directly
         validate_fragment(&fragment, schema)?;
+
+        // Run pre-create hooks
+        let fragment = hook::run_pre_hooks(&runner, vault, HookEvent::PreCreate, &fragment)?;
+
         let id = fragment::create_fragment(vault, &fragment)?;
 
         let conn = index::open_index(vault)?;
         index::index_fragment_auto(&conn, &fragment, vault)?;
+
+        // Run post-create hooks
+        hook::run_post_hooks(&runner, vault, HookEvent::PostCreate, &fragment);
 
         println!("{}", id);
     }

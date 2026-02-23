@@ -1,12 +1,16 @@
+pub mod attach;
 pub mod backlinks;
+pub mod completions;
 pub mod delete;
 pub mod doctor;
 pub mod edit;
+pub mod history;
 pub mod init;
 pub mod link;
 pub mod list;
 pub mod new;
 pub mod reindex;
+pub mod schema;
 pub mod search;
 pub mod set;
 pub mod show;

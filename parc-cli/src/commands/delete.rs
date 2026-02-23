@@ -1,15 +1,29 @@
 use std::path::Path;
 
 use anyhow::Result;
-use parc_core::fragment::delete_fragment;
+use parc_core::fragment::{delete_fragment, read_fragment};
+use parc_core::hook::{self, HookEvent};
 use parc_core::index;
 
+use crate::hooks::CliHookRunner;
+
 pub fn run(vault: &Path, id: &str) -> Result<()> {
-    let full_id = delete_fragment(vault, id)?;
+    let runner = CliHookRunner;
+
+    // Read fragment before deleting so we can pass it to hooks
+    let fragment = read_fragment(vault, id)?;
+
+    // Run pre-delete hooks
+    let _ = hook::run_pre_hooks(&runner, vault, HookEvent::PreDelete, &fragment)?;
+
+    let full_id = delete_fragment(vault, &fragment.id)?;
 
     // Remove from index
     let conn = index::open_index(vault)?;
     index::remove_from_index(&conn, &full_id)?;
+
+    // Run post-delete hooks
+    hook::run_post_hooks(&runner, vault, HookEvent::PostDelete, &fragment);
 
     println!("Deleted {} (moved to trash)", &full_id[..8]);
     Ok(())

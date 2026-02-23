@@ -1,4 +1,5 @@
 mod commands;
+pub mod hooks;
 mod render;
 
 use std::path::PathBuf;
@@ -92,19 +93,10 @@ enum Commands {
         /// New value
         value: String,
     },
-    /// Search fragments
+    /// Search fragments (supports DSL: type:todo status:open #tag "phrase")
     Search {
-        /// Search query (full-text)
+        /// Search query (DSL: type:, status:, priority:, tag:/#, due:, created:, updated:, by:, has:, linked:)
         query: Vec<String>,
-        /// Filter by type
-        #[arg(long = "type")]
-        type_filter: Option<String>,
-        /// Filter by status
-        #[arg(long)]
-        status: Option<String>,
-        /// Filter by tag
-        #[arg(long)]
-        tag: Vec<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -148,6 +140,52 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show fragment version history
+    History {
+        /// Fragment ID or prefix
+        id: String,
+        /// Show a specific version
+        #[arg(long)]
+        show: Option<String>,
+        /// Diff current vs. previous (or specific) version
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        diff: Option<String>,
+        /// Restore a previous version
+        #[arg(long)]
+        restore: Option<String>,
+    },
+    /// Attach a file to a fragment
+    Attach {
+        /// Fragment ID or prefix
+        id: String,
+        /// Path to file to attach
+        file: PathBuf,
+        /// Move the file instead of copying
+        #[arg(long = "mv")]
+        mv: bool,
+    },
+    /// Remove an attachment from a fragment
+    Detach {
+        /// Fragment ID or prefix
+        id: String,
+        /// Filename of the attachment to remove
+        filename: String,
+    },
+    /// List attachments for a fragment
+    Attachments {
+        /// Fragment ID or prefix
+        id: String,
+    },
+    /// Manage schemas
+    Schema {
+        #[command(subcommand)]
+        subcommand: SchemaCommands,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell name (bash, zsh, fish, elvish)
+        shell: String,
+    },
     /// Rebuild the search index from fragment files
     Reindex,
     /// List registered fragment types
@@ -159,6 +197,15 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum SchemaCommands {
+    /// Register a user-defined fragment type from a YAML file
+    Add {
+        /// Path to schema YAML file
+        path: String,
     },
 }
 
@@ -182,6 +229,7 @@ fn main() -> anyhow::Result<()> {
             }
             commands::init::run(global, cli.vault.as_deref())
         }
+        Commands::Completions { shell } => commands::completions::run(&shell),
         Commands::Vault { subcommand, json } => {
             // Vault command can work even with resolve_vault
             let vault = resolve_vault(cli.vault.as_deref())?;
@@ -226,21 +274,38 @@ fn main() -> anyhow::Result<()> {
                 Commands::Set { id, field, value } => commands::set::run(&vault, &id, &field, &value),
                 Commands::Search {
                     query,
-                    type_filter,
-                    status,
-                    tag,
                     json,
                     sort,
                     limit,
-                } => commands::search::run(&vault, query, type_filter, status, tag, json, sort, limit),
+                } => commands::search::run(&vault, query, json, sort, limit),
                 Commands::Delete { id } => commands::delete::run(&vault, &id),
                 Commands::Link { id_a, id_b } => commands::link::run(&vault, &id_a, &id_b),
                 Commands::Unlink { id_a, id_b } => commands::unlink::run(&vault, &id_a, &id_b),
                 Commands::Backlinks { id, json } => commands::backlinks::run(&vault, &id, json),
                 Commands::Doctor { json } => commands::doctor::run(&vault, json),
+                Commands::History {
+                    id,
+                    show,
+                    diff,
+                    restore,
+                } => {
+                    let is_diff = diff.is_some();
+                    let diff_ts = diff.filter(|s| !s.is_empty());
+                    commands::history::run(&vault, &id, show, is_diff, diff_ts, restore)
+                }
+                Commands::Attach { id, file, mv } => {
+                    commands::attach::run_attach(&vault, &id, &file, mv)
+                }
+                Commands::Detach { id, filename } => {
+                    commands::attach::run_detach(&vault, &id, &filename)
+                }
+                Commands::Attachments { id } => commands::attach::run_attachments(&vault, &id),
+                Commands::Schema { subcommand } => match subcommand {
+                    SchemaCommands::Add { path } => commands::schema::run_add(&vault, &path),
+                },
                 Commands::Reindex => commands::reindex::run(&vault),
                 Commands::Types => commands::types::run(&vault),
-                Commands::Init { .. } | Commands::Vault { .. } => unreachable!(),
+                Commands::Init { .. } | Commands::Vault { .. } | Commands::Completions { .. } => unreachable!(),
             }
         }
     }

@@ -28,6 +28,7 @@ pub struct Config {
     pub id_display_length: usize,
     pub color: ColorMode,
     pub aliases: BTreeMap<String, String>,
+    pub history_enabled: bool,
 }
 
 impl Default for Config {
@@ -47,8 +48,19 @@ impl Default for Config {
             id_display_length: 8,
             color: ColorMode::Auto,
             aliases,
+            history_enabled: true,
         }
     }
+}
+
+#[derive(Deserialize, Default)]
+struct HistoryConfig {
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize, Default)]
@@ -65,6 +77,8 @@ struct ConfigFile {
     color: String,
     #[serde(default)]
     aliases: BTreeMap<String, String>,
+    #[serde(default)]
+    history: Option<HistoryConfig>,
 }
 
 fn default_date_format() -> String {
@@ -111,6 +125,9 @@ pub fn load_config(vault: &Path) -> Result<Config, ParcError> {
     };
     if !raw.aliases.is_empty() {
         config.aliases = raw.aliases;
+    }
+    if let Some(history) = raw.history {
+        config.history_enabled = history.enabled;
     }
 
     Ok(config)

@@ -3,9 +3,12 @@ use std::path::Path;
 use anyhow::{bail, Result};
 use chrono::Utc;
 use parc_core::fragment::{read_fragment, validate_fragment, write_fragment};
+use parc_core::hook::{self, HookEvent};
 use parc_core::index;
 use parc_core::schema::load_schemas;
 use serde_json::Value;
+
+use crate::hooks::CliHookRunner;
 
 pub fn run(vault: &Path, id: &str, field: &str, value: &str) -> Result<()> {
     let schemas = load_schemas(vault)?;
@@ -37,9 +40,14 @@ pub fn run(vault: &Path, id: &str, field: &str, value: &str) -> Result<()> {
                     );
                 }
             }
+            let final_value = if field == "due" {
+                parc_core::date::resolve_due_date(value)?
+            } else {
+                value.to_string()
+            };
             fragment
                 .extra_fields
-                .insert(field.to_string(), Value::String(value.to_string()));
+                .insert(field.to_string(), Value::String(final_value));
         }
     }
 
@@ -49,10 +57,16 @@ pub fn run(vault: &Path, id: &str, field: &str, value: &str) -> Result<()> {
     }
 
     fragment.updated_at = Utc::now();
+
+    let runner = CliHookRunner;
+    let fragment = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &fragment)?;
+
     write_fragment(vault, &fragment)?;
 
     let conn = index::open_index(vault)?;
     index::index_fragment_auto(&conn, &fragment, vault)?;
+
+    hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &fragment);
 
     println!("Updated {} field '{}' to '{}'", &fragment.id[..8], field, value);
     Ok(())

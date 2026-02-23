@@ -1,3 +1,4 @@
+use parc_core::attachment::AttachmentInfo;
 use parc_core::fragment::Fragment;
 use parc_core::index::BacklinkInfo;
 use parc_core::search::SearchResult;
@@ -40,7 +41,7 @@ pub fn print_table(results: &[SearchResult], id_len: usize) {
     }
 }
 
-pub fn print_fragment(fragment: &Fragment, backlinks: &[BacklinkInfo], id_len: usize) {
+pub fn print_fragment(fragment: &Fragment, backlinks: &[BacklinkInfo], attachments: &[AttachmentInfo], id_len: usize) {
     let inline_tags = tag::extract_inline_tags(&fragment.body);
     let merged_tags = tag::merge_tags(&fragment.tags, &inline_tags);
 
@@ -94,6 +95,26 @@ pub fn print_fragment(fragment: &Fragment, backlinks: &[BacklinkInfo], id_len: u
             };
             println!("  {}  {}  {}", short, bl.source_type, bl.source_title);
         }
+    }
+
+    // Attachments section
+    if !attachments.is_empty() {
+        println!();
+        println!("\u{2500}\u{2500}\u{2500} Attachments \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+        for a in attachments {
+            let size = format_size(a.size);
+            println!("  {} ({})", a.filename, size);
+        }
+    }
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
