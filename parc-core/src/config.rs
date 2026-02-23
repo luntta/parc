@@ -29,6 +29,22 @@ pub struct Config {
     pub color: ColorMode,
     pub aliases: BTreeMap<String, String>,
     pub history_enabled: bool,
+    pub server: ServerConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
+    pub transport: String,
+    pub socket_path: Option<String>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            transport: "stdio".to_string(),
+            socket_path: None,
+        }
+    }
 }
 
 impl Default for Config {
@@ -49,6 +65,7 @@ impl Default for Config {
             color: ColorMode::Auto,
             aliases,
             history_enabled: true,
+            server: ServerConfig::default(),
         }
     }
 }
@@ -57,6 +74,26 @@ impl Default for Config {
 struct HistoryConfig {
     #[serde(default = "default_true")]
     enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct ServerConfigFile {
+    #[serde(default = "default_transport")]
+    transport: String,
+    socket_path: Option<String>,
+}
+
+impl Default for ServerConfigFile {
+    fn default() -> Self {
+        ServerConfigFile {
+            transport: "stdio".to_string(),
+            socket_path: None,
+        }
+    }
+}
+
+fn default_transport() -> String {
+    "stdio".to_string()
 }
 
 fn default_true() -> bool {
@@ -79,6 +116,8 @@ struct ConfigFile {
     aliases: BTreeMap<String, String>,
     #[serde(default)]
     history: Option<HistoryConfig>,
+    #[serde(default)]
+    server: Option<ServerConfigFile>,
 }
 
 fn default_date_format() -> String {
@@ -128,6 +167,12 @@ pub fn load_config(vault: &Path) -> Result<Config, ParcError> {
     }
     if let Some(history) = raw.history {
         config.history_enabled = history.enabled;
+    }
+    if let Some(server) = raw.server {
+        config.server = ServerConfig {
+            transport: server.transport,
+            socket_path: server.socket_path,
+        };
     }
 
     Ok(config)

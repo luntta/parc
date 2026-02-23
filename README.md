@@ -8,6 +8,7 @@ No accounts. No network. No sync service. Just files you own.
 
 ```bash
 cargo install --path parc-cli
+cargo install --path parc-server  # optional: standalone JSON-RPC server binary
 ```
 
 Requires Rust 1.70+. SQLite is bundled — no system dependencies.
@@ -208,6 +209,34 @@ parc vault               # Show active vault
 parc vault list          # List known vaults
 ```
 
+### JSON-RPC Server
+
+Run parc as a JSON-RPC 2.0 server for programmatic access from any language:
+
+```bash
+parc server                    # stdio transport (for child process / LSP-style)
+parc server --socket           # Unix domain socket (persistent server)
+parc server --socket-path /tmp/parc.sock
+```
+
+Or use the standalone binary:
+
+```bash
+parc-server --vault /path/to/.parc
+parc-server --vault /path/to/.parc --socket
+```
+
+Send newline-delimited JSON-RPC requests, receive responses:
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"fragment.create","params":{"type":"todo","title":"Test","priority":"high"}}' \
+  | parc server
+```
+
+20 methods covering the full core API: `fragment.{create,get,update,delete,list,search}`, `fragment.{link,unlink,backlinks}`, `fragment.{attach,detach,attachments}`, `vault.{info,reindex,doctor}`, `schema.{list,get}`, `tags.list`, `history.{list,get,restore}`.
+
+See [`docs/json-rpc.md`](docs/json-rpc.md) for the full method reference with examples and integration snippets for Node.js and Python.
+
 ### Maintenance
 
 ```bash
@@ -255,6 +284,9 @@ aliases:
   d: decision
   r: risk
   i: idea
+server:
+  transport: stdio      # stdio | socket
+  # socket_path: null   # defaults to <vault>/server.sock
 ```
 
 ## Collaboration
@@ -272,13 +304,13 @@ parc reindex
 
 ## Architecture
 
-Library-first: `parc-core` is a pure library crate with no terminal I/O. The CLI, a future JSON-RPC server, and a future GUI are thin consumers.
+Library-first: `parc-core` is a pure library crate with no terminal I/O. The CLI, JSON-RPC server, and a future GUI are thin consumers.
 
 ```
 parc/
 ├── parc-core/     # Library — no println!, no TTY, returns Result<T, ParcError>
 ├── parc-cli/      # CLI binary — terminal formatting, $EDITOR, clap
-├── parc-server/   # Planned: JSON-RPC server (stdio / Unix socket)
+├── parc-server/   # JSON-RPC 2.0 server (stdio / Unix socket)
 └── parc-gui/      # Planned: Tauri desktop app
 ```
 

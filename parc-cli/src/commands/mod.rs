@@ -16,6 +16,7 @@ pub mod new;
 pub mod reindex;
 pub mod schema;
 pub mod search;
+pub mod server;
 pub mod set;
 pub mod show;
 pub mod tags;

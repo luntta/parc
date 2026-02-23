@@ -294,6 +294,15 @@ enum Commands {
         #[command(subcommand)]
         subcommand: GitHooksCommands,
     },
+    /// Start JSON-RPC server
+    Server {
+        /// Use Unix domain socket instead of stdio
+        #[arg(long)]
+        socket: bool,
+        /// Custom socket path (implies --socket)
+        #[arg(long)]
+        socket_path: Option<String>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -423,6 +432,9 @@ fn main() -> anyhow::Result<()> {
                 Commands::GitHooks { subcommand } => match subcommand {
                     GitHooksCommands::Install => commands::git_hooks::run_install(&vault),
                 },
+                Commands::Server { socket, socket_path } => {
+                    commands::server::run(&vault, socket, socket_path)
+                }
                 Commands::Init { .. } | Commands::Vault { .. } | Commands::Completions { .. } => unreachable!(),
             }
         }
