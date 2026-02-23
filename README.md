@@ -9,9 +9,12 @@ No accounts. No network. No sync service. Just files you own.
 ```bash
 cargo install --path parc-cli
 cargo install --path parc-server  # optional: standalone JSON-RPC server binary
+
+# With WASM plugin support
+cargo install --path parc-cli --features wasm-plugins
 ```
 
-Requires Rust 1.70+. SQLite is bundled — no system dependencies.
+Requires Rust 1.70+. SQLite is bundled — no system dependencies. WASM plugins require the `wasm-plugins` feature (adds wasmtime).
 
 ## Quick start
 
@@ -237,6 +240,43 @@ echo '{"jsonrpc":"2.0","id":1,"method":"fragment.create","params":{"type":"todo"
 
 See [`docs/json-rpc.md`](docs/json-rpc.md) for the full method reference with examples and integration snippets for Node.js and Python.
 
+### Plugins
+
+Extend parc with WebAssembly plugins. Plugins are `.wasm` binaries with TOML manifests, installed into `<vault>/plugins/`. They can hook into fragment lifecycle events, add custom validation, provide custom rendering, and extend the CLI with new subcommands.
+
+```bash
+parc plugin list                              # List installed plugins
+parc plugin info <name>                       # Show plugin details
+parc plugin install <path> [--manifest file]  # Install a plugin
+parc plugin remove <name> [--force]           # Remove a plugin
+```
+
+Plugins use a capability-based sandbox — each plugin declares what it can do in its manifest:
+
+```toml
+[plugin]
+name = "my-plugin"
+version = "0.1.0"
+description = "Does something useful"
+wasm = "my-plugin.wasm"
+
+[capabilities]
+read_fragments = true
+write_fragments = false
+hooks = ["post-create", "pre-update"]
+validate = ["todo"]
+render = ["note"]
+extend_cli = ["my-command"]
+```
+
+Plugin commands become top-level subcommands:
+
+```bash
+parc my-command arg1 arg2   # Dispatched to the plugin
+```
+
+Requires the `wasm-plugins` feature. Plugins are compiled to `wasm32-unknown-unknown` and communicate with parc through a host API (`parc_host` namespace) for logging, reading/writing fragments, and producing output.
+
 ### Maintenance
 
 ```bash
@@ -287,6 +327,9 @@ aliases:
 server:
   transport: stdio      # stdio | socket
   # socket_path: null   # defaults to <vault>/server.sock
+plugins:                 # Per-plugin configuration (passed to plugin init)
+  my-plugin:
+    setting: value
 ```
 
 ## Collaboration
@@ -315,6 +358,8 @@ parc/
 ```
 
 Files are the source of truth. The SQLite index is derived and fully rebuildable from the Markdown files at any time with `parc reindex`.
+
+The WASM plugin system is gated behind the `wasm-plugins` cargo feature — default builds have zero wasmtime overhead. Plugin manifest types and `parc plugin list/info` work without the feature; only runtime loading and execution require it.
 
 ## License
 
