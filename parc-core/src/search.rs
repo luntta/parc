@@ -46,6 +46,13 @@ pub enum Filter {
     CreatedBy { value: String, negated: bool },
     Has(HasCondition),
     Linked(String),
+    Is(IsCondition),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsCondition {
+    Archived,
+    All,
 }
 
 #[derive(Debug, Default)]
@@ -90,7 +97,7 @@ pub struct SearchResult {
 // ── Parser ─────────────────────────────────────────────────────────────
 
 const FILTER_FIELDS: &[&str] = &[
-    "type", "status", "priority", "tag", "due", "created", "updated", "by", "has", "linked",
+    "type", "status", "priority", "tag", "due", "created", "updated", "by", "has", "linked", "is",
 ];
 
 /// Parse a DSL query string into a SearchQuery AST.
@@ -223,6 +230,11 @@ fn parse_filter(field: &str, value: &str) -> Result<Filter, ParcError> {
             _ => Err(ParcError::ParseError(format!("unknown has: condition '{}'", value))),
         },
         "linked" => Ok(Filter::Linked(value.to_string())),
+        "is" => match value {
+            "archived" => Ok(Filter::Is(IsCondition::Archived)),
+            "all" => Ok(Filter::Is(IsCondition::All)),
+            _ => Err(ParcError::ParseError(format!("unknown is: condition '{}'", value))),
+        },
         _ => Err(ParcError::ParseError(format!("unknown filter field '{}'", field))),
     }
 }
@@ -329,7 +341,7 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
     let mut param_idx: usize = 1;
     let mut needs_tag_group_by = false;
     let mut tag_count: usize = 0;
-    let mut has_attachments_post_filter = false;
+    let mut has_is_filter = false;
 
     let use_fts = !query.text_terms.is_empty();
 
@@ -456,7 +468,15 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
                 conditions.push("f.due IS NOT NULL".to_string());
             }
             Filter::Has(HasCondition::Attachments) => {
-                has_attachments_post_filter = true;
+                conditions.push("f.attachment_count > 0".to_string());
+            }
+            Filter::Is(IsCondition::Archived) => {
+                has_is_filter = true;
+                conditions.push("f.archived = 1".to_string());
+            }
+            Filter::Is(IsCondition::All) => {
+                has_is_filter = true;
+                // No filter — show everything including archived
             }
             Filter::Linked(id_prefix) => {
                 let prefix = id_prefix.to_uppercase();
@@ -470,6 +490,11 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
                 param_idx += 1;
             }
         }
+    }
+
+    // By default, exclude archived fragments unless is:archived or is:all is specified
+    if !has_is_filter {
+        conditions.push("f.archived = 0".to_string());
     }
 
     // Build full SQL
@@ -497,8 +522,6 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
     if let Some(limit) = query.limit {
         sql += &format!(" LIMIT {}", limit);
     }
-
-    let _ = has_attachments_post_filter; // TODO: implement post-filter for attachments in M5
 
     Ok(CompiledQuery { sql, params })
 }

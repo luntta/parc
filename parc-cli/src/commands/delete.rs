@@ -7,7 +7,7 @@ use parc_core::index;
 
 use crate::hooks::CliHookRunner;
 
-pub fn run(vault: &Path, id: &str) -> Result<()> {
+pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     let runner = CliHookRunner;
 
     // Read fragment before deleting so we can pass it to hooks
@@ -25,6 +25,14 @@ pub fn run(vault: &Path, id: &str) -> Result<()> {
     // Run post-delete hooks
     hook::run_post_hooks(&runner, vault, HookEvent::PostDelete, &fragment);
 
-    println!("Deleted {} (moved to trash)", &full_id[..8]);
+    if json {
+        let json_val = serde_json::json!({
+            "id": full_id,
+            "deleted": true,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_val)?);
+    } else {
+        println!("Deleted {} (moved to trash)", &full_id[..8]);
+    }
     Ok(())
 }

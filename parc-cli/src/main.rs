@@ -53,6 +53,9 @@ enum Commands {
         /// Assignee
         #[arg(long)]
         assignee: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// List fragments
     List {
@@ -83,6 +86,9 @@ enum Commands {
     Edit {
         /// Fragment ID or prefix
         id: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Set a metadata field on a fragment
     Set {
@@ -92,10 +98,13 @@ enum Commands {
         field: String,
         /// New value
         value: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Search fragments (supports DSL: type:todo status:open #tag "phrase")
     Search {
-        /// Search query (DSL: type:, status:, priority:, tag:/#, due:, created:, updated:, by:, has:, linked:)
+        /// Search query (DSL: type:, status:, priority:, tag:/#, due:, created:, updated:, by:, has:, linked:, is:)
         query: Vec<String>,
         /// Output as JSON
         #[arg(long)]
@@ -111,6 +120,9 @@ enum Commands {
     Delete {
         /// Fragment ID or prefix
         id: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Create a bidirectional link between two fragments
     Link {
@@ -118,6 +130,9 @@ enum Commands {
         id_a: String,
         /// Second fragment ID or prefix
         id_b: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Remove a bidirectional link between two fragments
     Unlink {
@@ -125,6 +140,9 @@ enum Commands {
         id_a: String,
         /// Second fragment ID or prefix
         id_b: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// List all fragments linking to a given fragment
     Backlinks {
@@ -153,6 +171,9 @@ enum Commands {
         /// Restore a previous version
         #[arg(long)]
         restore: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Attach a file to a fragment
     Attach {
@@ -163,6 +184,9 @@ enum Commands {
         /// Move the file instead of copying
         #[arg(long = "mv")]
         mv: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Remove an attachment from a fragment
     Detach {
@@ -170,11 +194,17 @@ enum Commands {
         id: String,
         /// Filename of the attachment to remove
         filename: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// List attachments for a fragment
     Attachments {
         /// Fragment ID or prefix
         id: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Manage schemas
     Schema {
@@ -187,9 +217,17 @@ enum Commands {
         shell: String,
     },
     /// Rebuild the search index from fragment files
-    Reindex,
+    Reindex {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// List registered fragment types
-    Types,
+    Types {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show active vault info, or manage vaults
     Vault {
         #[command(subcommand)]
@@ -197,6 +235,64 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+    /// List all tags with usage counts
+    Tags {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Archive a fragment (exclude from default listing)
+    Archive {
+        /// Fragment ID or prefix
+        id: String,
+        /// Unarchive instead
+        #[arg(long)]
+        undo: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// View and manage trashed fragments
+    Trash {
+        /// Permanently delete trashed fragment(s)
+        #[arg(long)]
+        purge: bool,
+        /// Fragment ID for --purge or --restore
+        id: Option<String>,
+        /// Restore a trashed fragment
+        #[arg(long)]
+        restore: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Export fragments to JSON, CSV, or HTML
+    Export {
+        /// Output format (json, csv, html)
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Output file or directory (default: stdout)
+        #[arg(long)]
+        output: Option<String>,
+        /// Optional search query to filter fragments
+        query: Vec<String>,
+    },
+    /// Import fragments from a JSON file
+    Import {
+        /// Path to JSON file
+        file: String,
+        /// Validate without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manage git hooks
+    GitHooks {
+        #[command(subcommand)]
+        subcommand: GitHooksCommands,
     },
 }
 
@@ -219,6 +315,12 @@ enum VaultCommands {
     },
 }
 
+#[derive(clap::Subcommand)]
+enum GitHooksCommands {
+    /// Install post-merge hook for automatic reindex
+    Install,
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -231,7 +333,6 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Completions { shell } => commands::completions::run(&shell),
         Commands::Vault { subcommand, json } => {
-            // Vault command can work even with resolve_vault
             let vault = resolve_vault(cli.vault.as_deref())?;
             commands::vault::run(&vault, subcommand.map(|s| match s {
                 VaultCommands::List { json } => commands::vault::VaultSubcommand::List { json },
@@ -251,6 +352,7 @@ fn main() -> anyhow::Result<()> {
                     priority,
                     status,
                     assignee,
+                    json,
                 } => commands::new::run(
                     &vault,
                     &type_name,
@@ -261,6 +363,7 @@ fn main() -> anyhow::Result<()> {
                     priority,
                     status,
                     assignee,
+                    json,
                 ),
                 Commands::List {
                     type_name,
@@ -270,17 +373,17 @@ fn main() -> anyhow::Result<()> {
                     limit,
                 } => commands::list::run(&vault, type_name, status, tag, json, limit),
                 Commands::Show { id, json } => commands::show::run(&vault, &id, json),
-                Commands::Edit { id } => commands::edit::run(&vault, &id),
-                Commands::Set { id, field, value } => commands::set::run(&vault, &id, &field, &value),
+                Commands::Edit { id, json } => commands::edit::run(&vault, &id, json),
+                Commands::Set { id, field, value, json } => commands::set::run(&vault, &id, &field, &value, json),
                 Commands::Search {
                     query,
                     json,
                     sort,
                     limit,
                 } => commands::search::run(&vault, query, json, sort, limit),
-                Commands::Delete { id } => commands::delete::run(&vault, &id),
-                Commands::Link { id_a, id_b } => commands::link::run(&vault, &id_a, &id_b),
-                Commands::Unlink { id_a, id_b } => commands::unlink::run(&vault, &id_a, &id_b),
+                Commands::Delete { id, json } => commands::delete::run(&vault, &id, json),
+                Commands::Link { id_a, id_b, json } => commands::link::run(&vault, &id_a, &id_b, json),
+                Commands::Unlink { id_a, id_b, json } => commands::unlink::run(&vault, &id_a, &id_b, json),
                 Commands::Backlinks { id, json } => commands::backlinks::run(&vault, &id, json),
                 Commands::Doctor { json } => commands::doctor::run(&vault, json),
                 Commands::History {
@@ -288,23 +391,38 @@ fn main() -> anyhow::Result<()> {
                     show,
                     diff,
                     restore,
+                    json,
                 } => {
                     let is_diff = diff.is_some();
                     let diff_ts = diff.filter(|s| !s.is_empty());
-                    commands::history::run(&vault, &id, show, is_diff, diff_ts, restore)
+                    commands::history::run(&vault, &id, show, is_diff, diff_ts, restore, json)
                 }
-                Commands::Attach { id, file, mv } => {
-                    commands::attach::run_attach(&vault, &id, &file, mv)
+                Commands::Attach { id, file, mv, json } => {
+                    commands::attach::run_attach(&vault, &id, &file, mv, json)
                 }
-                Commands::Detach { id, filename } => {
-                    commands::attach::run_detach(&vault, &id, &filename)
+                Commands::Detach { id, filename, json } => {
+                    commands::attach::run_detach(&vault, &id, &filename, json)
                 }
-                Commands::Attachments { id } => commands::attach::run_attachments(&vault, &id),
+                Commands::Attachments { id, json } => commands::attach::run_attachments(&vault, &id, json),
                 Commands::Schema { subcommand } => match subcommand {
                     SchemaCommands::Add { path } => commands::schema::run_add(&vault, &path),
                 },
-                Commands::Reindex => commands::reindex::run(&vault),
-                Commands::Types => commands::types::run(&vault),
+                Commands::Reindex { json } => commands::reindex::run(&vault, json),
+                Commands::Types { json } => commands::types::run(&vault, json),
+                Commands::Tags { json } => commands::tags::run(&vault, json),
+                Commands::Archive { id, undo, json } => commands::archive::run(&vault, &id, undo, json),
+                Commands::Trash { purge, id, restore, json } => {
+                    commands::trash::run(&vault, purge, id, restore, json)
+                }
+                Commands::Export { format, output, query } => {
+                    commands::export::run(&vault, &format, output.as_deref(), query)
+                }
+                Commands::Import { file, dry_run, json } => {
+                    commands::import::run(&vault, &file, dry_run, json)
+                }
+                Commands::GitHooks { subcommand } => match subcommand {
+                    GitHooksCommands::Install => commands::git_hooks::run_install(&vault),
+                },
                 Commands::Init { .. } | Commands::Vault { .. } | Commands::Completions { .. } => unreachable!(),
             }
         }

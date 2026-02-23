@@ -10,7 +10,7 @@ use parc_core::schema::load_schemas;
 
 use crate::hooks::CliHookRunner;
 
-pub fn run(vault: &Path, id: &str) -> Result<()> {
+pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     let config = load_config(vault)?;
     let schemas = load_schemas(vault)?;
     let original = read_fragment(vault, id)?;
@@ -74,7 +74,12 @@ pub fn run(vault: &Path, id: &str) -> Result<()> {
                             hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
 
                             let _ = std::fs::remove_file(&tmp_path);
-                            println!("Updated {}", frag.id);
+                            if json {
+                                let json_val = serde_json::json!({"id": frag.id, "updated": true});
+                                println!("{}", serde_json::to_string_pretty(&json_val)?);
+                            } else {
+                                println!("Updated {}", frag.id);
+                            }
                             return Ok(());
                         }
                         Err(e) => {

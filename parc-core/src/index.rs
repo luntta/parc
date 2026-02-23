@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS fragments (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     body        TEXT NOT NULL,
-    extra_json  TEXT
+    extra_json  TEXT,
+    attachment_count INTEGER NOT NULL DEFAULT 0,
+    archived    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS fragment_tags (
@@ -72,10 +74,16 @@ pub fn index_fragment(
 ) -> Result<(), ParcError> {
     let extra_json = serde_json::to_string(&fragment.extra_fields)?;
 
+    let archived = fragment
+        .extra_fields
+        .get("archived")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     // Upsert into fragments table
     conn.execute(
-        "INSERT OR REPLACE INTO fragments (id, type, title, status, priority, due, assignee, created_by, created_at, updated_at, body, extra_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT OR REPLACE INTO fragments (id, type, title, status, priority, due, assignee, created_by, created_at, updated_at, body, extra_json, attachment_count, archived)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             fragment.id,
             fragment.fragment_type,
@@ -89,6 +97,8 @@ pub fn index_fragment(
             fragment.updated_at.to_rfc3339(),
             fragment.body,
             extra_json,
+            fragment.attachments.len() as i64,
+            archived as i32,
         ],
     )?;
 

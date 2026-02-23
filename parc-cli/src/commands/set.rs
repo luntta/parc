@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::hooks::CliHookRunner;
 
-pub fn run(vault: &Path, id: &str, field: &str, value: &str) -> Result<()> {
+pub fn run(vault: &Path, id: &str, field: &str, value: &str, json: bool) -> Result<()> {
     let schemas = load_schemas(vault)?;
     let mut fragment = read_fragment(vault, id)?;
 
@@ -68,6 +68,16 @@ pub fn run(vault: &Path, id: &str, field: &str, value: &str) -> Result<()> {
 
     hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &fragment);
 
-    println!("Updated {} field '{}' to '{}'", &fragment.id[..8], field, value);
+    if json {
+        let json_val = serde_json::json!({
+            "id": fragment.id,
+            "field": field,
+            "value": value,
+            "updated": true,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_val)?);
+    } else {
+        println!("Updated {} field '{}' to '{}'", &fragment.id[..8], field, value);
+    }
     Ok(())
 }

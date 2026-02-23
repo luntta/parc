@@ -5,7 +5,7 @@ use chrono::Utc;
 use parc_core::fragment::{read_fragment, write_fragment};
 use parc_core::index;
 
-pub fn run(vault: &Path, id_a: &str, id_b: &str) -> Result<()> {
+pub fn run(vault: &Path, id_a: &str, id_b: &str, json: bool) -> Result<()> {
     let mut frag_a = read_fragment(vault, id_a)?;
     let mut frag_b = read_fragment(vault, id_b)?;
 
@@ -37,10 +37,19 @@ pub fn run(vault: &Path, id_a: &str, id_b: &str) -> Result<()> {
     index::index_fragment_auto(&conn, &frag_a, vault)?;
     index::index_fragment_auto(&conn, &frag_b, vault)?;
 
-    println!(
-        "Linked {} \u{2194} {}",
-        &frag_a.id[..8],
-        &frag_b.id[..8]
-    );
+    if json {
+        let json_val = serde_json::json!({
+            "id_a": frag_a.id,
+            "id_b": frag_b.id,
+            "linked": true,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_val)?);
+    } else {
+        println!(
+            "Linked {} \u{2194} {}",
+            &frag_a.id[..8],
+            &frag_b.id[..8]
+        );
+    }
     Ok(())
 }

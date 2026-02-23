@@ -12,6 +12,7 @@ pub fn run(
     diff: bool,
     diff_timestamp: Option<String>,
     restore: Option<String>,
+    json: bool,
 ) -> Result<()> {
     let full_id = fragment::resolve_id(vault, id)?;
 
@@ -22,23 +23,41 @@ pub fn run(
         let conn = index::open_index(vault)?;
         index::index_fragment_auto(&conn, &restored, vault)?;
 
-        println!(
-            "Restored {} to version {}",
-            &full_id[..8.min(full_id.len())],
-            timestamp
-        );
+        if json {
+            let json_val = serde_json::json!({
+                "id": full_id,
+                "restored_version": timestamp,
+            });
+            println!("{}", serde_json::to_string_pretty(&json_val)?);
+        } else {
+            println!(
+                "Restored {} to version {}",
+                &full_id[..8.min(full_id.len())],
+                timestamp
+            );
+        }
         return Ok(());
     }
 
     if let Some(timestamp) = show {
         let version = history::read_version(vault, &full_id, &timestamp)?;
-        let skin = termimad::MadSkin::default();
 
-        println!("--- Version {} ---", timestamp);
-        println!("Title: {}", version.title);
-        println!();
-        if !version.body.is_empty() {
-            skin.print_text(&version.body);
+        if json {
+            let json_val = serde_json::json!({
+                "id": full_id,
+                "version": timestamp,
+                "title": version.title,
+                "body": version.body,
+            });
+            println!("{}", serde_json::to_string_pretty(&json_val)?);
+        } else {
+            let skin = termimad::MadSkin::default();
+            println!("--- Version {} ---", timestamp);
+            println!("Title: {}", version.title);
+            println!();
+            if !version.body.is_empty() {
+                skin.print_text(&version.body);
+            }
         }
         return Ok(());
     }
@@ -46,7 +65,14 @@ pub fn run(
     if diff {
         let diff_output =
             history::diff_versions(vault, &full_id, diff_timestamp.as_deref())?;
-        if diff_output.is_empty() {
+
+        if json {
+            let json_val = serde_json::json!({
+                "id": full_id,
+                "diff": diff_output,
+            });
+            println!("{}", serde_json::to_string_pretty(&json_val)?);
+        } else if diff_output.is_empty() {
             println!("No differences.");
         } else {
             // Print with color
@@ -67,6 +93,24 @@ pub fn run(
 
     // Default: list versions
     let versions = history::list_versions(vault, &full_id)?;
+
+    if json {
+        let json_val: Vec<serde_json::Value> = versions
+            .iter()
+            .map(|v| {
+                serde_json::json!({
+                    "timestamp": v.timestamp,
+                    "size": v.size,
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "id": full_id,
+            "versions": json_val,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
 
     if versions.is_empty() {
         println!(

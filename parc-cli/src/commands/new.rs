@@ -21,6 +21,7 @@ pub fn run(
     priority: Option<String>,
     status: Option<String>,
     assignee: Option<String>,
+    json: bool,
 ) -> Result<()> {
     let config = load_config(vault)?;
     let schemas = load_schemas(vault)?;
@@ -83,7 +84,7 @@ pub fn run(
         // Run pre-create hooks
         let fragment = hook::run_pre_hooks(&runner, vault, HookEvent::PreCreate, &fragment)?;
 
-        let id = fragment::create_fragment(vault, &fragment)?;
+        fragment::create_fragment(vault, &fragment)?;
 
         // Index
         let conn = index::open_index(vault)?;
@@ -92,7 +93,7 @@ pub fn run(
         // Run post-create hooks
         hook::run_post_hooks(&runner, vault, HookEvent::PostCreate, &fragment);
 
-        println!("{}", id);
+        print_result(&fragment, json)?;
     } else {
         // Skip editor — create directly
         validate_fragment(&fragment, schema)?;
@@ -100,7 +101,7 @@ pub fn run(
         // Run pre-create hooks
         let fragment = hook::run_pre_hooks(&runner, vault, HookEvent::PreCreate, &fragment)?;
 
-        let id = fragment::create_fragment(vault, &fragment)?;
+        fragment::create_fragment(vault, &fragment)?;
 
         let conn = index::open_index(vault)?;
         index::index_fragment_auto(&conn, &fragment, vault)?;
@@ -108,7 +109,7 @@ pub fn run(
         // Run post-create hooks
         hook::run_post_hooks(&runner, vault, HookEvent::PostCreate, &fragment);
 
-        println!("{}", id);
+        print_result(&fragment, json)?;
     }
 
     Ok(())
@@ -207,4 +208,18 @@ fn run_editor_loop(
             }
         }
     }
+}
+
+fn print_result(fragment: &fragment::Fragment, json: bool) -> Result<()> {
+    if json {
+        let json_val = serde_json::json!({
+            "id": fragment.id,
+            "type": fragment.fragment_type,
+            "title": fragment.title,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_val)?);
+    } else {
+        println!("{}", fragment.id);
+    }
+    Ok(())
 }

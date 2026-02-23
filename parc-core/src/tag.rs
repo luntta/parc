@@ -1,3 +1,5 @@
+use crate::error::ParcError;
+
 use comrak::nodes::NodeValue;
 use comrak::{parse_document, Arena, Options};
 use regex::Regex;
@@ -74,6 +76,33 @@ pub fn merge_tags(frontmatter_tags: &[String], inline_tags: &[String]) -> Vec<St
     }
 
     result
+}
+
+#[derive(Debug, Clone)]
+pub struct TagCount {
+    pub tag: String,
+    pub count: usize,
+}
+
+/// Aggregate all tags with their usage counts from the index.
+pub fn aggregate_tags(conn: &rusqlite::Connection) -> Result<Vec<TagCount>, ParcError> {
+    let mut stmt = conn.prepare(
+        "SELECT ft.tag, COUNT(*) as cnt FROM fragment_tags ft \
+         JOIN fragments f ON f.id = ft.fragment_id \
+         WHERE f.archived = 0 \
+         GROUP BY ft.tag ORDER BY cnt DESC, ft.tag ASC",
+    )?;
+
+    let results = stmt
+        .query_map([], |row| {
+            Ok(TagCount {
+                tag: row.get(0)?,
+                count: row.get::<_, i64>(1)? as usize,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(results)
 }
 
 #[cfg(test)]

@@ -1719,3 +1719,620 @@ fn test_attachments_roundtrip_in_frontmatter() {
     assert!(content.contains("attachments:"));
     assert!(content.contains("  - doc.pdf"));
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// M6: Quality of Life
+// ═══════════════════════════════════════════════════════════════════════
+
+// --- Tags ---
+
+fn create_fragment_with_tags(dir: &TempDir, title: &str, tags: &[&str]) -> String {
+    let vault_path = dir.path().join(".parc");
+    let config = parc_core::config::load_config(&vault_path).unwrap();
+    let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
+    let schema = schemas.resolve("note").unwrap();
+
+    let mut fragment = parc_core::fragment::new_fragment("note", title, schema, &config);
+    fragment.tags = tags.iter().map(|s| s.to_string()).collect();
+
+    let id = parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
+
+    let conn = parc_core::index::open_index(&vault_path).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
+
+    id
+}
+
+#[test]
+fn test_tags_aggregation() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_with_tags(&tmp, "Note 1", &["alpha", "beta"]);
+    create_fragment_with_tags(&tmp, "Note 2", &["alpha", "gamma"]);
+    create_fragment_with_tags(&tmp, "Note 3", &["alpha"]);
+
+    parc()
+        .args(["tags"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alpha"))
+        .stdout(predicate::str::contains("beta"))
+        .stdout(predicate::str::contains("gamma"));
+}
+
+#[test]
+fn test_tags_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_with_tags(&tmp, "Note 1", &["rust", "cli"]);
+
+    let output = parc()
+        .args(["tags", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arr = json.as_array().unwrap();
+    assert!(arr.len() >= 2);
+    assert!(arr.iter().any(|v| v["tag"] == "rust"));
+    assert!(arr.iter().any(|v| v["tag"] == "cli"));
+}
+
+// --- Archive ---
+
+#[test]
+fn test_archive_and_unarchive() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Archive me", "Body");
+
+    // Archive
+    parc()
+        .args(["archive", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Archived"));
+
+    // Should not appear in default list
+    parc()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Archive me").not());
+
+    // Should appear with is:archived search
+    parc()
+        .args(["search", "is:archived"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Archive me"));
+
+    // Unarchive
+    parc()
+        .args(["archive", &id[..8], "--undo"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unarchived"));
+
+    // Should appear again in default list
+    parc()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Archive me"));
+}
+
+#[test]
+fn test_archive_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Archive JSON", "Body");
+
+    let output = parc()
+        .args(["archive", &id[..8], "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["archived"], true);
+}
+
+// --- Trash ---
+
+#[test]
+fn test_trash_list_and_restore() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Trash me", "Body");
+
+    parc()
+        .args(["delete", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Should appear in trash
+    parc()
+        .args(["trash"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Trash me"));
+
+    // Restore
+    parc()
+        .args(["trash", "--restore", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Restored"));
+
+    // Should appear in list again
+    parc()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Trash me"));
+}
+
+#[test]
+fn test_trash_purge() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Purge me", "Body");
+
+    parc()
+        .args(["delete", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    parc()
+        .args(["trash", "--purge"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Purged"));
+
+    // Trash should be empty now
+    parc()
+        .args(["trash"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Trash is empty"));
+}
+
+#[test]
+fn test_trash_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Trash JSON", "Body");
+
+    parc()
+        .args(["delete", &id[..8]])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = parc()
+        .args(["trash", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["title"], "Trash JSON");
+}
+
+// --- Export / Import ---
+
+#[test]
+fn test_export_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Export test 1", "Body one");
+    create_fragment_directly(&tmp, "note", "Export test 2", "Body two");
+
+    let output = parc()
+        .args(["export", "--format", "json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+}
+
+#[test]
+fn test_export_csv() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "CSV test", "Body");
+
+    let output = parc()
+        .args(["export", "--format", "csv"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.starts_with("id,type,title,"));
+    assert!(stdout.contains("CSV test"));
+}
+
+#[test]
+fn test_export_html() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "HTML test", "Body");
+
+    let out_dir = tmp.path().join("html-export");
+    parc()
+        .args([
+            "export",
+            "--format",
+            "html",
+            "--output",
+            out_dir.to_str().unwrap(),
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported"));
+
+    assert!(out_dir.join("index.html").exists());
+}
+
+#[test]
+fn test_export_to_file() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "File export", "Body");
+
+    let out_file = tmp.path().join("export.json");
+    parc()
+        .args([
+            "export",
+            "--format",
+            "json",
+            "--output",
+            out_file.to_str().unwrap(),
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(json.as_array().unwrap().len() >= 1);
+}
+
+#[test]
+fn test_import_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Pre-existing", "Body");
+
+    // Export first
+    let out_file = tmp.path().join("export.json");
+    parc()
+        .args([
+            "export",
+            "--format",
+            "json",
+            "--output",
+            out_file.to_str().unwrap(),
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Create a fresh vault and import
+    let tmp2 = TempDir::new().unwrap();
+    init_vault(&tmp2);
+
+    parc()
+        .args(["import", out_file.to_str().unwrap()])
+        .current_dir(tmp2.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 created"));
+
+    // Verify imported fragment exists
+    parc()
+        .args(["list"])
+        .current_dir(tmp2.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pre-existing"));
+}
+
+#[test]
+fn test_import_dry_run() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Dry run test", "Body");
+
+    let out_file = tmp.path().join("export.json");
+    parc()
+        .args([
+            "export",
+            "--format",
+            "json",
+            "--output",
+            out_file.to_str().unwrap(),
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let tmp2 = TempDir::new().unwrap();
+    init_vault(&tmp2);
+
+    parc()
+        .args(["import", out_file.to_str().unwrap(), "--dry-run"])
+        .current_dir(tmp2.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[dry-run]"));
+
+    // Verify nothing was actually imported
+    parc()
+        .args(["list"])
+        .current_dir(tmp2.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No fragments found"));
+}
+
+// --- Git hooks ---
+
+#[test]
+fn test_git_hooks_install() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    // Init a git repo
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    parc()
+        .args(["git-hooks", "install"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Installed post-merge hook"));
+
+    let hook_path = tmp.path().join(".git/hooks/post-merge");
+    assert!(hook_path.exists());
+    let content = std::fs::read_to_string(&hook_path).unwrap();
+    assert!(content.contains("parc reindex"));
+}
+
+#[test]
+fn test_git_hooks_install_idempotent() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    // Install twice
+    parc()
+        .args(["git-hooks", "install"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    parc()
+        .args(["git-hooks", "install"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already contains"));
+}
+
+// --- --json on various commands ---
+
+#[test]
+fn test_delete_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Delete JSON", "Body");
+
+    let output = parc()
+        .args(["delete", &id[..8], "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["deleted"], true);
+}
+
+#[test]
+fn test_set_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Set JSON", "Body");
+
+    let output = parc()
+        .args(["set", &id[..8], "title", "New Title", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["updated"], true);
+    assert_eq!(json["field"], "title");
+}
+
+#[test]
+fn test_types_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let output = parc()
+        .args(["types", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arr = json.as_array().unwrap();
+    assert!(arr.len() >= 5); // 5 built-in types
+    assert!(arr.iter().any(|v| v["name"] == "todo"));
+}
+
+#[test]
+fn test_reindex_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Reindex JSON", "Body");
+
+    let output = parc()
+        .args(["reindex", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["fragments_indexed"], 1);
+}
+
+#[test]
+fn test_history_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "History JSON", "Body v1");
+
+    // Make a change
+    parc()
+        .args(["set", &id[..8], "title", "History JSON v2"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let output = parc()
+        .args(["history", &id[..8], "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["versions"].as_array().unwrap().len() >= 1);
+}
+
+// --- has:attachments search ---
+
+#[test]
+fn test_search_has_attachments() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id_with = create_fragment_directly(&tmp, "note", "With attachment", "Body");
+    let _id_without = create_fragment_directly(&tmp, "note", "Without attachment", "Body");
+
+    // Attach a file (use full ID to avoid ambiguity)
+    let test_file = tmp.path().join("test.txt");
+    std::fs::write(&test_file, "test data").unwrap();
+    parc()
+        .args(["attach", &id_with, test_file.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // Search with has:attachments
+    parc()
+        .args(["search", "has:attachments"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("With attachment"))
+        .stdout(predicate::str::contains("Without attachment").not());
+}
+
+// --- is:all search ---
+
+#[test]
+fn test_search_is_all() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Archived note", "Body");
+    create_fragment_directly(&tmp, "note", "Active note", "Body");
+
+    // Archive one (use full ID to avoid ambiguity)
+    parc()
+        .args(["archive", &id])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // is:all should show both
+    parc()
+        .args(["search", "is:all"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Archived note"))
+        .stdout(predicate::str::contains("Active note"));
+}
+
+// --- Export with filter ---
+
+#[test]
+fn test_export_with_filter() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_with_tags(&tmp, "Tagged note", &["special"]);
+    create_fragment_directly(&tmp, "note", "Untagged note", "Body");
+
+    let output = parc()
+        .args(["export", "--format", "json", "tag:special"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["title"], "Tagged note");
+}
