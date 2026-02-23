@@ -9,6 +9,7 @@ use parc_core::vault::resolve_vault;
 
 #[derive(Parser)]
 #[command(name = "parc", about = "Personal Archive — structured fragments of thought")]
+#[command(allow_external_subcommands = true)]
 struct Cli {
     /// Path to vault (overrides PARC_VAULT and vault discovery)
     #[arg(global = true, long)]
@@ -303,6 +304,14 @@ enum Commands {
         #[arg(long)]
         socket_path: Option<String>,
     },
+    /// Manage plugins
+    Plugin {
+        #[command(subcommand)]
+        subcommand: PluginCommands,
+    },
+    /// External subcommand (dispatched to plugins)
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 #[derive(clap::Subcommand)]
@@ -328,6 +337,40 @@ enum VaultCommands {
 enum GitHooksCommands {
     /// Install post-merge hook for automatic reindex
     Install,
+}
+
+#[derive(clap::Subcommand)]
+enum PluginCommands {
+    /// List installed plugins
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show details about a plugin
+    Info {
+        /// Plugin name
+        name: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a plugin from a .wasm file
+    Install {
+        /// Path to .wasm file
+        path: String,
+        /// Path to manifest .toml file
+        #[arg(long)]
+        manifest: Option<String>,
+    },
+    /// Remove an installed plugin
+    Remove {
+        /// Plugin name
+        name: String,
+        /// Skip confirmation
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -435,8 +478,57 @@ fn main() -> anyhow::Result<()> {
                 Commands::Server { socket, socket_path } => {
                     commands::server::run(&vault, socket, socket_path)
                 }
+                Commands::Plugin { subcommand } => match subcommand {
+                    PluginCommands::List { json } => commands::plugin::run_list(&vault, json),
+                    PluginCommands::Info { name, json } => {
+                        commands::plugin::run_info(&vault, &name, json)
+                    }
+                    PluginCommands::Install { path, manifest } => {
+                        commands::plugin::run_install(&vault, &path, manifest.as_deref())
+                    }
+                    PluginCommands::Remove { name, force } => {
+                        commands::plugin::run_remove(&vault, &name, force)
+                    }
+                },
+                Commands::External(args) => {
+                    run_external_command(&vault, args)
+                }
                 Commands::Init { .. } | Commands::Vault { .. } | Commands::Completions { .. } => unreachable!(),
             }
         }
     }
+}
+
+fn run_external_command(vault: &std::path::Path, args: Vec<String>) -> anyhow::Result<()> {
+    if args.is_empty() {
+        anyhow::bail!("unknown command");
+    }
+
+    let cmd_name = &args[0];
+
+    // Try to dispatch to a plugin
+    #[cfg(feature = "wasm-plugins")]
+    {
+        let cmd_args: Vec<String> = args[1..].to_vec();
+        let config = parc_core::config::load_config(vault)?;
+        let mut manager = parc_core::plugin::manager::PluginManager::load_all(vault, &config)?;
+        let commands = manager.list_commands();
+
+        for pc in &commands {
+            if pc.command == *cmd_name {
+                let output = manager.execute_command(&pc.plugin_name, cmd_name, &cmd_args)?;
+                if !output.is_empty() {
+                    print!("{}", output);
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    #[cfg(not(feature = "wasm-plugins"))]
+    {
+        let _ = vault;
+    }
+
+    anyhow::bail!("unknown command: {}", cmd_name)
 }

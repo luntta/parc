@@ -10,6 +10,7 @@ pub mod hook;
 pub mod import;
 pub mod index;
 pub mod link;
+pub mod plugin;
 pub mod schema;
 pub mod search;
 pub mod tag;

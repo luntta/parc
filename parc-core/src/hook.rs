@@ -117,6 +117,38 @@ pub fn run_post_hooks(
     }
 }
 
+/// Run pre-hooks (Tier 1 scripts + Tier 2 WASM plugins).
+/// First runs Tier 1 hook scripts, then dispatches to WASM plugins.
+#[cfg(feature = "wasm-plugins")]
+pub fn run_pre_hooks_with_plugins(
+    runner: &dyn HookRunner,
+    vault: &Path,
+    event: HookEvent,
+    fragment: &Fragment,
+    plugins: &mut crate::plugin::manager::PluginManager,
+) -> Result<Fragment, ParcError> {
+    // Tier 1: script hooks
+    let current = run_pre_hooks(runner, vault, event, fragment)?;
+    // Tier 2: WASM plugins
+    let current = plugins.dispatch_pre_event(event, &current)?;
+    Ok(current)
+}
+
+/// Run post-hooks (Tier 1 scripts + Tier 2 WASM plugins).
+#[cfg(feature = "wasm-plugins")]
+pub fn run_post_hooks_with_plugins(
+    runner: &dyn HookRunner,
+    vault: &Path,
+    event: HookEvent,
+    fragment: &Fragment,
+    plugins: &mut crate::plugin::manager::PluginManager,
+) {
+    // Tier 1: script hooks
+    run_post_hooks(runner, vault, event, fragment);
+    // Tier 2: WASM plugins
+    plugins.dispatch_post_event(event, fragment);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

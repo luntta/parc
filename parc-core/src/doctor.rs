@@ -30,6 +30,10 @@ pub enum DoctorFinding {
     VaultSizeWarning {
         total_bytes: u64,
     },
+    PluginIssue {
+        plugin_name: String,
+        detail: String,
+    },
 }
 
 #[derive(Debug)]
@@ -258,6 +262,37 @@ fn dir_size(path: &Path) -> u64 {
     total
 }
 
+/// Check plugin manifests for issues.
+pub fn check_plugins(vault: &Path) -> Vec<DoctorFinding> {
+    let mut findings = Vec::new();
+
+    let discovered = match crate::plugin::discover_plugins(vault) {
+        Ok(d) => d,
+        Err(_) => return findings,
+    };
+
+    for disc in &discovered {
+        // Check manifest validity
+        if let Err(e) = crate::plugin::validate_manifest(&disc.manifest, vault) {
+            findings.push(DoctorFinding::PluginIssue {
+                plugin_name: disc.manifest.plugin.name.clone(),
+                detail: e.to_string(),
+            });
+            continue;
+        }
+
+        // Check wasm file exists
+        if !disc.wasm_path.exists() {
+            findings.push(DoctorFinding::PluginIssue {
+                plugin_name: disc.manifest.plugin.name.clone(),
+                detail: format!("wasm file not found: {}", disc.wasm_path.display()),
+            });
+        }
+    }
+
+    findings
+}
+
 /// Run all checks and return a combined report.
 pub fn run_doctor(vault: &Path) -> Result<DoctorReport, ParcError> {
     let all_ids = fragment::list_fragment_ids(vault)?;
@@ -282,6 +317,7 @@ pub fn run_doctor(vault: &Path) -> Result<DoctorReport, ParcError> {
     findings.extend(check_orphans(&fragments, &all_ids));
     findings.extend(check_attachments(vault, &fragments));
     findings.extend(check_vault_size(vault));
+    findings.extend(check_plugins(vault));
 
     Ok(DoctorReport {
         findings,

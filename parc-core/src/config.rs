@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -30,6 +30,7 @@ pub struct Config {
     pub aliases: BTreeMap<String, String>,
     pub history_enabled: bool,
     pub server: ServerConfig,
+    pub plugins: HashMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +67,7 @@ impl Default for Config {
             aliases,
             history_enabled: true,
             server: ServerConfig::default(),
+            plugins: HashMap::new(),
         }
     }
 }
@@ -118,6 +120,8 @@ struct ConfigFile {
     history: Option<HistoryConfig>,
     #[serde(default)]
     server: Option<ServerConfigFile>,
+    #[serde(default)]
+    plugins: HashMap<String, serde_yaml::Value>,
 }
 
 fn default_date_format() -> String {
@@ -174,6 +178,7 @@ pub fn load_config(vault: &Path) -> Result<Config, ParcError> {
             socket_path: server.socket_path,
         };
     }
+    config.plugins = raw.plugins;
 
     Ok(config)
 }

@@ -13,6 +13,7 @@ pub mod init;
 pub mod link;
 pub mod list;
 pub mod new;
+pub mod plugin;
 pub mod reindex;
 pub mod schema;
 pub mod search;

@@ -37,4 +37,7 @@ pub enum ParcError {
 
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+
+    #[error("plugin error: {0}")]
+    PluginError(String),
 }

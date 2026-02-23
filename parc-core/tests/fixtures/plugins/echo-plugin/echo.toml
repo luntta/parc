@@ -1,0 +1,11 @@
+[plugin]
+name = "echo"
+version = "0.1.0"
+description = "Echo plugin for testing"
+wasm = "echo.wasm"
+
+[capabilities]
+read_fragments = true
+write_fragments = false
+extend_cli = ["echo"]
+hooks = ["post-create", "post-update"]

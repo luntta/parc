@@ -67,6 +67,11 @@ pub fn doctor(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
                 "type": "vault_size_warning",
                 "total_bytes": total_bytes,
             }),
+            doctor::DoctorFinding::PluginIssue { plugin_name, detail } => serde_json::json!({
+                "type": "plugin_issue",
+                "plugin_name": plugin_name,
+                "detail": detail,
+            }),
         })
         .collect();
 

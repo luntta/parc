@@ -46,6 +46,11 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     "type": "vault_size_warning",
                     "total_bytes": total_bytes,
                 }),
+                DoctorFinding::PluginIssue { plugin_name, detail } => serde_json::json!({
+                    "type": "plugin_issue",
+                    "plugin_name": plugin_name,
+                    "detail": detail,
+                }),
             })
             .collect();
 
@@ -100,6 +105,12 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     println!(
                         "! Vault size: {:.1} MB (exceeds 500 MB warning threshold)",
                         size_mb
+                    );
+                }
+                DoctorFinding::PluginIssue { plugin_name, detail } => {
+                    println!(
+                        "\u{2717} Plugin '{}': {}",
+                        plugin_name, detail
                     );
                 }
             }
