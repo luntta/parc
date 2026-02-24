@@ -1,5 +1,19 @@
+import { onRouteChange, navigate, type Route } from "../lib/router.ts";
+import { getVaultInfo } from "../api/vault.ts";
+import "../views/fragment-list.ts";
+import "../views/fragment-detail.ts";
+import "../views/fragment-editor.ts";
+import "../views/fragment-create.ts";
+import "../views/search-view.ts";
+import "../views/tag-browser.ts";
+import "../views/vault-switcher.ts";
+import "../views/history-view.ts";
+import "../views/graph-view.ts";
+import "../views/settings-view.ts";
+
 export class AppShell extends HTMLElement {
   private shadow: ShadowRoot;
+  private cleanup: (() => void) | null = null;
 
   constructor() {
     super();
@@ -123,22 +137,10 @@ export class AppShell extends HTMLElement {
           color: var(--text-muted);
           border-top: 1px solid var(--border);
           margin-top: auto;
+          cursor: pointer;
         }
-        .welcome {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          height: 100%;
-          color: var(--text-muted);
-          font-size: 14px;
-          gap: 8px;
-        }
-        .welcome h2 {
+        .vault-info:hover {
           color: var(--text);
-          font-size: 20px;
-          font-weight: 600;
-          margin: 0;
         }
       </style>
       <nav class="sidebar">
@@ -168,55 +170,167 @@ export class AppShell extends HTMLElement {
         <button class="nav-item" data-route="tags">Tags</button>
         <button class="nav-item" data-route="graph">Graph</button>
         <button class="nav-item" data-route="trash">Trash</button>
+        <div class="nav-section">System</div>
+        <button class="nav-item" data-route="vault">Vault</button>
+        <button class="nav-item" data-route="settings">Settings</button>
         <div class="vault-info" id="vault-info">Loading vault...</div>
       </nav>
       <header class="topbar">
-        <input type="text" class="search-input" placeholder="Search fragments... (Ctrl+K)" />
-        <button class="btn-new">+ New</button>
+        <input type="text" class="search-input" id="search-input" placeholder="Search fragments... (Ctrl+K)" />
+        <button class="btn-new" id="btn-new">+ New</button>
       </header>
-      <main class="main" id="main-content">
-        <div class="welcome">
-          <h2>parc</h2>
-          <p>Personal Archive — select a category or create a new fragment</p>
-        </div>
-      </main>
+      <main class="main" id="main-content"></main>
     `;
 
     this.setupNavigation();
+    this.setupTopbar();
     this.loadVaultInfo();
+
+    this.cleanup = onRouteChange((route) => this.renderRoute(route));
+  }
+
+  disconnectedCallback(): void {
+    this.cleanup?.();
   }
 
   private setupNavigation(): void {
     const items = this.shadow.querySelectorAll(".nav-item");
     items.forEach((item) => {
       item.addEventListener("click", () => {
-        items.forEach((i) => i.classList.remove("active"));
-        item.classList.add("active");
-        const route = (item as HTMLElement).dataset.route;
-        window.dispatchEvent(
-          new CustomEvent("parc:navigate", { detail: { route } })
-        );
+        const route = (item as HTMLElement).dataset.route!;
+        navigate(route);
       });
     });
   }
 
-  private async loadVaultInfo(): Promise<void> {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const info = (await invoke("vault_info")) as {
-        path: string;
-        scope: string;
-        fragment_count: number;
-      };
-      const el = this.shadow.getElementById("vault-info");
-      if (el) {
-        const short = info.path.replace(/^\/home\/[^/]+/, "~");
-        el.textContent = `${short} (${info.fragment_count} fragments)`;
+  private setupTopbar(): void {
+    const searchInput = this.shadow.getElementById("search-input") as HTMLInputElement;
+    searchInput.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Enter" && searchInput.value.trim()) {
+        navigate("search", { q: searchInput.value.trim() });
+        searchInput.value = "";
+        searchInput.blur();
       }
-    } catch {
-      const el = this.shadow.getElementById("vault-info");
-      if (el) el.textContent = "No vault connected";
+    });
+
+    this.shadow.getElementById("btn-new")?.addEventListener("click", () => {
+      navigate("new");
+    });
+  }
+
+  private renderRoute(route: Route): void {
+    const main = this.shadow.getElementById("main-content")!;
+    const path = route.path;
+
+    // Update active nav item
+    this.shadow.querySelectorAll(".nav-item").forEach((item) => {
+      const itemRoute = (item as HTMLElement).dataset.route!;
+      item.classList.toggle("active", this.isNavActive(itemRoute, path));
+    });
+
+    // Determine which view to render
+    const parts = path.split("/");
+    const root = parts[0];
+
+    // Clear previous view
+    main.innerHTML = "";
+
+    switch (root) {
+      case "all":
+      case "note":
+      case "todo":
+      case "decision":
+      case "risk":
+      case "idea":
+      case "trash": {
+        const list = document.createElement("fragment-list");
+        list.setAttribute("type-filter", root === "all" ? "" : root);
+        if (root === "trash") list.setAttribute("show-trash", "true");
+        main.appendChild(list);
+        break;
+      }
+      case "fragment": {
+        const id = parts[1] || "";
+        if (route.params.edit === "true") {
+          const editor = document.createElement("fragment-editor");
+          editor.setAttribute("fragment-id", id);
+          main.appendChild(editor);
+        } else {
+          const detail = document.createElement("fragment-detail");
+          detail.setAttribute("fragment-id", id);
+          main.appendChild(detail);
+        }
+        break;
+      }
+      case "edit": {
+        const id = parts[1] || "";
+        const editor = document.createElement("fragment-editor");
+        editor.setAttribute("fragment-id", id);
+        main.appendChild(editor);
+        break;
+      }
+      case "new": {
+        const create = document.createElement("fragment-create");
+        if (route.params.type) create.setAttribute("initial-type", route.params.type);
+        main.appendChild(create);
+        break;
+      }
+      case "search": {
+        const search = document.createElement("search-view");
+        if (route.params.q) search.setAttribute("query", route.params.q);
+        main.appendChild(search);
+        break;
+      }
+      case "tags": {
+        main.appendChild(document.createElement("tag-browser"));
+        break;
+      }
+      case "graph": {
+        main.appendChild(document.createElement("graph-view"));
+        break;
+      }
+      case "vault": {
+        main.appendChild(document.createElement("vault-switcher"));
+        break;
+      }
+      case "history": {
+        const id = parts[1] || "";
+        const history = document.createElement("history-view");
+        history.setAttribute("fragment-id", id);
+        main.appendChild(history);
+        break;
+      }
+      case "settings": {
+        main.appendChild(document.createElement("settings-view"));
+        break;
+      }
+      default: {
+        const list = document.createElement("fragment-list");
+        main.appendChild(list);
+        break;
+      }
     }
+  }
+
+  private isNavActive(navRoute: string, currentPath: string): boolean {
+    const root = currentPath.split("/")[0];
+    if (navRoute === root) return true;
+    if (navRoute === "all" && ["fragment", "edit", "new", "search", ""].includes(root)) return false;
+    if (navRoute === "all" && !["note", "todo", "decision", "risk", "idea", "tags", "graph", "trash", "vault", "settings", "search", "new", "fragment", "edit", "history"].includes(root)) return true;
+    return false;
+  }
+
+  private async loadVaultInfo(): Promise<void> {
+    const el = this.shadow.getElementById("vault-info");
+    if (!el) return;
+    try {
+      const info = await getVaultInfo();
+      const short = info.path.replace(/^\/home\/[^/]+/, "~");
+      el.textContent = `${short} (${info.fragment_count} fragments)`;
+    } catch {
+      el.textContent = "No vault connected";
+    }
+    el.addEventListener("click", () => navigate("vault"));
   }
 }
 
