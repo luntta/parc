@@ -9,12 +9,13 @@ No accounts. No network. No sync service. Just files you own.
 ```bash
 cargo install --path parc-cli
 cargo install --path parc-server  # optional: standalone JSON-RPC server binary
+cargo install --path parc-gui     # optional: Tauri desktop GUI
 
 # With WASM plugin support
 cargo install --path parc-cli --features wasm-plugins
 ```
 
-Requires Rust 1.70+. SQLite is bundled — no system dependencies. WASM plugins require the `wasm-plugins` feature (adds wasmtime).
+Requires Rust 1.70+. SQLite is bundled — no system dependencies. WASM plugins require the `wasm-plugins` feature (adds wasmtime). The GUI requires system WebKit (`webkit2gtk-4.1` on Linux).
 
 ## Quick start
 
@@ -345,16 +346,52 @@ parc is single-user by design, but vaults are git-friendly:
 parc reindex
 ```
 
+## Desktop GUI
+
+parc ships a Tauri-based desktop app with a full graphical interface:
+
+```bash
+# Build the frontend first
+cd parc-gui/ui && npm install && npm run build && cd ../..
+
+# Install the binary
+cargo install --path parc-gui
+
+# Run it
+parc-gui
+```
+
+For development with hot-reload:
+
+```bash
+cd parc-gui/ui && npx tauri dev
+```
+
+The GUI provides:
+
+- **Fragment management** — list, create, edit, and delete fragments with a schema-driven form editor and live Markdown preview
+- **Search** — full DSL search with autocomplete suggestions and filter chips
+- **Graph view** — interactive Canvas 2D force-directed backlink graph with zoom, pan, and drag
+- **Tag browser** — cloud and list views with proportional sizing
+- **History viewer** — version timeline with side-by-side diff and restore
+- **Attachment management** — drag-and-drop file uploads
+- **Vault switcher** — multi-vault support with reindex and doctor actions
+- **Command palette** — Ctrl+K quick access to search and navigation
+- **Keyboard-driven** — full shortcut map (Ctrl+? to view), vim-style j/k list navigation
+- **Dark mode** — system-following or manual light/dark theme toggle
+
+Requires `webkit2gtk-4.1` on Linux (`sudo pacman -S webkit2gtk-4.1` on Arch, `sudo apt install libwebkit2gtk-4.1-dev` on Debian/Ubuntu).
+
 ## Architecture
 
-Library-first: `parc-core` is a pure library crate with no terminal I/O. The CLI, JSON-RPC server, and a future GUI are thin consumers.
+Library-first: `parc-core` is a pure library crate with no terminal I/O. The CLI, JSON-RPC server, and GUI are thin consumers.
 
 ```
 parc/
 ├── parc-core/     # Library — no println!, no TTY, returns Result<T, ParcError>
 ├── parc-cli/      # CLI binary — terminal formatting, $EDITOR, clap
 ├── parc-server/   # JSON-RPC 2.0 server (stdio / Unix socket)
-└── parc-gui/      # Planned: Tauri desktop app
+└── parc-gui/      # Tauri v2 desktop app — vanilla TypeScript web components, zero npm runtime deps
 ```
 
 Files are the source of truth. The SQLite index is derived and fully rebuildable from the Markdown files at any time with `parc reindex`.
