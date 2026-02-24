@@ -5,6 +5,7 @@ mod render;
 use std::path::PathBuf;
 
 use clap::Parser;
+use parc_core::schema::load_schemas;
 use parc_core::vault::resolve_vault;
 
 #[derive(Parser)]
@@ -499,12 +500,65 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+/// Clap struct for parsing alias arguments (mirrors `New` variant fields minus `type_name`)
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+struct AliasNewArgs {
+    /// Title (positional)
+    title: Option<String>,
+    /// Title (flag alternative)
+    #[arg(long = "title", name = "title_flag")]
+    title_flag: Option<String>,
+    /// Add tags
+    #[arg(long)]
+    tag: Vec<String>,
+    /// Link to other fragments
+    #[arg(long)]
+    link: Vec<String>,
+    /// Due date
+    #[arg(long)]
+    due: Option<String>,
+    /// Priority level
+    #[arg(long)]
+    priority: Option<String>,
+    /// Status
+    #[arg(long)]
+    status: Option<String>,
+    /// Assignee
+    #[arg(long)]
+    assignee: Option<String>,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
 fn run_external_command(vault: &std::path::Path, args: Vec<String>) -> anyhow::Result<()> {
     if args.is_empty() {
         anyhow::bail!("unknown command");
     }
 
     let cmd_name = &args[0];
+
+    // Check if the command name is a type alias
+    if let Ok(schemas) = load_schemas(vault) {
+        if schemas.resolve(cmd_name).is_some() {
+            let remaining = &args[1..];
+            let alias_args = AliasNewArgs::try_parse_from(remaining)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            return commands::new::run(
+                vault,
+                cmd_name,
+                alias_args.title.or(alias_args.title_flag),
+                alias_args.tag,
+                alias_args.link,
+                alias_args.due,
+                alias_args.priority,
+                alias_args.status,
+                alias_args.assignee,
+                alias_args.json,
+            );
+        }
+    }
 
     // Try to dispatch to a plugin
     #[cfg(feature = "wasm-plugins")]
