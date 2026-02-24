@@ -2,25 +2,27 @@
 
 ## Features
 
-1. **`parc-gui` crate scaffold** — New workspace member with Tauri, React (TypeScript), and Vite
-2. **Tauri command layer** — Rust backend exposing `parc-core` operations as Tauri IPC commands
-3. **App shell & navigation** — Sidebar layout with navigation, global search, and keyboard shortcuts
+1. **`parc-gui` crate scaffold** — New workspace member with Tauri, vanilla TypeScript, and Vite
+2. **Tauri command layer** — Rust backend exposing `parc-core` operations as Tauri IPC commands, plus `render_markdown` command via comrak
+3. **App shell & navigation** — Sidebar layout with hash-based router, global search, and keyboard shortcuts
 4. **Fragment list view** — Browsable, filterable, sortable fragment table with type/status badges
-5. **Fragment detail view** — Full fragment display with rendered Markdown, metadata, backlinks, and attachments
-6. **Fragment editor** — In-app fragment editing with YAML frontmatter + Markdown body, live preview
+5. **Fragment detail view** — Full fragment display with server-rendered Markdown, metadata, backlinks, and attachments
+6. **Fragment editor** — In-app fragment editing with schema-driven form + contenteditable Markdown body
 7. **Fragment creation** — Type-aware creation form with schema-driven fields and template loading
 8. **Search with DSL** — Full DSL search bar with autocomplete, filter chips, and result highlighting
 9. **Tag browser** — Tag cloud/list with counts, click-to-filter, tag management
-10. **Backlink graph** — Interactive visual graph of fragment links using a force-directed layout
+10. **Backlink graph** — Interactive visual graph of fragment links using Canvas 2D + hand-rolled force-directed layout
 11. **Attachment management** — Drag-and-drop attachment upload, inline preview (images, PDFs), detach
 12. **History viewer** — Version timeline, side-by-side diff, one-click restore
 13. **Vault switcher** — Multi-vault support: switch between global/local vaults, vault info panel
 14. **Settings & preferences** — In-app settings UI for vault config, theme, display preferences
-15. **Theming & dark mode** — Light/dark theme with system preference detection
+15. **Theming & dark mode** — Light/dark theme with system preference detection, plain CSS custom properties
 16. **Keyboard-driven workflow** — Command palette (Ctrl+K), vim-style navigation hints, full keyboard accessibility
-17. **Integration tests** — Tauri integration tests for command layer + Playwright E2E tests for frontend
+17. **Integration tests** — Tauri integration tests for command layer + manual smoke tests for frontend
 
 **PRD refs:** §3.1 (architecture — Tauri imports parc-core directly), §3.2 (integration layers), §13 (GUI Readiness), M9 milestone definition.
+
+**Key constraint: zero npm runtime dependencies.** The frontend uses vanilla TypeScript web components, plain CSS with custom properties, and communicates with the Rust backend exclusively through Tauri IPC. Only dev dependencies are allowed: `@tauri-apps/api`, `vite`, `typescript`.
 
 ---
 
@@ -32,17 +34,24 @@
 - `parc-gui/tauri.conf.json` — Tauri configuration
 - `parc-gui/src/main.rs` — Tauri entry point
 - `parc-gui/src/lib.rs` — Command registration and app setup
-- `parc-gui/ui/` — Frontend project root (Vite + React + TypeScript)
-- `parc-gui/ui/package.json` — Frontend dependencies
+- `parc-gui/ui/` — Frontend project root (Vite + vanilla TypeScript)
+- `parc-gui/ui/package.json` — Frontend dev dependencies only
 - `parc-gui/ui/tsconfig.json` — TypeScript configuration
 - `parc-gui/ui/vite.config.ts` — Vite configuration with Tauri plugin
 - `parc-gui/ui/index.html` — HTML entry point
-- `parc-gui/ui/src/main.tsx` — React entry point
-- `parc-gui/ui/src/App.tsx` — Root component
+- `parc-gui/ui/src/main.ts` — App entry point (register custom elements, mount router)
+- `parc-gui/ui/src/app-shell.ts` — `<app-shell>` root web component
 
 ### Design
 
-Tauri v2 app with a React + TypeScript frontend bundled via Vite. The Rust backend is a thin wrapper around `parc-core` — all business logic stays in the library. The frontend communicates with the backend exclusively through Tauri's IPC invoke mechanism (type-safe via `@tauri-apps/api`).
+Tauri v2 app with a vanilla TypeScript frontend bundled via Vite. The Rust backend is a thin wrapper around `parc-core` — all business logic stays in the library. The frontend communicates with the backend exclusively through Tauri's IPC invoke mechanism (typed via `@tauri-apps/api`).
+
+**Zero npm runtime dependencies.** Dev dependencies only:
+- `@tauri-apps/api@2` — Tauri IPC types (tree-shaken away at build, only type wrappers)
+- `vite` — bundler
+- `typescript` — type checking
+
+All UI is built with **Web Components** (custom elements with Shadow DOM). State management uses a simple event bus pattern. Routing is hash-based (~50 lines).
 
 Directory structure:
 
@@ -64,7 +73,8 @@ parc-gui/
 │   │   ├── tag.rs
 │   │   ├── link.rs
 │   │   ├── attachment.rs
-│   │   └── history.rs
+│   │   ├── history.rs
+│   │   └── markdown.rs     # render_markdown command (comrak)
 │   ├── state.rs            # Managed Tauri state (vault path, config cache)
 │   └── error.rs            # GUI-specific error wrapper implementing Serialize
 ├── ui/
@@ -73,15 +83,13 @@ parc-gui/
 │   ├── vite.config.ts
 │   ├── index.html
 │   └── src/
-│       ├── main.tsx
-│       ├── App.tsx
-│       ├── api/            # Typed Tauri invoke wrappers
-│       ├── components/     # Reusable UI components
-│       ├── views/          # Page-level views
-│       ├── hooks/          # React custom hooks
-│       ├── store/          # State management (Zustand)
-│       ├── types/          # TypeScript type definitions
-│       └── styles/         # CSS / Tailwind config
+│       ├── main.ts          # Register all custom elements, boot app
+│       ├── api/             # Typed Tauri invoke wrappers
+│       ├── components/      # Web components (custom elements)
+│       ├── views/           # Page-level view components
+│       ├── lib/             # Utility modules (router, event-bus, state, keyboard)
+│       ├── types/           # TypeScript type definitions
+│       └── styles/          # CSS files (imported by components)
 ```
 
 ### Tasks
@@ -92,6 +100,7 @@ parc-gui/
   - `tauri-build` (build dependency)
   - `serde`, `serde_json` (with derive)
   - `anyhow`, `thiserror`
+  - `comrak` (Markdown → HTML rendering)
 - [ ] Create `parc-gui/build.rs` with `tauri_build::build()`
 - [ ] Create `parc-gui/tauri.conf.json`:
   - App identifier: `com.parc.gui`
@@ -110,15 +119,13 @@ parc-gui/
   - Implement `serde::Serialize` for `GuiError` (required by Tauri commands)
   - Implement `From<ParcError>` for `GuiError`
 - [ ] Initialize frontend project in `parc-gui/ui/`:
-  - `npm create vite@latest . -- --template react-ts`
-  - Install: `@tauri-apps/api@2`, `@tauri-apps/plugin-dialog`, `@tauri-apps/plugin-fs`
-  - Install: `tailwindcss`, `@tailwindcss/typography`, `postcss`, `autoprefixer`
-  - Install: `zustand` (state management), `react-router-dom` (routing)
-  - Install: `@uiw/react-codemirror` (editor), `react-markdown`, `remark-gfm` (Markdown rendering)
-  - Install: `@xyflow/react` (graph visualization)
-  - Install: `cmdk` (command palette)
-  - Configure Tailwind with custom parc color palette
-- [ ] Create minimal `App.tsx` with "parc" heading and Tauri invoke test
+  - Create `package.json` with **dev dependencies only**: `@tauri-apps/api@2`, `vite`, `typescript`
+  - No React, no Tailwind, no runtime npm packages
+  - Create `vite.config.ts` (vanilla mode, no framework plugins)
+  - Create `tsconfig.json` targeting ES2022, DOM lib
+- [ ] Create `index.html` with single `<app-shell>` element
+- [ ] Create `main.ts` that imports and registers all custom elements
+- [ ] Create minimal `<app-shell>` web component with "parc" heading and Tauri invoke test
 - [ ] Verify `cargo build -p parc-gui` compiles the Rust backend
 - [ ] Verify `cargo tauri dev` launches the app with hot-reload
 - [ ] Verify `cargo test --workspace` still passes
@@ -137,6 +144,7 @@ parc-gui/
 - `parc-gui/src/commands/link.rs` — Link/unlink/backlinks
 - `parc-gui/src/commands/attachment.rs` — Attachment management
 - `parc-gui/src/commands/history.rs` — History list/get/restore
+- `parc-gui/src/commands/markdown.rs` — Markdown rendering via comrak
 - `parc-gui/ui/src/api/index.ts` — TypeScript API wrapper barrel export
 - `parc-gui/ui/src/api/fragments.ts` — Fragment API calls
 - `parc-gui/ui/src/api/search.ts` — Search API calls
@@ -160,6 +168,20 @@ async fn fragment_get(
 ```
 
 **DTO layer:** Tauri commands return `*Dto` structs (`FragmentDto`, `SearchResultDto`, etc.) that implement `Serialize` and are purpose-built for the frontend. These map cleanly from `parc-core` types but may flatten or reshape data for UI convenience (e.g., `extra_fields` merged into a flat object).
+
+**Markdown rendering command:** A dedicated `render_markdown` command uses comrak to convert Markdown body text to HTML on the Rust side. This replaces any frontend Markdown library. Wiki-links and attachment references are resolved during rendering.
+
+```rust
+#[tauri::command]
+async fn render_markdown(
+    state: tauri::State<'_, AppState>,
+    markdown: String,
+) -> Result<String, GuiError> {
+    let vault = state.vault_path.read().await;
+    let html = parc_core::markdown::render_to_html(&markdown, &vault)?;
+    Ok(html)
+}
+```
 
 ### Tasks
 - [ ] Create `commands/mod.rs` exporting all command functions
@@ -210,6 +232,12 @@ async fn fragment_get(
   - `history_get(state, id, timestamp) -> FragmentDto`
   - `history_restore(state, id, timestamp) -> FragmentDto`
   - `history_diff(state, id, timestamp?) -> DiffDto` — returns structured diff (added/removed lines)
+- [ ] Implement `commands/markdown.rs`:
+  - `render_markdown(state, markdown) -> String` — Markdown → HTML via comrak
+  - Resolves wiki-links (`[[id]]`, `[[id|text]]`) to `<a>` tags with fragment titles
+  - Resolves attachment refs (`![[attach:file]]`) to asset protocol URLs or `<img>` tags
+  - Resolves inline `#hashtags` to clickable links
+  - Uses comrak with GFM extensions (tables, strikethrough, task lists, autolinks)
 - [ ] Register all commands in `lib.rs` via `tauri::Builder::default().invoke_handler(tauri::generate_handler![...])`
 - [ ] Create TypeScript type definitions in `ui/src/api/types.ts` mirroring all DTOs
 - [ ] Create typed invoke wrappers in `ui/src/api/`:
@@ -220,6 +248,7 @@ async fn fragment_get(
   - `links.ts` — `linkFragments(a, b)`, `getBacklinks(id)`, etc.
   - `attachments.ts` — `attachFile(id, path)`, `listAttachments(id)`, etc.
   - `history.ts` — `listHistory(id)`, `getVersion(id, ts)`, `restoreVersion(id, ts)`, `diffVersion(id, ts)`
+  - `markdown.ts` — `renderMarkdown(text)`
 - [ ] Unit tests for each command: mock vault with temp dir, call command, verify DTO output
 
 ---
@@ -227,13 +256,15 @@ async fn fragment_get(
 ## Feature 3: App Shell & Navigation
 
 ### Files
-- `parc-gui/ui/src/App.tsx` — Root layout with sidebar and content area
-- `parc-gui/ui/src/components/Sidebar.tsx` — Navigation sidebar
-- `parc-gui/ui/src/components/TopBar.tsx` — Top bar with search and actions
-- `parc-gui/ui/src/components/CommandPalette.tsx` — Ctrl+K command palette
-- `parc-gui/ui/src/hooks/useKeyboard.ts` — Global keyboard shortcut handler
-- `parc-gui/ui/src/store/navigation.ts` — Navigation state (Zustand)
-- `parc-gui/ui/src/styles/global.css` — Base styles, Tailwind imports
+- `parc-gui/ui/src/app-shell.ts` — `<app-shell>` root web component with layout
+- `parc-gui/ui/src/components/side-bar.ts` — `<side-bar>` navigation component
+- `parc-gui/ui/src/components/top-bar.ts` — `<top-bar>` with search and actions
+- `parc-gui/ui/src/components/command-palette.ts` — `<command-palette>` custom element
+- `parc-gui/ui/src/lib/router.ts` — Hash-based router (~50 lines)
+- `parc-gui/ui/src/lib/keyboard.ts` — Global keyboard shortcut handler
+- `parc-gui/ui/src/lib/event-bus.ts` — Simple pub/sub event bus for state coordination
+- `parc-gui/ui/src/lib/state.ts` — App state objects (navigation, preferences)
+- `parc-gui/ui/src/styles/global.css` — Base styles, CSS custom properties
 
 ### Design
 
@@ -264,57 +295,73 @@ Three-column layout that adapts responsively:
 
 The sidebar collapses to icons on narrow windows. The detail panel shows/hides based on whether a fragment is selected. On very narrow windows, the layout becomes single-column with back navigation.
 
+**Router:** A minimal hash-based router (`lib/router.ts`) that maps `#/path` to view components. No npm dependency — just `hashchange` listener + a route table. ~50 lines of code.
+
+**State management:** Simple state objects + an event bus (`lib/event-bus.ts`). Components subscribe to state changes via `bus.on('fragments:updated', callback)`. No Zustand, no Redux — just plain JS objects and CustomEvents.
+
 ### Tasks
-- [ ] Create `App.tsx` with React Router:
-  - Routes: `/` (list), `/fragment/:id` (detail), `/search` (search results), `/tags` (tag browser), `/graph` (backlink graph), `/settings` (settings), `/trash` (trash view)
-- [ ] Create `Sidebar.tsx`:
+- [ ] Create `lib/router.ts`:
+  - Hash-based routing: listen to `hashchange`, match routes, swap view components in a `<main>` slot
+  - Routes: `#/` (list), `#/fragment/:id` (detail), `#/search` (search results), `#/tags` (tag browser), `#/graph` (backlink graph), `#/settings` (settings), `#/trash` (trash view)
+  - `navigate(path)` helper that sets `location.hash`
+  - Route params extraction (`:id` → `params.id`)
+- [ ] Create `lib/event-bus.ts`:
+  - `on(event, callback)`, `off(event, callback)`, `emit(event, data)`
+  - Typed events: `fragments:updated`, `fragment:selected`, `vault:switched`, `theme:changed`, `search:submit`, `navigate`
+  - Singleton instance exported as `bus`
+- [ ] Create `lib/state.ts`:
+  - `navState: { selectedFragmentId, sidebarCollapsed, detailPanelOpen, currentTypeFilter }`
+  - `prefState: { theme, listViewMode, editorPreviewVisible, fontSize }` (persisted to `localStorage`)
+  - Mutations emit events via bus
+- [ ] Create `<app-shell>` component:
+  - Shadow DOM with three-column CSS grid layout
+  - Slots: `<side-bar>`, `<main>` (router outlet), detail panel (conditional)
+  - Listens to router changes, swaps view components in main area
+- [ ] Create `<side-bar>` component:
   - Navigation sections: fragment types (All, Note, Todo, Decision, Risk, Idea), tools (Tags, Graph), management (Trash)
-  - Active route highlighting
+  - Active route highlighting via `hashchange` listener
   - Fragment count badges per type (fetched from `vault_info`)
   - Vault name/path at bottom with switch button
   - Collapsible to icon-only mode
-- [ ] Create `TopBar.tsx`:
-  - Global search input (triggers DSL search on Enter, shows suggestions on type)
+- [ ] Create `<top-bar>` component:
+  - Global search input (triggers DSL search on Enter, navigates to `#/search?q=...`)
   - "+ New" button with dropdown for fragment type selection
   - Settings gear icon
   - Vault status indicator
-- [ ] Create `CommandPalette.tsx` using `cmdk`:
+- [ ] Create `<command-palette>` custom element:
   - Triggered by `Ctrl+K` / `Cmd+K`
+  - Modal overlay with search input + filtered action list
   - Actions: New fragment (by type), search, switch vault, reindex, navigate to any view
   - Recent fragments as suggestions
-  - Fuzzy matching on fragment titles
-- [ ] Create `useKeyboard.ts` hook:
+  - Fuzzy matching on fragment titles (simple `includes()` + score by position)
+  - Keyboard navigation: up/down arrows, Enter to select, Escape to close
+- [ ] Create `lib/keyboard.ts`:
   - Global shortcuts: `Ctrl+K` (command palette), `Ctrl+N` (new fragment), `Ctrl+F` (focus search), `Escape` (close panels/modals)
   - Navigation: `j/k` for list movement when not in an input, `Enter` to open selected
-- [ ] Create `navigation.ts` Zustand store:
-  - `selectedFragmentId: string | null`
-  - `sidebarCollapsed: boolean`
-  - `detailPanelOpen: boolean`
-  - `currentTypeFilter: string | null`
-- [ ] Create `global.css` with Tailwind base:
-  - Custom properties for theme colors
-  - Typography defaults for rendered Markdown
+  - Registers on `document.addEventListener('keydown', ...)`
+- [ ] Create `styles/global.css`:
+  - CSS custom properties for theme colors (see Feature 15)
+  - Typography defaults for rendered Markdown (`.rendered-md` class)
   - Scrollbar styling
   - Transition defaults
+  - CSS reset / base styles
 
 ---
 
 ## Feature 4: Fragment List View
 
 ### Files
-- `parc-gui/ui/src/views/FragmentList.tsx` — Main list view
-- `parc-gui/ui/src/components/FragmentCard.tsx` — Card component for grid view
-- `parc-gui/ui/src/components/FragmentRow.tsx` — Row component for table view
-- `parc-gui/ui/src/components/TypeBadge.tsx` — Colored type badge
-- `parc-gui/ui/src/components/StatusBadge.tsx` — Status pill with color
-- `parc-gui/ui/src/components/TagChip.tsx` — Clickable tag chip
-- `parc-gui/ui/src/components/FilterBar.tsx` — Active filter chips with clear buttons
-- `parc-gui/ui/src/store/fragments.ts` — Fragment list state (Zustand)
-- `parc-gui/ui/src/hooks/useFragments.ts` — Fragment data fetching hook
+- `parc-gui/ui/src/views/fragment-list.ts` — `<fragment-list>` view component
+- `parc-gui/ui/src/components/fragment-card.ts` — `<fragment-card>` for grid view
+- `parc-gui/ui/src/components/fragment-row.ts` — `<fragment-row>` for table view
+- `parc-gui/ui/src/components/type-badge.ts` — `<type-badge>` colored pill
+- `parc-gui/ui/src/components/status-badge.ts` — `<status-badge>` colored pill
+- `parc-gui/ui/src/components/tag-chip.ts` — `<tag-chip>` clickable tag
+- `parc-gui/ui/src/components/filter-bar.ts` — `<filter-bar>` active filter chips
 
 ### Design
 
-The list view is the primary view. It supports two display modes (table and cards) and pulls data from the Tauri backend via the `fragment_list` command. Filters are applied via query parameters so they can be deep-linked from the sidebar.
+The list view is the primary view. It supports two display modes (table and cards) and pulls data from the Tauri backend via the `fragment_list` command. Filters are applied via hash query parameters so they can be deep-linked from the sidebar.
 
 Type badges use distinct colors:
 - Note: blue
@@ -330,92 +377,87 @@ Status badges use semantic colors:
 - Cancelled/deprecated/discarded/parked: muted/strikethrough
 
 ### Tasks
-- [ ] Create `FragmentList.tsx`:
+- [ ] Create `<fragment-list>` view:
   - Fetch fragments via `listFragments()` with current filters
-  - Toggle between table view and card grid view (persisted in local storage)
+  - Toggle between table view and card grid view (persisted in `localStorage`)
   - Column sort headers: title, type, status, updated, created, priority, due
   - Empty state: "No fragments found" with create button
   - Loading skeleton while fetching
-  - Click row/card to select fragment (opens detail panel or navigates)
-  - Right-click context menu: Edit, Archive, Delete, Copy ID
-- [ ] Create `FragmentCard.tsx`:
+  - Click row/card to select fragment (navigates to `#/fragment/:id`)
+  - Right-click context menu (plain `<div>` positioned on `contextmenu` event): Edit, Archive, Delete, Copy ID
+- [ ] Create `<fragment-card>`:
   - Type badge (colored), title, truncated body preview (first 2 lines), tags, date
   - Status indicator
   - Due date with overdue highlighting (red if past due)
-- [ ] Create `FragmentRow.tsx`:
+- [ ] Create `<fragment-row>`:
   - Table row: short ID, type badge, status badge, title, tags (truncated), updated date
   - Priority indicator for todos (colored dot)
   - Due date with overdue highlighting
-- [ ] Create `TypeBadge.tsx` — small colored pill with type name
-- [ ] Create `StatusBadge.tsx` — status pill with semantic color
-- [ ] Create `TagChip.tsx` — clickable chip that adds tag filter, removable when active
-- [ ] Create `FilterBar.tsx`:
+- [ ] Create `<type-badge>` — small colored pill with type name, color set via attribute
+- [ ] Create `<status-badge>` — status pill with semantic color
+- [ ] Create `<tag-chip>` — clickable chip that adds tag filter, removable when active
+- [ ] Create `<filter-bar>`:
   - Shows active filters as removable chips
   - Quick-add dropdown for common filters (type, status, tag, priority)
   - "Clear all" button when filters active
-- [ ] Create `fragments.ts` Zustand store:
-  - `fragments: FragmentSummary[]`
-  - `loading: boolean`
-  - `filters: { type?, status?, tags: string[], priority?, sort, limit }`
-  - `viewMode: 'table' | 'cards'`
-  - Actions: `fetchFragments()`, `setFilter()`, `clearFilters()`, `toggleViewMode()`
-- [ ] Create `useFragments.ts` hook:
-  - Wraps store with auto-refetch on filter change
-  - Debounced refetch on rapid filter changes
-  - Optimistic updates on delete/archive
+- [ ] Create fragment list state in `lib/state.ts`:
+  - `fragmentState: { fragments, loading, filters: { type?, status?, tags[], priority?, sort, limit }, viewMode }`
+  - `fetchFragments()` — calls API, emits `fragments:updated`
+  - `setFilter()`, `clearFilters()`, `toggleViewMode()`
+  - Auto-refetch on filter change (debounced for rapid changes)
 
 ---
 
 ## Feature 5: Fragment Detail View
 
 ### Files
-- `parc-gui/ui/src/views/FragmentDetail.tsx` — Full fragment detail view
-- `parc-gui/ui/src/components/MetadataPanel.tsx` — Structured metadata display
-- `parc-gui/ui/src/components/MarkdownRenderer.tsx` — Rendered Markdown with wiki-link support
-- `parc-gui/ui/src/components/BacklinksSection.tsx` — Backlinks list
-- `parc-gui/ui/src/components/AttachmentsSection.tsx` — Attachment list with previews
-- `parc-gui/ui/src/components/FragmentActions.tsx` — Action toolbar (edit, delete, archive, etc.)
+- `parc-gui/ui/src/views/fragment-detail.ts` — `<fragment-detail>` view component
+- `parc-gui/ui/src/components/metadata-panel.ts` — `<metadata-panel>` structured metadata
+- `parc-gui/ui/src/components/rendered-body.ts` — `<rendered-body>` displays HTML from `render_markdown` command
+- `parc-gui/ui/src/components/backlinks-section.ts` — `<backlinks-section>` list
+- `parc-gui/ui/src/components/attachments-section.ts` — `<attachments-section>` with previews
+- `parc-gui/ui/src/components/fragment-actions.ts` — `<fragment-actions>` toolbar
 
 ### Design
 
 The detail view appears in the right panel when a fragment is selected, or as a full-page view when navigated to directly. It shows everything about a fragment: metadata, rendered body, backlinks, and attachments.
 
-Wiki-links (`[[id]]` and `[[id|text]]`) in the rendered Markdown are converted to clickable links that navigate to the linked fragment. Attachment references (`![[attach:filename]]`) render inline previews where possible (images) or download links.
+**Markdown rendering:** The body is sent to the Rust backend via the `render_markdown` Tauri command, which uses comrak to produce HTML. The returned HTML is set as `innerHTML` of the `<rendered-body>` component. Wiki-links and attachment references are resolved server-side during rendering.
+
+Wiki-links (`[[id]]` and `[[id|text]]`) in the rendered HTML are `<a>` tags with `data-fragment-id` attributes. The `<rendered-body>` component adds click handlers that call `navigate()`. Attachment references (`![[attach:filename]]`) are rendered as `<img>` tags (for images) or download links using Tauri's asset protocol.
 
 ### Tasks
-- [ ] Create `FragmentDetail.tsx`:
+- [ ] Create `<fragment-detail>` view:
   - Fetch full fragment via `getFragment(id)` on mount/id change
   - Layout: metadata panel at top, rendered body, backlinks section, attachments section
   - Loading skeleton
   - 404 state for invalid IDs
   - Sticky action toolbar at top
-- [ ] Create `MetadataPanel.tsx`:
-  - Display: type badge, status badge, full ID (copyable), title
+- [ ] Create `<metadata-panel>`:
+  - Display: type badge, status badge, full ID (copyable on click), title
   - Fields grid: created_at, updated_at, created_by, due, priority, assignee (conditional on type)
-  - Tags as clickable chips
-  - Links as clickable fragment references (show title on hover via tooltip)
+  - Tags as clickable `<tag-chip>` elements
+  - Links as clickable fragment references (show title on hover via `title` attribute)
   - Extra fields displayed dynamically based on schema
-- [ ] Create `MarkdownRenderer.tsx`:
-  - Uses `react-markdown` + `remark-gfm` for rendering
-  - Custom renderers:
-    - Wiki-links (`[[id]]`, `[[id|text]]`) → clickable internal links with fragment title tooltip
-    - Attachment refs (`![[attach:file]]`) → inline image preview or file link
-    - Code blocks with syntax highlighting
-    - Inline `#hashtags` → clickable tag links
-  - Typography styling via `@tailwindcss/typography`
-- [ ] Create `BacklinksSection.tsx`:
+- [ ] Create `<rendered-body>`:
+  - Calls `renderMarkdown(body)` Tauri command, sets result as `innerHTML`
+  - Intercepts clicks on `a[data-fragment-id]` → calls `navigate('#/fragment/' + id)`
+  - Intercepts clicks on `a[data-tag]` → navigates to tag-filtered list
+  - Styled via `.rendered-md` class in global CSS (typography, code blocks, tables, lists)
+  - Re-renders when fragment body changes
+- [ ] Create `<backlinks-section>`:
   - Fetch via `getBacklinks(id)`
   - List of linking fragments: type badge, title, snippet of linking context
   - Click to navigate to linking fragment
   - "No backlinks" empty state
-- [ ] Create `AttachmentsSection.tsx`:
+- [ ] Create `<attachments-section>`:
   - Fetch via `listAttachments(id)`
   - Grid of attachment cards: filename, size, type icon
-  - Image attachments: thumbnail preview
+  - Image attachments: thumbnail preview via Tauri asset protocol
   - Click to open in system viewer (via Tauri shell open)
   - Detach button with confirmation
-- [ ] Create `FragmentActions.tsx`:
-  - Buttons: Edit (opens editor view), Delete (confirmation dialog), Archive
+- [ ] Create `<fragment-actions>`:
+  - Buttons: Edit (navigates to editor view), Delete (confirmation dialog), Archive
   - Copy ID button, Copy markdown link button
   - History button (opens history viewer)
   - More menu: Export as JSON, Export as Markdown
@@ -425,17 +467,18 @@ Wiki-links (`[[id]]` and `[[id|text]]`) in the rendered Markdown are converted t
 ## Feature 6: Fragment Editor
 
 ### Files
-- `parc-gui/ui/src/views/FragmentEditor.tsx` — Full editor view
-- `parc-gui/ui/src/components/FrontmatterForm.tsx` — Schema-driven metadata form
-- `parc-gui/ui/src/components/MarkdownEditor.tsx` — CodeMirror-based body editor
-- `parc-gui/ui/src/components/EditorPreview.tsx` — Live Markdown preview pane
-- `parc-gui/ui/src/hooks/useAutoSave.ts` — Auto-save debounce logic
+- `parc-gui/ui/src/views/fragment-editor.ts` — `<fragment-editor>` view component
+- `parc-gui/ui/src/components/frontmatter-form.ts` — `<frontmatter-form>` schema-driven metadata form
+- `parc-gui/ui/src/components/markdown-input.ts` — `<markdown-input>` contenteditable body editor
+- `parc-gui/ui/src/components/editor-preview.ts` — `<editor-preview>` live Markdown preview pane
 
 ### Design
 
-The editor is a split-pane view: structured form fields on top (driven by the fragment's schema), Markdown body editor below with optional side-by-side live preview. The frontmatter form renders appropriate inputs based on field types (text, enum dropdown, date picker, tag multiselect).
+The editor is a split-pane view: structured form fields on top (driven by the fragment's schema), contenteditable body editor below with optional side-by-side live preview. The frontmatter form renders appropriate inputs based on field types (text, enum dropdown, date picker, tag multiselect).
 
-Changes are tracked locally and saved explicitly via Ctrl+S or a Save button. An auto-save draft is stored in local storage to prevent data loss on accidental close.
+**Body editor:** A `contenteditable` div with a formatting toolbar. The user writes plain Markdown text. The toolbar inserts Markdown syntax (e.g., `**bold**`, `## heading`). The editor works with plain text, not rich text — it's a lightweight Markdown-aware textarea replacement. For users who prefer a plain `<textarea>`, a toggle switches between contenteditable and textarea mode.
+
+Changes are tracked locally and saved explicitly via Ctrl+S or a Save button. An auto-save draft is stored in `localStorage` to prevent data loss on accidental close.
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -449,6 +492,7 @@ Changes are tracked locally and saved explicitly via Ctrl+S or a Save button. An
 ├──────────────────────────────────────────────────────┤
 │  Body (Markdown)          │  Preview                 │
 │  ┌──────────────────────┐ │ ┌──────────────────────┐ │
+│  │ [B][I][H][Link][Code]│ │ │                      │ │
 │  │ ## Context            │ │ │ Context              │ │
 │  │                       │ │ │                      │ │
 │  │ We need fast full-   │ │ │ We need fast full-   │ │
@@ -459,35 +503,37 @@ Changes are tracked locally and saved explicitly via Ctrl+S or a Save button. An
 ```
 
 ### Tasks
-- [ ] Create `FragmentEditor.tsx`:
+- [ ] Create `<fragment-editor>` view:
   - Load fragment data on mount (or empty template for new fragments)
   - Top bar: back button, fragment title, Save (Ctrl+S) and Cancel buttons
   - Unsaved changes indicator (dot or asterisk in title)
-  - Warn on navigation away with unsaved changes (beforeunload equivalent)
+  - Warn on navigation away with unsaved changes (`beforeunload` + router guard)
   - On save: call `fragment_update`, show success toast, navigate back to detail
   - Validation errors displayed inline (red borders on invalid fields)
-- [ ] Create `FrontmatterForm.tsx`:
+- [ ] Create `<frontmatter-form>`:
   - Fetch schema via `schema_get(type)` to determine available fields
   - Render fields dynamically based on `FieldType`:
     - `String` → text input
-    - `Enum` → select dropdown with allowed values
-    - `Date` → date picker input (native `input[type=date]`)
+    - `Enum` → `<select>` dropdown with allowed values
+    - `Date` → `<input type="date">`
     - `ListOfStrings` → multi-input (for deciders, etc.)
-  - Tags field: multi-select with typeahead from existing tags (`tags_list`)
+  - Tags field: comma-separated input with typeahead from existing tags (`tags_list`) via `<datalist>`
   - Links field: multi-input with ID prefix search autocomplete
   - Title field: always visible, required, auto-focus on new fragments
-- [ ] Create `MarkdownEditor.tsx`:
-  - CodeMirror 6 editor with Markdown syntax highlighting
-  - Extensions: line numbers, bracket matching, search (Ctrl+F), undo/redo
-  - Custom completions: `#` triggers tag suggestions, `[[` triggers fragment ID/title suggestions
-  - Toolbar: bold, italic, heading, link, code block, bullet list, numbered list
-  - Drag-and-drop file onto editor triggers attachment flow
-- [ ] Create `EditorPreview.tsx`:
-  - Reuses `MarkdownRenderer` component from Feature 5
-  - Synced scroll position with editor (best-effort)
+- [ ] Create `<markdown-input>`:
+  - `contenteditable` div for Markdown body text (plain text mode, not rich text)
+  - Formatting toolbar: bold (`**`), italic (`_`), heading (`##`), link (`[]()`), code (`` ` ``), bullet list, numbered list
+  - Toolbar buttons insert Markdown syntax around selection or at cursor
+  - Tab key inserts 2 spaces (not focus change)
+  - Toggle between `contenteditable` and plain `<textarea>` mode
+  - Emits `input` events with current text content
+  - Monospace font, preserves whitespace
+- [ ] Create `<editor-preview>`:
+  - Calls `renderMarkdown(text)` Tauri command for live preview
+  - Debounced rendering (200ms after last keystroke)
+  - Uses same `.rendered-md` styles as detail view
   - Toggle show/hide preview (default: show)
-  - Debounced rendering (100ms after last keystroke)
-- [ ] Create `useAutoSave.ts`:
+- [ ] Auto-save draft logic (in `<fragment-editor>`):
   - Stores draft to `localStorage` keyed by fragment ID (or `"new-<type>"` for creation)
   - Saves every 5 seconds if dirty
   - Clears draft on explicit save or discard
@@ -498,8 +544,8 @@ Changes are tracked locally and saved explicitly via Ctrl+S or a Save button. An
 ## Feature 7: Fragment Creation
 
 ### Files
-- `parc-gui/ui/src/views/FragmentCreate.tsx` — Creation flow
-- `parc-gui/ui/src/components/TypeSelector.tsx` — Fragment type selection
+- `parc-gui/ui/src/views/fragment-create.ts` — `<fragment-create>` creation flow
+- `parc-gui/ui/src/components/type-selector.ts` — `<type-selector>` type picker
 
 ### Design
 
@@ -511,16 +557,16 @@ Fragment creation reuses the editor components (Feature 6) but starts from a tem
 4. Backend creates fragment → navigates to new fragment's detail view
 
 ### Tasks
-- [ ] Create `TypeSelector.tsx`:
+- [ ] Create `<type-selector>`:
   - Grid of type cards: icon, name, description, field summary
   - Keyboard navigable (arrow keys + Enter)
   - Shows all types from `schema_list` (built-in + custom)
-- [ ] Create `FragmentCreate.tsx`:
+- [ ] Create `<fragment-create>` view:
   - Type selection step (if type not pre-selected from sidebar)
-  - Delegates to `FragmentEditor` in create mode
+  - Delegates to `<fragment-editor>` in create mode (reuses same component)
   - Loads template body from schema/template
   - Pre-fills: type, default status, default priority, default_tags from config
-  - CLI-flag-equivalent fields pre-set if navigated from sidebar (e.g., clicking "+ Todo" pre-selects todo type)
+  - Pre-selects type if navigated from sidebar (e.g., clicking "+ Todo" pre-selects todo type)
   - On save: calls `fragment_create`, shows success toast with ID, navigates to detail view
 
 ---
@@ -528,30 +574,29 @@ Fragment creation reuses the editor components (Feature 6) but starts from a tem
 ## Feature 8: Search with DSL
 
 ### Files
-- `parc-gui/ui/src/views/SearchResults.tsx` — Search results page
-- `parc-gui/ui/src/components/SearchBar.tsx` — Global search input with autocomplete
-- `parc-gui/ui/src/components/SearchSuggestions.tsx` — Autocomplete dropdown
-- `parc-gui/ui/src/components/FilterChips.tsx` — Visual DSL filter chips
-- `parc-gui/ui/src/hooks/useSearch.ts` — Search state and debouncing
-- `parc-gui/ui/src/utils/dsl.ts` — Client-side DSL token parsing for UI assistance
+- `parc-gui/ui/src/views/search-results.ts` — `<search-results>` view
+- `parc-gui/ui/src/components/search-bar.ts` — `<search-bar>` with autocomplete
+- `parc-gui/ui/src/components/search-suggestions.ts` — `<search-suggestions>` dropdown
+- `parc-gui/ui/src/components/filter-chips.ts` — `<filter-chips>` visual DSL chips
+- `parc-gui/ui/src/lib/dsl.ts` — Client-side DSL token parsing for UI assistance
 
 ### Design
 
 The search bar is always visible in the top bar. It accepts the full parc search DSL. As the user types, the UI provides:
 
-1. **Syntax assistance** — recognized filter prefixes (`type:`, `status:`, etc.) are highlighted with distinct colors
+1. **Syntax assistance** — recognized filter prefixes (`type:`, `status:`, etc.) are highlighted with distinct colors via overlaid `<span>` elements
 2. **Value suggestions** — after typing `type:`, show available types; after `tag:`, show existing tags; after `status:`, show valid statuses for the current type filter
 3. **Recent searches** — shown when the search bar is focused and empty
 4. **Live results** — results update as the user types (debounced 300ms)
 
 ### Tasks
-- [ ] Create `SearchBar.tsx`:
-  - Input with DSL syntax highlighting (colored spans for filter tokens)
+- [ ] Create `<search-bar>`:
+  - Input with DSL syntax highlighting (colored `<span>` overlay positioned behind transparent input)
   - Focus with `Ctrl+F` or clicking
-  - Submit on Enter (navigates to search results view)
+  - Submit on Enter (navigates to `#/search?q=...`)
   - Clear button (×) when non-empty
   - Dropdown overlay for suggestions while typing
-- [ ] Create `SearchSuggestions.tsx`:
+- [ ] Create `<search-suggestions>`:
   - Context-aware suggestions based on cursor position in query:
     - Empty query → recent searches + "Try: type:todo status:open"
     - After `type:` → list of types from schema
@@ -562,67 +607,73 @@ The search bar is always visible in the top bar. It accepts the full parc search
     - After `by:` → known users
     - After `has:` → attachments, links, due
   - Keyboard navigation: up/down arrows, Enter to select, Escape to close
-- [ ] Create `FilterChips.tsx`:
+- [ ] Create `<filter-chips>`:
   - Parse current query into visual chips (e.g., `type:todo` → blue chip "Type: todo")
   - Each chip has × button to remove that filter term
   - Click chip to edit that filter value
-- [ ] Create `SearchResults.tsx`:
+- [ ] Create `<search-results>` view:
   - Calls `search(query)` and displays results
-  - Reuses `FragmentRow` / `FragmentCard` from list view
+  - Reuses `<fragment-row>` / `<fragment-card>` from list view
   - Highlights matching text in title and body snippet
   - Shows result count and query execution time
   - Empty state: "No results for <query>" with suggestions
-- [ ] Create `useSearch.ts`:
-  - Debounced search (300ms after last keystroke)
-  - Search history stored in `localStorage` (last 20 queries)
-  - Abort previous in-flight search when new query arrives
-- [ ] Create `dsl.ts` utility:
+- [ ] Create `lib/dsl.ts` utility:
   - `tokenize(query: string) -> Token[]` — splits query into filter tokens and text terms
   - `Token = { type: 'filter' | 'text' | 'hashtag' | 'phrase', value: string, filterName?: string }`
   - Used for syntax highlighting and suggestion context (client-side only, actual parsing is in `parc-core`)
+- [ ] Search state and debouncing (in `lib/state.ts` or inline in `<search-bar>`):
+  - Debounced search (300ms after last keystroke)
+  - Search history stored in `localStorage` (last 20 queries)
+  - Abort previous in-flight search when new query arrives (via AbortController or flag)
 
 ---
 
 ## Feature 9: Tag Browser
 
 ### Files
-- `parc-gui/ui/src/views/TagBrowser.tsx` — Tag browser view
-- `parc-gui/ui/src/components/TagCloud.tsx` — Visual tag cloud
-- `parc-gui/ui/src/components/TagList.tsx` — Sortable tag table
+- `parc-gui/ui/src/views/tag-browser.ts` — `<tag-browser>` view
+- `parc-gui/ui/src/components/tag-cloud.ts` — `<tag-cloud>` visual cloud
+- `parc-gui/ui/src/components/tag-list-view.ts` — `<tag-list-view>` sortable table
 
 ### Design
 
 The tag browser shows all tags (merged frontmatter + inline) with their usage counts. Two view modes: a visual cloud (font size proportional to count) and a sortable table. Clicking a tag navigates to a filtered fragment list.
 
 ### Tasks
-- [ ] Create `TagBrowser.tsx`:
+- [ ] Create `<tag-browser>` view:
   - Fetch tags via `listTags()`
   - Toggle between cloud and list views
-  - Search/filter within tags
+  - Search/filter input to narrow tags
   - Sort options: alphabetical, by count (asc/desc)
-- [ ] Create `TagCloud.tsx`:
-  - Tags sized proportionally to usage count (min 0.8rem, max 2.5rem)
+- [ ] Create `<tag-cloud>`:
+  - Tags sized proportionally to usage count (min 0.8rem, max 2.5rem, via `calc()`)
   - Colored by most common fragment type using that tag
-  - Hover shows exact count
-  - Click navigates to `/` with `tag:` filter applied
-- [ ] Create `TagList.tsx`:
-  - Table: tag name, count, fragment type breakdown
-  - Sortable columns
+  - Hover shows exact count (via `title` attribute)
+  - Click navigates to `#/?tag=<name>`
+- [ ] Create `<tag-list-view>`:
+  - HTML `<table>`: tag name, count, fragment type breakdown
+  - Sortable columns (click header to toggle sort)
   - Click tag → navigate to filtered fragment list
-  - Inline sparkline or mini bar showing type distribution
 
 ---
 
 ## Feature 10: Backlink Graph
 
 ### Files
-- `parc-gui/ui/src/views/GraphView.tsx` — Full-page graph view
-- `parc-gui/ui/src/components/FragmentGraph.tsx` — Graph visualization component
-- `parc-gui/ui/src/hooks/useGraphData.ts` — Graph data fetching and transformation
+- `parc-gui/ui/src/views/graph-view.ts` — `<graph-view>` full-page graph view
+- `parc-gui/ui/src/components/fragment-graph.ts` — `<fragment-graph>` Canvas 2D component
+- `parc-gui/ui/src/lib/force-layout.ts` — Hand-rolled force-directed layout algorithm
 
 ### Design
 
-Interactive force-directed graph showing fragments as nodes and links as edges. Uses `@xyflow/react` (React Flow) for rendering. Nodes are colored by fragment type and sized by link count. The graph can be filtered by type, tag, or a root fragment (show N-hop neighborhood).
+Interactive force-directed graph showing fragments as nodes and links as edges. Rendered on a **Canvas 2D** context with a hand-rolled force-directed layout algorithm. No external graph library. Nodes are colored by fragment type and sized by link count. The graph can be filtered by type, tag, or a root fragment (show N-hop neighborhood).
+
+**Force-directed layout (`lib/force-layout.ts`):** Implements a simple velocity Verlet integration with:
+- Repulsive force between all node pairs (Coulomb's law, `k / d²`)
+- Attractive force along edges (Hooke's law, spring constant)
+- Center gravity to keep the graph from drifting
+- Velocity damping to reach equilibrium
+- Runs on `requestAnimationFrame`, stops when energy drops below threshold
 
 ```
      ┌──────┐         ┌──────┐
@@ -638,86 +689,89 @@ Interactive force-directed graph showing fragments as nodes and links as edges. 
 ```
 
 ### Tasks
-- [ ] Create `useGraphData.ts`:
-  - Fetch all fragments with links (via `fragment_list` with `has:links` or full list)
-  - Transform into nodes + edges for React Flow:
-    - Node: `{ id, label: title, type: fragment_type, data: { fragment } }`
-    - Edge: `{ source, target }` for each link
-  - Support filtering: by type, by tag, by neighborhood (N hops from a root fragment)
-  - Memoize transformation
-- [ ] Create `FragmentGraph.tsx`:
-  - React Flow canvas with force-directed layout (using `dagre` or `elkjs` for layout)
-  - Node rendering: colored circle/rectangle by type, label with title (truncated)
-  - Edge rendering: directional arrows
-  - Interactions: click node to select fragment (shows mini detail panel), double-click to navigate to detail view
-  - Zoom/pan controls
-  - Minimap for large graphs
-- [ ] Create `GraphView.tsx`:
-  - Full-page graph with control panel overlay
-  - Controls: type filter checkboxes, tag filter, depth slider (1-5 hops), layout algorithm toggle
+- [ ] Create `lib/force-layout.ts`:
+  - `ForceLayout` class taking `nodes: { id, x, y, vx, vy, mass }[]` and `edges: { source, target }[]`
+  - `tick()` — one simulation step: compute forces, update velocities + positions
+  - `run(onTick)` — runs via `requestAnimationFrame` until energy < threshold, calls `onTick` each frame
+  - `stop()` — halts simulation
+  - Configurable parameters: repulsion strength, spring length, spring stiffness, damping, gravity
+  - Node pinning: `pin(nodeId)` freezes a node in place (for dragging)
+- [ ] Create `<fragment-graph>` component:
+  - `<canvas>` element, sized to fill container
+  - Render loop: clear canvas, draw edges (lines with optional arrows), draw nodes (colored circles by type, label with title)
+  - Hit testing: on `mousemove`, check distance to nodes for hover state; on `click`, select node
+  - Drag support: `mousedown` on node → pin node, `mousemove` → update position, `mouseup` → unpin
+  - Zoom/pan: `wheel` event for zoom, `mousedown` on canvas background + `mousemove` for pan
+  - Transform matrix for zoom/pan (`ctx.setTransform()`)
+  - Selected node emits event → shows mini detail panel or navigates
+  - Double-click node → navigate to `#/fragment/:id`
+- [ ] Create `<graph-view>` view:
+  - Full-page graph with control panel overlay (positioned absolute)
+  - Controls: type filter checkboxes, tag filter input, depth slider (1-5 hops), reset layout button
   - "Focus on fragment" input — centers graph on a specific fragment's neighborhood
   - Fragment count display
-  - Export as PNG button (canvas capture)
+  - Fetch all fragments with links, transform into nodes + edges
+  - Support filtering: by type, by tag, by neighborhood (N hops from a root fragment)
 
 ---
 
 ## Feature 11: Attachment Management
 
 ### Files
-- `parc-gui/ui/src/components/AttachmentUploader.tsx` — Drag-and-drop upload zone
-- `parc-gui/ui/src/components/AttachmentPreview.tsx` — Inline file preview (images, PDFs)
-- `parc-gui/ui/src/components/AttachmentGrid.tsx` — Grid of attachment thumbnails
+- `parc-gui/ui/src/components/attachment-uploader.ts` — `<attachment-uploader>` drop zone
+- `parc-gui/ui/src/components/attachment-preview.ts` — `<attachment-preview>` inline preview
+- `parc-gui/ui/src/components/attachment-grid.ts` — `<attachment-grid>` thumbnail grid
 
 ### Design
 
 Attachments can be added via drag-and-drop onto the editor or detail view, or via a file picker dialog. Images show inline previews. Other files show type-appropriate icons. Tauri's asset protocol serves attachment files directly to the webview.
 
 ### Tasks
-- [ ] Create `AttachmentUploader.tsx`:
-  - Drop zone with visual feedback (border highlight on drag-over)
+- [ ] Create `<attachment-uploader>`:
+  - Drop zone with visual feedback (border highlight on `dragover`)
   - Accept any file type
-  - On drop: call `attach_file` with the file path (Tauri gives us the path)
-  - Progress indicator for large files (or spinner)
+  - On drop: call `attach_file` with the file path (Tauri gives us the path via drag event)
+  - Spinner while uploading
   - Multiple file drop support
-  - Also accessible via "Browse files" button using Tauri's dialog plugin
-- [ ] Create `AttachmentPreview.tsx`:
-  - Image files (png, jpg, gif, svg, webp): render `<img>` via Tauri asset protocol
-  - PDF: embedded viewer or link to open externally
-  - Text/code files: syntax-highlighted preview (first 50 lines)
+  - Also accessible via "Browse files" button using Tauri's dialog API (`@tauri-apps/api/dialog`)
+- [ ] Create `<attachment-preview>`:
+  - Image files (png, jpg, gif, svg, webp): render `<img>` via Tauri asset protocol URL
+  - PDF: link to open externally
+  - Text/code files: `<pre>` block with first 50 lines
   - Other: file icon + metadata (name, size, type)
   - Click to open in system default app
-- [ ] Create `AttachmentGrid.tsx`:
-  - Grid layout of attachment cards with thumbnails
+- [ ] Create `<attachment-grid>`:
+  - CSS grid layout of attachment cards with thumbnails
   - Hover reveals: filename, size, detach button
-  - Lightbox mode for images (click to expand full-size)
-  - Drag-out support (drag attachment to desktop/other app, if Tauri supports)
+  - Lightbox mode for images (click to expand full-size in modal overlay)
 
 ---
 
 ## Feature 12: History Viewer
 
 ### Files
-- `parc-gui/ui/src/views/HistoryView.tsx` — Fragment history page
-- `parc-gui/ui/src/components/VersionTimeline.tsx` — Vertical timeline of versions
-- `parc-gui/ui/src/components/DiffViewer.tsx` — Side-by-side diff display
+- `parc-gui/ui/src/views/history-view.ts` — `<history-view>` fragment history view
+- `parc-gui/ui/src/components/version-timeline.ts` — `<version-timeline>` vertical timeline
+- `parc-gui/ui/src/components/diff-viewer.ts` — `<diff-viewer>` side-by-side diff display
 
 ### Design
 
 The history viewer shows all saved versions of a fragment as a vertical timeline. Selecting a version shows a side-by-side diff against the current version (or any other version). One-click restore creates a new version from the historical snapshot.
 
 ### Tasks
-- [ ] Create `VersionTimeline.tsx`:
+- [ ] Create `<version-timeline>`:
   - Vertical timeline with version entries: timestamp, relative time ("2 hours ago"), size
   - Current version at top (marked as "Current")
   - Click to select a version for viewing/diffing
   - Active version highlighted
-- [ ] Create `DiffViewer.tsx`:
+- [ ] Create `<diff-viewer>`:
   - Side-by-side view: old version (left) vs current (right)
-  - Line-by-line diff with additions (green), deletions (red), context lines (gray)
-  - Collapsible unchanged sections
+  - Line-by-line diff with additions (green background), deletions (red background), context lines (gray)
+  - Collapsible unchanged sections (show "... N unchanged lines ...")
   - Unified diff toggle (single-column mode)
   - Stats header: "+N lines, -M lines"
-- [ ] Create `HistoryView.tsx`:
+  - Pure CSS styling, data from `history_diff` Tauri command
+- [ ] Create `<history-view>` view:
   - Layout: timeline on left, diff/preview on right
   - Fetch history via `history_list(id)`
   - On version select: fetch via `history_get(id, timestamp)`, compute diff via `history_diff(id, timestamp)`
@@ -730,31 +784,28 @@ The history viewer shows all saved versions of a fragment as a vertical timeline
 ## Feature 13: Vault Switcher
 
 ### Files
-- `parc-gui/ui/src/components/VaultSwitcher.tsx` — Vault selection dropdown/modal
-- `parc-gui/ui/src/components/VaultInfoPanel.tsx` — Vault details panel
-- `parc-gui/ui/src/store/vault.ts` — Vault state (Zustand)
+- `parc-gui/ui/src/components/vault-switcher.ts` — `<vault-switcher>` dropdown
+- `parc-gui/ui/src/components/vault-info-panel.ts` — `<vault-info-panel>` details
 
 ### Design
 
 The vault switcher lives at the bottom of the sidebar. It shows the current vault name and allows switching between known vaults. Switching vaults triggers a full state refresh (fragment list, tags, schema).
 
 ### Tasks
-- [ ] Create `vault.ts` Zustand store:
-  - `currentVault: VaultInfo`
-  - `availableVaults: VaultInfo[]`
-  - `loading: boolean`
-  - Actions: `fetchVaultInfo()`, `switchVault(path)`, `refreshAll()`
-  - On `switchVault`: call backend, then refresh all dependent stores (fragments, tags, schemas)
-- [ ] Create `VaultSwitcher.tsx`:
+- [ ] Create vault state in `lib/state.ts`:
+  - `vaultState: { currentVault, availableVaults, loading }`
+  - `fetchVaultInfo()`, `switchVault(path)`, `refreshAll()`
+  - On `switchVault`: call backend, then emit `vault:switched` to refresh all dependent components
+- [ ] Create `<vault-switcher>`:
   - Compact display: vault name (directory name) + scope icon (global/local)
   - Click opens dropdown of available vaults
   - "Open vault..." option → Tauri directory picker
   - "Init new vault..." option → directory picker + `vault_init`
   - Active vault has checkmark
-- [ ] Create `VaultInfoPanel.tsx`:
+- [ ] Create `<vault-info-panel>`:
   - Shown in settings or as expanded vault switcher
   - Vault path, scope (global/local)
-  - Fragment count by type (mini bar chart)
+  - Fragment count by type (mini bar chart using CSS `width` percentages)
   - Total fragments, total tags
   - Index status: last reindex time, DB size
   - "Reindex" button, "Run Doctor" button
@@ -765,28 +816,26 @@ The vault switcher lives at the bottom of the sidebar. It shows the current vaul
 ## Feature 14: Settings & Preferences
 
 ### Files
-- `parc-gui/ui/src/views/SettingsView.tsx` — Settings page
-- `parc-gui/ui/src/store/preferences.ts` — GUI preferences (Zustand + localStorage)
+- `parc-gui/ui/src/views/settings-view.ts` — `<settings-view>` page
 
 ### Design
 
-Settings page with sections for vault configuration (read from `config.yml`) and GUI-specific preferences (stored in localStorage). Vault config changes are written back to `config.yml` via a backend command.
+Settings page with sections for vault configuration (read from `config.yml`) and GUI-specific preferences (stored in `localStorage`). Vault config changes are written back to `config.yml` via a backend command.
 
 ### Tasks
-- [ ] Create `preferences.ts` Zustand store (persisted to `localStorage`):
-  - `theme: 'light' | 'dark' | 'system'`
-  - `listViewMode: 'table' | 'cards'`
-  - `editorPreviewVisible: boolean`
-  - `sidebarCollapsed: boolean`
-  - `searchHistory: string[]`
-  - `recentFragments: string[]` (last 20 viewed fragment IDs)
-  - `fontSize: number` (12-20)
-  - `graphDefaultDepth: number`
-- [ ] Create `SettingsView.tsx` with sections:
+- [ ] Create preferences state in `lib/state.ts` (persisted to `localStorage`):
+  - `prefState.theme: 'light' | 'dark' | 'system'`
+  - `prefState.listViewMode: 'table' | 'cards'`
+  - `prefState.editorPreviewVisible: boolean`
+  - `prefState.sidebarCollapsed: boolean`
+  - `prefState.fontSize: number` (12-20)
+  - `prefState.graphDefaultDepth: number`
+  - Search history and recent fragments stored separately in `localStorage`
+- [ ] Create `<settings-view>` with sections:
   - **Appearance**: Theme toggle (light/dark/system), font size slider, sidebar default state
-  - **Editor**: Preview pane default (on/off), auto-save interval, tab size
+  - **Editor**: Preview pane default (on/off), textarea vs contenteditable toggle
   - **Vault config** (from `config.yml`): user name, default tags, date format, ID display length, color mode
-  - **About**: version, vault path, parc-core version, link to docs
+  - **About**: version, vault path, parc-core version
 
 ---
 
@@ -794,63 +843,56 @@ Settings page with sections for vault configuration (read from `config.yml`) and
 
 ### Files
 - `parc-gui/ui/src/styles/themes.css` — Theme CSS custom properties
-- `parc-gui/ui/src/hooks/useTheme.ts` — Theme detection and switching
-- `parc-gui/ui/tailwind.config.ts` — Tailwind dark mode configuration
+- `parc-gui/ui/src/lib/theme.ts` — Theme detection and switching
 
 ### Design
 
-Tailwind's `class` strategy for dark mode, driven by a `dark` class on `<html>`. Three modes: light, dark, system (follows OS preference via `prefers-color-scheme`). Theme colors use CSS custom properties so they can be swapped without Tailwind rebuild.
+Plain CSS custom properties for theming. Three modes: light, dark, system (follows OS preference via `prefers-color-scheme`). A `data-theme="dark"` attribute on `<html>` toggles dark mode. All components reference CSS custom properties for colors, so theme switching is instant with no re-rendering.
 
 ### Tasks
 - [ ] Create `themes.css`:
-  - Light theme variables: backgrounds, text, borders, accents
-  - Dark theme variables under `.dark` selector
-  - Fragment type colors (consistent across themes, adjusted for contrast)
-  - Syntax highlighting colors for Markdown code blocks
-  - Diff viewer colors (red/green with appropriate contrast in both themes)
-- [ ] Configure `tailwind.config.ts`:
-  - `darkMode: 'class'`
-  - Extend theme with custom colors referencing CSS variables
-  - Typography plugin dark mode variants
-- [ ] Create `useTheme.ts`:
-  - Reads preference from `preferences` store
-  - Listens to `prefers-color-scheme` media query for system mode
-  - Applies/removes `dark` class on `<html>` element
-  - Updates Tauri window theme (via `appWindow.setTheme()`) for native title bar consistency
-- [ ] Ensure all components use theme-aware classes:
-  - `bg-surface` / `bg-surface-dark` instead of hardcoded colors
-  - `text-primary` / `text-secondary` semantic classes
-  - Border, shadow, and accent colors all theme-aware
+  - `:root` (light) and `[data-theme="dark"]` selectors
+  - Variables: `--bg-primary`, `--bg-secondary`, `--bg-surface`, `--text-primary`, `--text-secondary`, `--text-muted`, `--border`, `--accent`, `--accent-hover`
+  - Fragment type colors: `--type-note` (blue), `--type-todo` (amber), `--type-decision` (purple), `--type-risk` (red), `--type-idea` (green) — consistent across themes, adjusted for contrast
+  - Status colors: `--status-open`, `--status-active`, `--status-done`, `--status-cancelled`
+  - Syntax highlighting colors for code blocks in rendered Markdown
+  - Diff viewer colors: `--diff-added`, `--diff-removed`, `--diff-context`
+- [ ] Create `lib/theme.ts`:
+  - `initTheme()` — reads preference from `localStorage`, applies `data-theme` attribute
+  - `setTheme(mode: 'light' | 'dark' | 'system')` — updates `<html>` attribute + saves preference
+  - Listens to `prefers-color-scheme` media query for system mode (via `matchMedia`)
+  - Emits `theme:changed` event via bus
+- [ ] Ensure all component styles use custom properties:
+  - `var(--bg-primary)` instead of hardcoded colors
+  - `var(--text-primary)`, `var(--text-secondary)` semantic references
+  - Border, shadow, and accent colors all via custom properties
 
 ---
 
 ## Feature 16: Keyboard-Driven Workflow
 
 ### Files
-- `parc-gui/ui/src/hooks/useKeyboard.ts` — Extended from Feature 3
-- `parc-gui/ui/src/components/ShortcutHint.tsx` — Keyboard shortcut tooltip
-- `parc-gui/ui/src/components/ShortcutHelp.tsx` — Full shortcut reference (Ctrl+?)
+- `parc-gui/ui/src/lib/keyboard.ts` — Extended from Feature 3
+- `parc-gui/ui/src/components/shortcut-help.ts` — `<shortcut-help>` full reference modal
 
 ### Design
 
 The app should be fully usable without a mouse. All interactive elements are keyboard-accessible, and common operations have dedicated shortcuts. A help overlay (`Ctrl+?`) shows all available shortcuts.
 
 ### Tasks
-- [ ] Extend `useKeyboard.ts` with full shortcut map:
+- [ ] Extend `lib/keyboard.ts` with full shortcut map:
   - **Global**: `Ctrl+K` command palette, `Ctrl+N` new fragment, `Ctrl+F` search, `Ctrl+,` settings, `Ctrl+?` shortcut help
   - **List view**: `j`/`k` move selection, `Enter` open, `e` edit, `d` delete (with confirm), `a` archive, `/` focus search
   - **Detail view**: `e` edit, `Backspace` back to list, `[`/`]` prev/next fragment
   - **Editor**: `Ctrl+S` save, `Escape` cancel/back, `Ctrl+Shift+P` toggle preview
-  - Shortcuts disabled when focus is in text input/textarea (except Ctrl combos)
-- [ ] Create `ShortcutHint.tsx`:
-  - Small tooltip showing keyboard shortcut next to buttons/actions
-  - Shows platform-appropriate modifier (`Cmd` on macOS, `Ctrl` on Linux/Windows)
-  - Only visible after a short hover delay or when `Alt` is held
-- [ ] Create `ShortcutHelp.tsx`:
+  - Shortcuts disabled when focus is in text input/textarea/contenteditable (except Ctrl combos)
+  - Route-aware: only activate shortcuts relevant to current view
+- [ ] Create `<shortcut-help>` component:
   - Modal overlay triggered by `Ctrl+?`
   - Grouped by context: Global, List, Detail, Editor
   - Two-column layout: shortcut key + description
-  - Searchable/filterable
+  - Shows platform-appropriate modifier (`Cmd` on macOS, `Ctrl` on Linux/Windows)
+  - Close on Escape or click outside
 
 ---
 
@@ -858,16 +900,10 @@ The app should be fully usable without a mouse. All interactive elements are key
 
 ### Files
 - `parc-gui/src/tests/` — Rust integration tests for Tauri commands
-- `parc-gui/ui/tests/` — Playwright E2E tests for the frontend
-- `parc-gui/ui/playwright.config.ts` — Playwright configuration
 
 ### Design
 
-Two test layers:
-
-1. **Rust command tests** — Unit/integration tests for the Tauri command layer. Create a temp vault, call command functions directly (without Tauri runtime), verify DTO output.
-
-2. **E2E tests** — Playwright tests that launch the full Tauri app and interact with it through the UI. These are slower but verify the full stack.
+**Rust command tests only.** Create a temp vault, call command functions directly (without Tauri runtime), verify DTO output. No Playwright E2E tests — frontend testing is via manual smoke tests (see Verification section).
 
 ### Tasks
 - [ ] Set up Rust test infrastructure:
@@ -886,22 +922,8 @@ Two test layers:
   - Test: `history_list` shows versions after edits
   - Test: `vault_switch` changes active vault
   - Test: `schema_list` returns all types including custom
+  - Test: `render_markdown` produces correct HTML with resolved wiki-links
   - Test: error handling — invalid ID returns proper GuiError
-- [ ] Set up Playwright:
-  - Install `@playwright/test`
-  - Configure `playwright.config.ts` with Tauri-specific setup (launch app binary)
-  - Helper: `launchApp()` — starts Tauri app, returns page handle
-- [ ] Playwright E2E tests:
-  - Test: App launches and shows fragment list
-  - Test: Create a new note via UI → appears in list
-  - Test: Click fragment → detail view shows correct content
-  - Test: Edit fragment → changes persist
-  - Test: Search with DSL → results displayed
-  - Test: Tag browser shows tags with counts
-  - Test: Dark mode toggle works
-  - Test: Command palette opens and navigates
-  - Test: Keyboard shortcuts work (j/k navigation, Ctrl+N new, etc.)
-  - Test: Vault switcher lists available vaults
 
 ---
 
@@ -909,21 +931,21 @@ Two test layers:
 
 1. **Feature 1** (scaffold) — get the Tauri app building and launching
 2. **Feature 2** (command layer) — wire parc-core to the frontend via Tauri IPC
-3. **Feature 15** (theming) — establish the design system before building views
-4. **Feature 3** (app shell) — layout, navigation, command palette
+3. **Feature 15** (theming) — establish CSS custom properties before building views
+4. **Feature 3** (app shell) — layout, navigation, router, command palette
 5. **Feature 4** (fragment list) — primary view, most used
-6. **Feature 5** (fragment detail) — fragment viewing with Markdown rendering
-7. **Feature 6** (editor) — in-app editing with CodeMirror
+6. **Feature 5** (fragment detail) — fragment viewing with server-rendered Markdown
+7. **Feature 6** (editor) — in-app editing with contenteditable body
 8. **Feature 7** (creation) — new fragment flow
 9. **Feature 8** (search) — DSL search with autocomplete
 10. **Feature 9** (tags) — tag browser
 11. **Feature 13** (vault switcher) — multi-vault support
 12. **Feature 11** (attachments) — drag-and-drop, previews
 13. **Feature 12** (history) — version timeline and diffs
-14. **Feature 10** (graph) — backlink visualization
+14. **Feature 10** (graph) — Canvas 2D backlink visualization
 15. **Feature 14** (settings) — preferences and config
 16. **Feature 16** (keyboard) — full keyboard accessibility
-17. **Feature 17** (tests) — integration and E2E test suites
+17. **Feature 17** (tests) — Rust integration tests
 
 ---
 
@@ -940,12 +962,6 @@ cargo tauri dev                               # launches app with hot-reload
 # Rust tests
 cargo test -p parc-gui
 
-# Frontend tests
-cd parc-gui/ui && npm test && cd ../..
-
-# E2E tests
-cd parc-gui/ui && npx playwright test && cd ../..
-
 # Full workspace
 cargo test --workspace
 cargo clippy --workspace
@@ -957,8 +973,8 @@ cargo clippy --workspace
 # 4. Edit the todo → verify changes persist
 # 5. Search "type:todo status:open" → verify results
 # 6. Click Tags in sidebar → verify tag cloud/list loads
-# 7. Click Graph in sidebar → verify graph renders with nodes and edges
-# 8. Toggle dark mode → verify all views render correctly
+# 7. Click Graph in sidebar → verify Canvas 2D graph renders with nodes and edges
+# 8. Toggle dark mode → verify all views render correctly (CSS custom properties)
 # 9. Press Ctrl+K → verify command palette opens
 # 10. Drag an image onto a fragment → verify attachment uploads
 # 11. Click History → verify version timeline and diff viewer
@@ -975,18 +991,18 @@ cargo tauri build                             # creates distributable binary
 - [ ] Tauri app builds and launches on Linux (primary), macOS, and Windows
 - [ ] All parc-core operations accessible through Tauri commands
 - [ ] Fragment list with filtering, sorting, and two view modes (table/cards)
-- [ ] Fragment detail with rendered Markdown, backlinks, and attachments
-- [ ] In-app editor with schema-driven form, CodeMirror body, and live preview
+- [ ] Fragment detail with server-rendered Markdown (comrak), backlinks, and attachments
+- [ ] In-app editor with schema-driven form, contenteditable body, and live preview
 - [ ] Fragment creation with type selection and template loading
 - [ ] Full DSL search with autocomplete suggestions
 - [ ] Tag browser with cloud and list views
-- [ ] Interactive backlink graph with filtering and navigation
+- [ ] Interactive Canvas 2D backlink graph with force-directed layout
 - [ ] Attachment drag-and-drop upload and inline preview
 - [ ] History viewer with timeline, diff, and restore
 - [ ] Multi-vault switching
-- [ ] Light/dark theme with system preference detection
+- [ ] Light/dark theme via CSS custom properties with system preference detection
 - [ ] Full keyboard navigation and command palette
 - [ ] All Rust command tests pass
-- [ ] Playwright E2E tests pass
+- [ ] Zero npm runtime dependencies (only `@tauri-apps/api`, `vite`, `typescript` as dev deps)
 - [ ] `cargo clippy` clean
 - [ ] `cargo test --workspace` passes
