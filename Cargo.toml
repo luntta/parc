@@ -1,3 +1,3 @@
 [workspace]
-members = ["parc-core", "parc-cli", "parc-server"]
+members = ["parc-core", "parc-cli", "parc-server", "parc-gui"]
 resolver = "2"

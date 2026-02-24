@@ -2,6 +2,10 @@
 **/*.rs.bk
 Cargo.lock
 
+# Frontend
+node_modules/
+parc-gui/ui/dist/
+
 # Vault artifacts
 index.db
 trash/
