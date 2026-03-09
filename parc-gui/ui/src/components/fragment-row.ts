@@ -1,4 +1,5 @@
 import { relativeTime, shortId } from "../lib/format.ts";
+import { navigate } from "../lib/router.ts";
 import type { FragmentSummaryDto } from "../api/types.ts";
 
 export class FragmentRow extends HTMLElement {
@@ -35,9 +36,7 @@ export class FragmentRow extends HTMLElement {
     this.onmouseenter = () => (this.style.background = "var(--bg-hover)");
     this.onmouseleave = () => (this.style.background = "");
     this.onclick = () => {
-      window.dispatchEvent(
-        new CustomEvent("parc:navigate", { detail: { route: `fragment/${d.id}` } })
-      );
+      navigate(`fragment/${d.id}`);
     };
   }
 

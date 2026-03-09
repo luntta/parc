@@ -83,6 +83,42 @@ pub fn global_vault_path() -> Result<PathBuf, ParcError> {
     Ok(PathBuf::from(home).join(".parc"))
 }
 
+/// Walk up from `start` looking for a `.git` directory, returning the git root if found.
+fn find_git_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
+    loop {
+        if current.join(".git").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+/// Add an entry to a .gitignore file if it's not already present.
+/// Creates the file if it doesn't exist.
+fn add_gitignore_entry(gitignore_path: &Path, entry: &str) -> Result<(), ParcError> {
+    if gitignore_path.exists() {
+        let contents = std::fs::read_to_string(gitignore_path)?;
+        if contents.lines().any(|line| line.trim() == entry) {
+            return Ok(());
+        }
+        let separator = if contents.ends_with('\n') || contents.is_empty() {
+            ""
+        } else {
+            "\n"
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(gitignore_path)?;
+        std::io::Write::write_all(&mut file, format!("{}{}\n", separator, entry).as_bytes())?;
+    } else {
+        std::fs::write(gitignore_path, format!("{}\n", entry))?;
+    }
+    Ok(())
+}
+
 /// Creates a new vault at the given path with the default directory structure.
 pub fn init_vault(path: &Path) -> Result<(), ParcError> {
     if is_vault(path) {
@@ -110,6 +146,21 @@ pub fn init_vault(path: &Path) -> Result<(), ParcError> {
     // Write built-in templates
     for (name, content) in BUILTIN_TEMPLATES {
         std::fs::write(path.join("templates").join(name), content)?;
+    }
+
+    // If the vault's parent directory is inside a git repository,
+    // ensure index.db is listed in .gitignore
+    if let Some(parent) = path.parent() {
+        if let Some(git_root) = find_git_root(parent) {
+            let gitignore_path = git_root.join(".gitignore");
+            let relative = path
+                .strip_prefix(&git_root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let entry = format!("{}/index.db", relative);
+            add_gitignore_entry(&gitignore_path, &entry)?;
+        }
     }
 
     Ok(())
@@ -250,6 +301,46 @@ mod tests {
         assert!(vault_path.join("templates/note.md").exists());
         assert!(vault_path.join("fragments").is_dir());
         assert!(vault_path.join("config.yml").exists());
+    }
+
+    #[test]
+    fn test_init_vault_creates_gitignore_in_git_repo() {
+        let tmp = TempDir::new().unwrap();
+        // Simulate a git repo by creating a .git directory
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+
+        let vault_path = tmp.path().join(".parc");
+        init_vault(&vault_path).unwrap();
+
+        let gitignore = tmp.path().join(".gitignore");
+        assert!(gitignore.exists());
+        let contents = std::fs::read_to_string(&gitignore).unwrap();
+        assert!(contents.contains(".parc/index.db"));
+    }
+
+    #[test]
+    fn test_init_vault_appends_to_existing_gitignore() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "node_modules/\n").unwrap();
+
+        let vault_path = tmp.path().join(".parc");
+        init_vault(&vault_path).unwrap();
+
+        let contents = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(contents.starts_with("node_modules/\n"));
+        assert!(contents.contains(".parc/index.db"));
+    }
+
+    #[test]
+    fn test_init_vault_no_gitignore_without_git() {
+        let tmp = TempDir::new().unwrap();
+        // No .git directory
+
+        let vault_path = tmp.path().join(".parc");
+        init_vault(&vault_path).unwrap();
+
+        assert!(!tmp.path().join(".gitignore").exists());
     }
 
     #[test]

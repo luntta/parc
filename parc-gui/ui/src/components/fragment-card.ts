@@ -1,4 +1,5 @@
 import { relativeTime, shortId } from "../lib/format.ts";
+import { navigate } from "../lib/router.ts";
 import type { FragmentSummaryDto } from "../api/types.ts";
 import "./type-badge.ts";
 import "./status-badge.ts";
@@ -103,9 +104,7 @@ export class FragmentCard extends HTMLElement {
     `;
 
     this.shadow.querySelector(".card")?.addEventListener("click", () => {
-      window.dispatchEvent(
-        new CustomEvent("parc:navigate", { detail: { route: `fragment/${d.id}` } })
-      );
+      navigate(`fragment/${d.id}`);
     });
   }
 

@@ -1,6 +1,6 @@
 # parc
 
-**Personal Archive** — a local-first CLI tool for capturing, organizing, and retrieving structured fragments of thought (notes, todos, decisions, risks, ideas, and user-defined types). Everything is plain Markdown in a `.parc` vault.
+**Personal Archive** — a local-first tool for capturing, organizing, and retrieving structured fragments of thought (notes, todos, decisions, risks, ideas, and user-defined types). Everything is plain Markdown in a `.parc` vault.
 
 ## Architecture
 
@@ -8,10 +8,10 @@ Library-first design: `parc-core` (library) + thin consumer binaries.
 
 ```
 parc/
-├── parc-core/       # Library crate — no terminal I/O, no $EDITOR, returns Result<T, ParcError>
+├── parc-core/       # Library crate — no terminal I/O, returns Result<T, ParcError>
 ├── parc-cli/        # CLI binary — handles terminal I/O, $EDITOR, formatting
 ├── parc-server/     # JSON-RPC server binary (stdio / Unix socket)
-└── parc-gui/        # Future: Tauri GUI
+└── parc-gui/        # Tauri desktop app (TypeScript + web components)
 ```
 
 Rules for `parc-core`:
@@ -19,20 +19,20 @@ Rules for `parc-core`:
 - All operations return structured `Result<T, ParcError>`
 - Takes `VaultPath` as input, never assumes a location
 
-## Language & Key Dependencies
+## Key Dependencies
 
-Rust. Key crates: `clap` (derive), `serde`/`serde_yaml`/`serde_json`, `rusqlite` (bundled, FTS5), `ulid`, `comrak`, `termimad`, `chrono` or `time`, `thiserror`/`anyhow`, `similar` (diffing), `assert_cmd`/`tempfile` (testing).
+Rust. Key crates: `clap` (derive), `serde`/`serde_yaml`/`serde_json`, `rusqlite` (bundled, FTS5), `ulid`, `comrak`, `termimad`, `chrono`, `thiserror`/`anyhow`, `similar` (diffing), `regex`, `toml` (plugin manifests), `wasmtime` (optional, feature-gated `wasm-plugins`), `tokio` (CLI + server), `assert_cmd`/`tempfile` (testing).
 
 ## Core Concepts
 
-- **Fragment**: atomic unit — Markdown file with YAML frontmatter (common envelope + type-specific fields)
+- **Fragment**: Markdown file with YAML frontmatter (common envelope + type-specific fields)
 - **Fragment types**: defined by YAML schemas in `<vault>/schemas/`. Built-in: note, todo, decision, risk, idea
 - **Vault**: `.parc/` directory. Global (`~/.parc/`) or local (`.parc/` in project, discovered by walking up from CWD)
 - **IDs**: ULIDs. Prefix-matching supported everywhere
 - **Links**: `[[id-prefix]]` wiki-links, bidirectional at query time
 - **Tags**: merged from frontmatter `tags:` list + inline `#hashtags` in body. Case-insensitive
 - **Attachments**: stored in `<vault>/attachments/<fragment-id>/`, referenced via `![[attach:filename]]`
-- **History**: snapshot-on-save to `<vault>/history/<fragment-id>/`. No git dependency
+- **History**: snapshot-on-save to `<vault>/history/<fragment-id>/`
 - **Index**: SQLite + FTS5, derived and rebuildable from Markdown source files
 
 ## Vault Layout
@@ -74,22 +74,9 @@ Body content with #inline-tags and [[01JQ7V4Y|links]].
 
 Single query string combining full-text + structured filters. All terms AND-ed.
 
-Filters: `type:`, `status:`, `priority:`, `tag:` / `#`, `due:`, `created:`, `updated:`, `by:`, `has:`, `linked:`. Negation with `!` prefix on values. Date shorthands: `today`, `this-week`, `overdue`, etc.
+Filters: `type:`, `status:`, `priority:`, `tag:` / `#`, `due:`, `created:`, `updated:`, `by:`, `has:`, `linked:`, `is:`. Negation with `!` prefix on values. Date shorthands: `today`, `this-week`, `overdue`, etc.
 
 Parsed in `parc-core` into `SearchQuery` AST, compiled to FTS5 MATCH + SQL WHERE clauses.
-
-## Milestones
-
-- **M0 — Skeleton**: Workspace, init, new, list, show, search (basic FTS), edit, set, reindex, 5 built-in types, global vault, hashtag extraction
-- **M1 — Links**: Wiki-link parsing, backlinks, `parc doctor`
-- **M2 — Multi-Vault**: Local vault discovery, `--vault` flag, `PARC_VAULT` env
-- **M3 — Search DSL**: Full DSL parser with all filters
-- **M4 — Templates & Hooks**: Templates, schema add, aliases, hook scripts, tab completion
-- **M5 — History & Attachments**: Version history, attachment management
-- **M6 — QoL**: Tags aggregation, archive/trash, export/import, `--json` everywhere
-- **M7 — JSON-RPC Server**: `parc-server` binary
-- **M8 — WASM Plugins**: Tier 2 plugin system
-- **M9 — GUI**: Tauri desktop app
 
 ## Design Principles
 

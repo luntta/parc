@@ -1,0 +1,20 @@
+name: risk
+alias: r
+editor_skip: false
+fields:
+  - name: status
+    type: enum
+    values: [identified, mitigating, accepted, resolved]
+    required: true
+    default: identified
+  - name: likelihood
+    type: enum
+    values: [low, medium, high]
+    required: false
+  - name: impact
+    type: enum
+    values: [low, medium, high]
+    required: false
+  - name: mitigation
+    type: string
+    required: false

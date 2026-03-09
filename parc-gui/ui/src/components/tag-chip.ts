@@ -1,3 +1,5 @@
+import { navigate } from "../lib/router.ts";
+
 export class TagChip extends HTMLElement {
   static get observedAttributes(): string[] {
     return ["tag"];
@@ -24,10 +26,9 @@ export class TagChip extends HTMLElement {
       cursor: pointer;
     `;
     this.textContent = `#${tag}`;
-    this.onclick = () => {
-      window.dispatchEvent(
-        new CustomEvent("parc:navigate", { detail: { route: "search", query: `tag:${tag}` } })
-      );
+    this.onclick = (e) => {
+      e.stopPropagation();
+      navigate("search", { q: `tag:${tag}` });
     };
   }
 }

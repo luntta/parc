@@ -15,6 +15,7 @@ pub fn run(
     vault: &Path,
     type_name: &str,
     title: Option<String>,
+    body: Option<String>,
     tags: Vec<String>,
     links: Vec<String>,
     due: Option<String>,
@@ -67,8 +68,13 @@ pub fn run(
             .insert("assignee".to_string(), Value::String(a));
     }
 
-    // Decide whether to open editor
-    let should_open_editor = !schema.editor_skip || title.is_none();
+    // Set body if provided via --body flag
+    if let Some(ref b) = body {
+        fragment.body = b.clone();
+    }
+
+    // Decide whether to open editor (--body skips editor)
+    let should_open_editor = body.is_none() && (!schema.editor_skip || title.is_none());
 
     let runner = CliHookRunner;
 

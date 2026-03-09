@@ -244,7 +244,7 @@ export class AppShell extends HTMLElement {
       case "idea":
       case "trash": {
         const list = document.createElement("fragment-list");
-        list.setAttribute("type-filter", root === "all" ? "" : root);
+        if (root !== "all") list.setAttribute("type", root);
         if (root === "trash") list.setAttribute("show-trash", "true");
         main.appendChild(list);
         break;

@@ -1,12 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicokosi/tauri-plugin-clipboard/dev/schemas/config.schema.json",
-  "productName": "parc",
+  "productName": "parc-gui",
   "version": "0.1.0",
   "identifier": "com.parc.gui",
   "build": {
-    "frontendDist": "../ui/dist",
-    "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "cd ui && npm run dev",
+    "frontendDist": "ui/dist",
     "beforeBuildCommand": "cd ui && npm run build"
   },
   "app": {

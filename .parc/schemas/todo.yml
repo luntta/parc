@@ -1,0 +1,20 @@
+name: todo
+alias: t
+editor_skip: false
+fields:
+  - name: status
+    type: enum
+    values: [open, in-progress, done, cancelled]
+    required: true
+    default: open
+  - name: due
+    type: date
+    required: false
+  - name: priority
+    type: enum
+    values: [low, medium, high, critical]
+    required: false
+    default: medium
+  - name: assignee
+    type: string
+    required: false

@@ -37,6 +37,9 @@ enum Commands {
         /// Title (flag alternative)
         #[arg(long = "title", name = "title_flag")]
         title_flag: Option<String>,
+        /// Body text (skips $EDITOR)
+        #[arg(long)]
+        body: Option<String>,
         /// Add tags
         #[arg(long)]
         tag: Vec<String>,
@@ -399,6 +402,7 @@ fn main() -> anyhow::Result<()> {
                     type_name,
                     title,
                     title_flag,
+                    body,
                     tag,
                     link,
                     due,
@@ -410,6 +414,7 @@ fn main() -> anyhow::Result<()> {
                     &vault,
                     &type_name,
                     title.or(title_flag),
+                    body,
                     tag,
                     link,
                     due,
@@ -509,6 +514,9 @@ struct AliasNewArgs {
     /// Title (flag alternative)
     #[arg(long = "title", name = "title_flag")]
     title_flag: Option<String>,
+    /// Body text (skips $EDITOR)
+    #[arg(long)]
+    body: Option<String>,
     /// Add tags
     #[arg(long)]
     tag: Vec<String>,
@@ -549,6 +557,7 @@ fn run_external_command(vault: &std::path::Path, args: Vec<String>) -> anyhow::R
                 vault,
                 cmd_name,
                 alias_args.title.or(alias_args.title_flag),
+                alias_args.body,
                 alias_args.tag,
                 alias_args.link,
                 alias_args.due,

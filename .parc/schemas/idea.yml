@@ -1,0 +1,9 @@
+name: idea
+alias: i
+editor_skip: false
+fields:
+  - name: status
+    type: enum
+    values: [raw, exploring, promoted, parked, discarded]
+    required: true
+    default: raw

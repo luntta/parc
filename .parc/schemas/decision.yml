@@ -1,0 +1,12 @@
+name: decision
+alias: d
+editor_skip: false
+fields:
+  - name: status
+    type: enum
+    values: [proposed, accepted, superseded, deprecated]
+    required: true
+    default: proposed
+  - name: deciders
+    type: list
+    required: false
