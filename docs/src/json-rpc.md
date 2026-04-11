@@ -1,6 +1,10 @@
-# parc JSON-RPC Server Reference
+---
+layout: layouts/doc.njk
+title: JSON-RPC server
+eyebrow: Reference · §05
+---
 
-`parc-server` is a JSON-RPC 2.0 server that wraps the `parc-core` library, enabling any non-Rust application to interact with parc programmatically.
+`parc-server` is a JSON-RPC 2.0 server that wraps the `parc-core` library, enabling any non-Rust application to interact with parc programmatically. Twenty methods cover the full core API: fragment CRUD, search, links, attachments, vault inspection, schemas, tags, and history.
 
 ## Transport
 
@@ -29,7 +33,7 @@ parc-server --vault /path/to/.parc --socket-path /tmp/parc.sock
 
 Default socket path: `<vault>/server.sock`. Same newline-delimited protocol per connection.
 
-### Configuration
+### Server config
 
 The vault's `config.yml` can set server defaults:
 
@@ -41,18 +45,16 @@ server:
 
 CLI flags override config values.
 
----
-
 ## Protocol
 
-All requests/responses follow [JSON-RPC 2.0](https://www.jsonrpc.org/specification).
+All requests and responses follow [JSON-RPC 2.0](https://www.jsonrpc.org/specification).
 
 ```json
 // Request
 {"jsonrpc": "2.0", "id": 1, "method": "vault.info", "params": {}}
 
 // Success response
-{"jsonrpc": "2.0", "id": 1, "result": { ... }}
+{"jsonrpc": "2.0", "id": 1, "result": { "...": "..." }}
 
 // Error response
 {"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "Method not found: foo"}}
@@ -60,21 +62,17 @@ All requests/responses follow [JSON-RPC 2.0](https://www.jsonrpc.org/specificati
 
 Batch requests are supported — send a JSON array of requests, receive a JSON array of responses.
 
----
-
-## Error Codes
+## Error codes
 
 | Code | Name | Description |
 |------|------|-------------|
 | `-32700` | Parse error | Invalid JSON |
 | `-32600` | Invalid Request | Missing `jsonrpc: "2.0"` or malformed structure |
 | `-32601` | Method not found | Unknown method name |
-| `-32602` | Invalid params | Missing/wrong parameter types, unknown schema type |
+| `-32602` | Invalid params | Missing or wrong parameter types, unknown schema type |
 | `-32603` | Internal error | Core library error (fragment not found, index error, etc.) |
 
 Internal errors include `data` with the error message string.
-
----
 
 ## Methods
 
@@ -82,7 +80,6 @@ Internal errors include `data` with the error message string.
 
 Create a new fragment.
 
-**Params:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | string | yes | Fragment type name or alias |
@@ -92,10 +89,10 @@ Create a new fragment.
 | `links` | string[] | no | IDs to link to |
 | `status` | string | no | Status value |
 | `priority` | string | no | Priority level |
-| `due` | string | no | Due date (ISO-8601 or relative: `today`, `tomorrow`, etc.) |
+| `due` | string | no | Due date (ISO 8601 or relative: `today`, `tomorrow`, etc.) |
 | `assignee` | string | no | Assignee |
 
-**Result:** Full fragment object.
+Returns the full fragment object.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"fragment.create","params":{"type":"todo","title":"Review PRD","tags":["project"],"priority":"high","due":"2026-03-01"}}
@@ -103,17 +100,16 @@ Create a new fragment.
 
 ### fragment.get
 
-Retrieve a fragment by ID (prefix matching supported).
+Retrieve a fragment by ID. Prefix matching supported.
 
 **Params:** `{ "id": "<id-or-prefix>" }`
 
-**Result:** Full fragment object with `body`, `tags`, `links`, `attachments`, extra fields.
+Returns the full fragment object with `body`, `tags`, `links`, `attachments`, and any extra fields.
 
 ### fragment.update
 
 Update an existing fragment. Only provided fields are changed.
 
-**Params:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | yes | Fragment ID or prefix |
@@ -126,7 +122,7 @@ Update an existing fragment. Only provided fields are changed.
 | `due` | string | no | New due date |
 | `assignee` | string | no | New assignee |
 
-**Result:** Updated full fragment object.
+Returns the updated fragment object.
 
 ### fragment.delete
 
@@ -140,7 +136,6 @@ Soft-delete a fragment (moves to trash).
 
 List fragments with optional filters.
 
-**Params:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | string | no | Filter by type |
@@ -149,20 +144,19 @@ List fragments with optional filters.
 | `limit` | number | no | Max results |
 | `sort` | string | no | Sort order |
 
-**Result:** Array of fragment summary objects.
+Returns an array of fragment summary objects.
 
 ### fragment.search
 
 Search using the full DSL query language.
 
-**Params:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `query` | string | yes | DSL query (e.g. `type:todo status:open #backend`) |
 | `limit` | number | no | Max results |
 | `sort` | string | no | Sort order |
 
-**Result:** Array of search result objects with `id`, `type`, `title`, `status`, `tags`, `updated_at`, `snippet`.
+Returns an array of search result objects with `id`, `type`, `title`, `status`, `tags`, `updated_at`, `snippet`.
 
 ### fragment.link
 
@@ -280,15 +274,13 @@ Retrieve a specific historical version.
 
 ### history.restore
 
-Restore a previous version (creates a new snapshot of the current version first).
+Restore a previous version. Creates a new snapshot of the current version first.
 
 **Params:** `{ "id": "<id-or-prefix>", "timestamp": "<iso-8601>" }`
 
 **Result:** `{ "id", "type", "title", "restored_from": "<timestamp>" }`
 
----
-
-## Integration Examples
+## Integration examples
 
 ### Node.js / TypeScript
 
@@ -333,7 +325,7 @@ import subprocess, json
 proc = subprocess.Popen(
     ['parc-server', '--vault', '/path/to/.parc'],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-    text=True, bufsize=1
+    text=True, bufsize=1,
 )
 
 def call(method, params, id=1):

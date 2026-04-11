@@ -1,0 +1,47 @@
+---
+layout: layouts/base.njk
+title: ""
+description: A local-first CLI for capturing, organizing, and retrieving structured fragments of thought.
+---
+
+<section class="landing">
+	<div class="landing__hero">
+		<span class="landing__eyebrow">Personal archive · v{{ site.version }}</span>
+		<h1 class="landing__title">Files you own,<br />indexed and searchable.</h1>
+		<p class="landing__lede">
+			parc is a local-first CLI for capturing notes, todos, decisions, risks, and ideas as plain Markdown in a <code>.parc</code> vault. Indexed with SQLite&nbsp;FTS5. Searchable with a composable query DSL. No accounts. No network. No sync service.
+		</p>
+		<div class="landing__cta">
+			<a class="btn btn--primary" href="{{ '/install/' | url }}">Get started</a>
+			<a class="btn" href="{{ '/quick-start/' | url }}">Quick start</a>
+			<a class="btn" href="{{ site.github }}" target="_blank" rel="noopener">GitHub</a>
+		</div>
+	</div>
+
+	<div class="landing__features">
+		<div class="feature">
+			<h3 class="feature__title">Files are the source of truth</h3>
+			<p class="feature__body">Every fragment is a Markdown file with YAML frontmatter. Readable, grep-able, version-controllable. The SQLite index is fully derivable from the files at any time.</p>
+		</div>
+		<div class="feature">
+			<h3 class="feature__title">One engine, many types</h3>
+			<p class="feature__body">Five built-in fragment types — note, todo, decision, risk, idea — and a YAML schema system for adding your own.</p>
+		</div>
+		<div class="feature">
+			<h3 class="feature__title">Composable search DSL</h3>
+			<p class="feature__body">Combine full-text and structured filters in a single query string. Filter by type, status, priority, tags, dates, links, and more.</p>
+		</div>
+		<div class="feature">
+			<h3 class="feature__title">Vault-scoped</h3>
+			<p class="feature__body">A global vault for personal notes, project-local vaults that travel with the code. Discovery walks up from the current directory.</p>
+		</div>
+		<div class="feature">
+			<h3 class="feature__title">Library-first</h3>
+			<p class="feature__body">A pure Rust library at the core. The CLI, JSON-RPC server, and Tauri desktop GUI are thin consumers of the same engine.</p>
+		</div>
+		<div class="feature">
+			<h3 class="feature__title">Offline by design</h3>
+			<p class="feature__body">No accounts, no network, no sync service. Just files in a directory you control. Use git as transport when you want collaboration.</p>
+		</div>
+	</div>
+</section>

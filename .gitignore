@@ -6,6 +6,9 @@ Cargo.lock
 node_modules/
 parc-gui/ui/dist/
 
+# Docs site
+docs/_site/
+
 # Vault artifacts
 index.db
 trash/

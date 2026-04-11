@@ -1,0 +1,140 @@
+/* ======================================================================
+   parc · design tokens
+   Minimalist, monochrome. Adapted from swatch.
+   ====================================================================== */
+
+:root {
+	/* Type --------------------------------------------------------------- */
+	--font-sans:
+		"Geist", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+		"Helvetica Neue", Arial, sans-serif;
+	--font-mono:
+		"Geist Mono", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+	/* Tight, restrained scale (rem-based). */
+	--fs-xs: 0.75rem;       /* 12 */
+	--fs-sm: 0.8125rem;     /* 13 */
+	--fs-base: 0.9375rem;   /* 15 */
+	--fs-md: 1rem;          /* 16 */
+	--fs-lg: 1.125rem;      /* 18 */
+	--fs-xl: 1.5rem;        /* 24 */
+	--fs-2xl: 2rem;         /* 32 */
+	--fs-3xl: 2.5rem;       /* 40 */
+	--fs-4xl: clamp(2.75rem, 4vw + 1rem, 4rem); /* 44–64 */
+
+	--lh-tight: 1.05;
+	--lh-snug: 1.2;
+	--lh-body: 1.55;
+
+	--track-display: -0.022em;
+	--track-tight: -0.014em;
+	--track-normal: -0.003em;
+	--track-wide: 0.02em;
+	--track-caps: 0.08em;
+
+	/* Spacing — 4px base */
+	--s-1: 0.25rem;
+	--s-2: 0.5rem;
+	--s-3: 0.75rem;
+	--s-4: 1rem;
+	--s-5: 1.25rem;
+	--s-6: 1.75rem;
+	--s-7: 2.5rem;
+	--s-8: 3.5rem;
+	--s-9: 5rem;
+	--s-10: 7rem;
+
+	/* Radii */
+	--r-1: 6px;
+	--r-2: 8px;
+	--r-3: 10px;
+	--r-4: 14px;
+
+	/* Layout */
+	--max-w: 72rem;
+	--max-w-prose: none;
+	--gutter: clamp(1.25rem, 3vw, 2.5rem);
+
+	/* Motion */
+	--ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+	--ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+	--dur-fast: 120ms;
+	--dur: 200ms;
+	--dur-slow: 400ms;
+}
+
+/* ----------------------------------------------------------------------
+   Light theme — near-white paper
+   ---------------------------------------------------------------------- */
+:root,
+[data-theme="light"] {
+	--bg: #ffffff;
+	--bg-elev: #fafafa;
+	--surface: #f6f6f7;
+	--surface-2: #f1f1f2;
+
+	--ink: #09090b;
+	--ink-2: #18181b;
+	--ink-3: #52525b;
+	--ink-4: #a1a1aa;
+	--ink-5: #d4d4d8;
+
+	--border: #e4e4e7;
+	--border-soft: #ededee;
+	--border-strong: #d4d4d8;
+
+	--ok: #16a34a;
+	--warn: #b45309;
+	--err: #dc2626;
+
+	--accent: var(--ink);
+	--accent-ink: var(--bg);
+
+	--shadow-1: 0 1px 2px rgba(9, 9, 11, 0.04),
+		0 1px 1px rgba(9, 9, 11, 0.06);
+	--shadow-2: 0 1px 2px rgba(9, 9, 11, 0.04),
+		0 8px 24px -12px rgba(9, 9, 11, 0.12);
+
+	color-scheme: light;
+}
+
+/* ----------------------------------------------------------------------
+   Dark theme — near-black
+   ---------------------------------------------------------------------- */
+[data-theme="dark"] {
+	--bg: #09090b;
+	--bg-elev: #0c0c0e;
+	--surface: #131316;
+	--surface-2: #1a1a1d;
+
+	--ink: #fafafa;
+	--ink-2: #e4e4e7;
+	--ink-3: #a1a1aa;
+	--ink-4: #71717a;
+	--ink-5: #3f3f46;
+
+	--border: #1f1f23;
+	--border-soft: #18181b;
+	--border-strong: #2a2a2e;
+
+	--ok: #4ade80;
+	--warn: #fbbf24;
+	--err: #f87171;
+
+	--accent: var(--ink);
+	--accent-ink: var(--bg);
+
+	--shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+	--shadow-2: 0 1px 2px rgba(0, 0, 0, 0.4),
+		0 12px 32px -16px rgba(0, 0, 0, 0.7);
+
+	color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--dur-fast: 0ms;
+		--dur: 0ms;
+		--dur-slow: 0ms;
+	}
+}

@@ -91,6 +91,6 @@ Parsed in `parc-core` into `SearchQuery` AST, compiled to FTS5 MATCH + SQL WHERE
 
 ## Development Notes
 
-- PRD: `docs/parc-prd.md`
+- PRD: `planning/parc-prd.md`
 - Git-ignored in vault: `index.db`, `trash/`, `server.sock`
 - Collaboration model: git as transport, `parc reindex` after pull

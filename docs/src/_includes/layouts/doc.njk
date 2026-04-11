@@ -1,0 +1,51 @@
+---
+layout: layouts/base.njk
+---
+{% set pager = nav | prevNext(page.url) %}
+
+<div class="doc-shell">
+	<aside class="doc-side">
+		{%- for entry in nav -%}
+			{%- if entry.section -%}
+				{%- if not loop.first %}</ul>{% endif -%}
+				<h2>{{ entry.section }}</h2>
+				<ul>
+			{%- else -%}
+				<li>
+					<a href="{{ entry.url | url }}"
+						{%- if entry.url == page.url %} aria-current="page"{% endif %}>
+						{{ entry.title }}
+					</a>
+				</li>
+			{%- endif -%}
+			{%- if loop.last %}</ul>{% endif -%}
+		{%- endfor -%}
+	</aside>
+
+	<article class="doc-content">
+		{% if eyebrow %}<span class="doc-eyebrow">{{ eyebrow }}</span>{% endif %}
+		<h1>{{ title }}</h1>
+		{{ content | safe }}
+
+		{% if pager.prev or pager.next %}
+		<nav class="doc-pager" aria-label="Pagination">
+			<div class="prev">
+				{% if pager.prev %}
+					<a href="{{ pager.prev.url | url }}">
+						← Previous
+						<strong>{{ pager.prev.title }}</strong>
+					</a>
+				{% endif %}
+			</div>
+			<div class="next">
+				{% if pager.next %}
+					<a href="{{ pager.next.url | url }}">
+						Next →
+						<strong>{{ pager.next.title }}</strong>
+					</a>
+				{% endif %}
+			</div>
+		</nav>
+		{% endif %}
+	</article>
+</div>

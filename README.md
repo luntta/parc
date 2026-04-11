@@ -239,7 +239,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"fragment.create","params":{"type":"todo"
 
 20 methods covering the full core API: `fragment.{create,get,update,delete,list,search}`, `fragment.{link,unlink,backlinks}`, `fragment.{attach,detach,attachments}`, `vault.{info,reindex,doctor}`, `schema.{list,get}`, `tags.list`, `history.{list,get,restore}`.
 
-See [`docs/json-rpc.md`](docs/json-rpc.md) for the full method reference with examples and integration snippets for Node.js and Python.
+See the [JSON-RPC reference](https://luntta.github.io/parc/json-rpc/) for the full method reference with examples and integration snippets for Node.js and Python.
 
 ### Plugins
 

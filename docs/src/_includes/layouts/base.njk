@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>{% if title %}{{ title }} · {% endif %}{{ site.name }}</title>
+		<meta name="description" content="{{ description or site.description }}" />
+
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@300..600&display=swap"
+			rel="stylesheet"
+		/>
+
+		<link rel="stylesheet" href="{{ '/assets/css/tokens.css' | url }}" />
+		<link rel="stylesheet" href="{{ '/assets/css/base.css' | url }}" />
+		<link rel="stylesheet" href="{{ '/assets/css/layout.css' | url }}" />
+		<link rel="stylesheet" href="{{ '/assets/css/prism.css' | url }}" />
+
+		<script>
+			// Apply theme synchronously to avoid flash
+			(function () {
+				try {
+					var t = localStorage.getItem("parc-theme");
+					if (!t) {
+						t = window.matchMedia("(prefers-color-scheme: dark)").matches
+							? "dark"
+							: "light";
+					}
+					document.documentElement.dataset.theme = t;
+				} catch (e) {}
+			})();
+		</script>
+	</head>
+	<body>
+		<a href="#main" class="skip-link">Skip to content</a>
+
+		<header class="site-header">
+			<a class="wordmark" href="{{ '/' | url }}" aria-label="{{ site.name }} home">
+				<span class="wordmark__name">{{ site.name }}</span>
+				<span class="wordmark__version">{{ site.version }}</span>
+			</a>
+
+			<nav class="site-nav" aria-label="Primary">
+				<a
+					href="{{ '/install/' | url }}"
+					{% if page.url and page.url != '/' %}aria-current="page"{% endif %}
+				>Docs</a>
+				<a
+					href="{{ site.github }}"
+					target="_blank" rel="noopener"
+				>GitHub</a>
+				<button type="button" class="theme-toggle" aria-label="Toggle color theme" data-theme-toggle>
+					<span class="theme-toggle__dot"></span>
+				</button>
+			</nav>
+		</header>
+
+		<main id="main" class="site-main">
+			{{ content | safe }}
+		</main>
+
+		<footer class="site-footer">
+			<div class="site-footer__rule"></div>
+			<div class="site-footer__row">
+				<span class="footer-mark">{{ site.name }} · v{{ site.version }} · {{ site.license }}</span>
+				<span class="footer-meta">
+					<a href="{{ site.github }}" target="_blank" rel="noopener">GitHub</a>
+				</span>
+				<span class="footer-colophon">Set in Geist &amp; Geist Mono</span>
+			</div>
+		</footer>
+
+		<script>
+			// Theme toggle
+			document.querySelector("[data-theme-toggle]")?.addEventListener("click", function () {
+				var current = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+				var next = current === "dark" ? "light" : "dark";
+				document.documentElement.dataset.theme = next;
+				try { localStorage.setItem("parc-theme", next); } catch (e) {}
+			});
+		</script>
+	</body>
+</html>

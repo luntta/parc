@@ -1,0 +1,20 @@
+{
+  "name": "parc-docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Documentation site for parc",
+  "type": "module",
+  "scripts": {
+    "dev": "eleventy --serve --pathprefix=/parc/",
+    "build": "eleventy --pathprefix=/parc/",
+    "build:local": "eleventy",
+    "clean": "rm -rf _site"
+  },
+  "devDependencies": {
+    "@11ty/eleventy": "^3.0.0",
+    "@11ty/eleventy-navigation": "^0.3.5",
+    "@11ty/eleventy-plugin-syntaxhighlight": "^5.0.0",
+    "markdown-it-anchor": "^9.2.0",
+    "markdown-it-attrs": "^4.3.1"
+  }
+}
