@@ -22,14 +22,19 @@ The core install. Gets you the `parc` command and everything you need to capture
 cargo install --path parc-cli
 ```
 
-## Optional binaries
+## Optional server
 
 ```bash
 # Standalone JSON-RPC server (also available as `parc server`)
 cargo install --path parc-server
+```
 
-# Tauri desktop GUI
-cargo install --path parc-gui
+## Terminal UI
+
+The terminal UI is included in `parc-cli`:
+
+```bash
+parc tui
 ```
 
 ## Features
@@ -42,16 +47,6 @@ cargo install --path parc-cli --features wasm-plugins
 ```
 
 Plugin manifest types and the `parc plugin list` / `parc plugin info` commands work without the feature — only runtime loading and execution require it.
-
-## System dependencies for the GUI
-
-The Tauri desktop GUI needs WebKit:
-
-| OS | Package |
-|----|---------|
-| Arch Linux | `sudo pacman -S webkit2gtk-4.1` |
-| Debian / Ubuntu | `sudo apt install libwebkit2gtk-4.1-dev` |
-| macOS | Built in |
 
 ## Verifying the install
 

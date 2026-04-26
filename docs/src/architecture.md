@@ -4,7 +4,7 @@ title: Architecture
 eyebrow: Reference · §09
 ---
 
-parc is built library-first. `parc-core` is a pure Rust library with no terminal I/O. Everything else — the CLI, the JSON-RPC server, the Tauri desktop GUI — is a thin consumer of the same engine.
+parc is built library-first. `parc-core` is a pure Rust library with no terminal I/O. Everything else — the CLI/TUI and the JSON-RPC server — is a thin consumer of the same engine.
 
 ## Crate layout
 
@@ -12,8 +12,7 @@ parc is built library-first. `parc-core` is a pure Rust library with no terminal
 parc/
 ├── parc-core/     # Library — no println!, no TTY, returns Result<T, ParcError>
 ├── parc-cli/      # CLI binary — terminal formatting, $EDITOR, clap
-├── parc-server/   # JSON-RPC 2.0 server (stdio / Unix socket)
-└── parc-gui/      # Tauri v2 desktop app — vanilla TypeScript web components
+└── parc-server/   # JSON-RPC 2.0 server (stdio / Unix socket)
 ```
 
 ### parc-core
@@ -27,7 +26,7 @@ Rules:
 - Takes a `VaultPath` as input — never assumes a location, never reads `$HOME`
 - No global state — every operation takes the vault and config it needs
 
-This is what makes the CLI, server, and GUI so thin. None of them re-implement business logic; they just translate between their respective transports and `parc-core`.
+This is what makes the CLI/TUI and server so thin. Neither re-implements business logic; they just translate between their respective transports and `parc-core`.
 
 ### parc-cli
 
@@ -36,7 +35,7 @@ The `parc` binary. Built on `clap` (derive). Adds terminal-specific concerns:
 - Markdown rendering with [`termimad`](https://crates.io/crates/termimad)
 - Diff rendering with [`similar`](https://crates.io/crates/similar)
 - `$EDITOR` invocation for `parc new` and `parc edit`
-- Colour and TTY detection
+- TTY detection and a built-in terminal UI (`parc tui`)
 - JSON output mode (`--json`) for scripts
 
 Every CLI command is a thin function that calls `parc-core` and formats the result.
@@ -46,10 +45,6 @@ Every CLI command is a thin function that calls `parc-core` and formats the resu
 The `parc-server` binary, also reachable as `parc server`. A JSON-RPC 2.0 server with two transports: newline-delimited JSON over stdio, or the same protocol over a Unix domain socket. Twenty methods covering the full core API — see [JSON-RPC server]({{ '/json-rpc/' | url }}).
 
 The server is built on `tokio`. Each request handler is a thin wrapper around a `parc-core` call. Errors from `parc-core` are mapped to JSON-RPC error codes.
-
-### parc-gui
-
-A Tauri v2 desktop app. The frontend is vanilla TypeScript with web components and zero runtime npm dependencies — the only `node_modules` is the build pipeline (Vite + Tauri CLI). The Rust side links `parc-core` directly via `tauri::generate_handler!` invocations; there is no IPC layer beyond Tauri's normal command bridge.
 
 ## Files first, index second
 
@@ -81,7 +76,7 @@ A query string flows through these stages:
         ▼  parc_core::search::resolver
   Fragment summaries
         │
-        ▼  consumer (CLI / RPC / GUI)
+        ▼  consumer (CLI/TUI / RPC)
 ```
 
 The parser produces an AST that the consumer can inspect (`parc search ... --explain`). The compiler is the only stage that knows about SQL — every transformation above it is pure data.
@@ -94,10 +89,10 @@ Plugins talk to parc through a `parc_host` namespace exposing fragment CRUD, sea
 
 ## Why this shape
 
-The library-first design exists because parc has three frontends from day one (CLI, JSON-RPC, GUI) and a fourth on the horizon (plugins). Putting all logic in `parc-core` and keeping the binaries thin means:
+The library-first design exists because parc has multiple front doors (CLI/TUI, JSON-RPC, and plugins). Putting all logic in `parc-core` and keeping the binaries thin means:
 
 - A bug fix in the search compiler benefits every frontend at once
-- New frontends are cheap to add — the GUI is roughly 1500 lines of glue
+- New frontends are cheap to add because they share the same core operations
 - Tests for the engine don't need to spin up a binary or a server
 - The JSON-RPC surface and the CLI surface are guaranteed to be in sync, because both are calling the same functions
 

@@ -34,7 +34,6 @@ export default [
   { url: "/custom-types/", title: "Custom types" },
   { url: "/json-rpc/", title: "JSON-RPC server" },
   { url: "/plugins/", title: "Plugins" },
-  { url: "/gui/", title: "Desktop GUI" },
   { url: "/collaboration/", title: "Collaboration" },
   { url: "/architecture/", title: "Architecture" },
 ];
