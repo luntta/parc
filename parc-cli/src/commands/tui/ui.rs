@@ -133,17 +133,51 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App, config: &Config) {
 fn format_row(row: &Row, id_len: usize) -> Line<'static> {
     let short = short_id(&row.id, id_len).to_string();
     let status = row.status.as_deref().unwrap_or("-").to_string();
-    let title = row.title.clone();
-    match &row.section {
-        Some(section) => Line::from(format!(
-            "{}  {:<8} {:<10} {} - {}",
-            short, row.fragment_type, status, section, title
-        )),
-        None => Line::from(format!(
-            "{}  {:<8} {:<10} {}",
-            short, row.fragment_type, status, title
-        )),
+    let prefix = match &row.section {
+        Some(section) => format!(
+            "{}  {:<8} {:<10} {} - ",
+            short, row.fragment_type, status, section
+        ),
+        None => format!("{}  {:<8} {:<10} ", short, row.fragment_type, status),
+    };
+
+    let mut spans = vec![Span::raw(prefix)];
+    spans.extend(highlighted_title(&row.title, &row.title_match_indices));
+    Line::from(spans)
+}
+
+fn highlighted_title(title: &str, indices: &[u32]) -> Vec<Span<'static>> {
+    if indices.is_empty() {
+        return vec![Span::raw(title.to_string())];
     }
+
+    let highlight_style = Style::default()
+        .fg(ACTIVE_TAB)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+    let mut plain = String::new();
+    let mut idx_iter = indices.iter().copied().peekable();
+
+    for (i, ch) in title.chars().enumerate() {
+        while idx_iter.peek().map_or(false, |&idx| (idx as usize) < i) {
+            idx_iter.next();
+        }
+        let is_match = idx_iter.peek() == Some(&(i as u32));
+        if is_match {
+            if !plain.is_empty() {
+                spans.push(Span::raw(std::mem::take(&mut plain)));
+            }
+            spans.push(Span::styled(ch.to_string(), highlight_style));
+            idx_iter.next();
+        } else {
+            plain.push(ch);
+        }
+    }
+
+    if !plain.is_empty() {
+        spans.push(Span::raw(plain));
+    }
+    spans
 }
 
 fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {

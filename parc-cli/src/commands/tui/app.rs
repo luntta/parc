@@ -14,7 +14,6 @@ use super::{actions, data, ui, ConfirmAction, Focus, InputAction, Mode, Tab};
 
 const PAGE_LINES: u16 = 10;
 const HALF_PAGE_LINES: u16 = 5;
-const SEARCH_DEBOUNCE_MS: u64 = 120;
 const FRAGMENT_CACHE_CAP: usize = 64;
 const IDLE_POLL_SECS: u64 = 60;
 const STATUS_LIFETIME_SECS: u64 = 4;
@@ -57,7 +56,7 @@ pub(super) struct App {
     pub status: Status,
     pub mode: Mode,
     pub dirty: bool,
-    pub pending_search_load: Option<Instant>,
+    pub search: data::SearchState,
     pub cache: FragmentCache,
 }
 
@@ -78,7 +77,7 @@ impl App {
             status: Status::Idle,
             mode: Mode::Normal,
             dirty: true,
-            pending_search_load: None,
+            search: data::SearchState::new(),
             cache: FragmentCache::new(FRAGMENT_CACHE_CAP),
         }
     }
@@ -137,7 +136,7 @@ impl App {
 }
 
 pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Result<()> {
-    let initial_rows = data::load_rows(vault, Tab::Today, "", config)?;
+    let initial_rows = data::load_rows(vault, Tab::Today, config)?;
     let mut app = App::new(initial_rows);
 
     loop {
@@ -151,24 +150,12 @@ pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Re
         }
 
         let now = Instant::now();
-        let next_deadline = [app.pending_search_load, app.status.deadline()]
-            .into_iter()
-            .flatten()
-            .min();
-        let timeout = match next_deadline {
+        let timeout = match app.status.deadline() {
             Some(deadline) => deadline.saturating_duration_since(now),
             None => Duration::from_secs(IDLE_POLL_SECS),
         };
 
         if !event::poll(timeout)? {
-            // Timeout fired with no event — flush pending debounced search and/or status.
-            if let Some(deadline) = app.pending_search_load {
-                if deadline <= Instant::now() {
-                    app.pending_search_load = None;
-                    app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
-                    app.dirty = true;
-                }
-            }
             if app.status.is_expired() {
                 app.clear_status();
             }
@@ -222,7 +209,7 @@ fn handle_normal(
             app.tab = app.tab.next();
             app.list_state.select(Some(0));
             app.detail_scroll = 0;
-            app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+            reload_rows(app, vault, config)?;
             app.clear_status();
             app.dirty = true;
         }
@@ -238,7 +225,7 @@ fn handle_normal(
         }
 
         (KeyCode::Char('r'), _) if app.tab != Tab::Search && plain => {
-            app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+            reload_rows(app, vault, config)?;
             app.set_status("reloaded");
         }
 
@@ -252,7 +239,8 @@ fn handle_normal(
                 match actions::edit(terminal, vault, &id) {
                     Ok(msg) => {
                         app.cache.invalidate(&id);
-                        app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+                        app.search.mark_stale();
+                        reload_rows(app, vault, config)?;
                         app.set_status(msg);
                     }
                     Err(e) => app.set_status(format!("edit failed: {}", e)),
@@ -264,7 +252,8 @@ fn handle_normal(
                 match actions::toggle_status(vault, &id) {
                     Ok(msg) => {
                         app.cache.invalidate(&id);
-                        app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+                        app.search.mark_stale();
+                        reload_rows(app, vault, config)?;
                         app.set_status(msg);
                     }
                     Err(e) => app.set_status(format!("toggle failed: {}", e)),
@@ -276,7 +265,8 @@ fn handle_normal(
                 match actions::archive(vault, &id) {
                     Ok(msg) => {
                         app.cache.invalidate(&id);
-                        app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+                        app.search.mark_stale();
+                        reload_rows(app, vault, config)?;
                         app.set_status(msg);
                     }
                     Err(e) => app.set_status(format!("archive failed: {}", e)),
@@ -358,8 +348,7 @@ fn handle_normal(
             if app.search_input.pop().is_some() {
                 app.list_state.select(Some(0));
                 app.detail_scroll = 0;
-                app.pending_search_load =
-                    Some(Instant::now() + Duration::from_millis(SEARCH_DEBOUNCE_MS));
+                reload_rows(app, vault, config)?;
                 app.dirty = true;
             }
         }
@@ -367,16 +356,14 @@ fn handle_normal(
             app.search_input.clear();
             app.list_state.select(Some(0));
             app.detail_scroll = 0;
-            app.pending_search_load = None;
-            app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+            reload_rows(app, vault, config)?;
             app.dirty = true;
         }
         (KeyCode::Char(c), _) if app.tab == Tab::Search && !ctrl => {
             app.search_input.push(c);
             app.list_state.select(Some(0));
             app.detail_scroll = 0;
-            app.pending_search_load =
-                Some(Instant::now() + Duration::from_millis(SEARCH_DEBOUNCE_MS));
+            reload_rows(app, vault, config)?;
             app.dirty = true;
         }
         _ => {}
@@ -398,7 +385,8 @@ fn handle_confirm(
                 ConfirmAction::Delete { id } => match actions::delete(vault, &id) {
                     Ok(msg) => {
                         app.cache.invalidate(&id);
-                        app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+                        app.search.mark_stale();
+                        reload_rows(app, vault, config)?;
                         app.set_status(msg);
                     }
                     Err(e) => app.set_status(format!("delete failed: {}", e)),
@@ -441,8 +429,8 @@ fn handle_input(
                     InputAction::Promote { id } => match actions::promote(vault, &id, &trimmed) {
                         Ok(msg) => {
                             app.cache.invalidate(&id);
-                            app.rows =
-                                data::load_rows(vault, app.tab, &app.search_input, config)?;
+                            app.search.mark_stale();
+                            reload_rows(app, vault, config)?;
                             app.set_status(msg);
                         }
                         Err(e) => app.set_status(format!("promote failed: {}", e)),
@@ -492,9 +480,16 @@ fn switch_tab(app: &mut App, tab: Tab, vault: &Path, config: &Config) -> Result<
     app.tab = tab;
     app.list_state.select(Some(0));
     app.detail_scroll = 0;
-    app.pending_search_load = None;
-    app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+    reload_rows(app, vault, config)?;
     app.dirty = true;
+    Ok(())
+}
+
+fn reload_rows(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
+    app.rows = match app.tab {
+        Tab::Search => data::load_search_rows(vault, &app.search_input, &mut app.search)?,
+        _ => data::load_rows(vault, app.tab, config)?,
+    };
     Ok(())
 }
 

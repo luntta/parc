@@ -2,17 +2,42 @@ use std::path::Path;
 
 use anyhow::Result;
 use parc_core::config::Config;
-use parc_core::search::{CompareOp, DateFilter, Filter, SearchQuery, SearchResult, SortOrder};
+use parc_core::fuzzy::{FuzzyEngine, FuzzyHit};
+use parc_core::index::open_index;
+use parc_core::search::{
+    self, CompareOp, DateFilter, Filter, SearchQuery, SearchResult, SortOrder, TextTerm,
+};
 
 use super::{Row, Tab};
 use crate::commands::resurfacing;
 
-pub(super) fn load_rows(
-    vault: &Path,
-    tab: Tab,
-    search_input: &str,
-    config: &Config,
-) -> Result<Vec<Row>> {
+pub(super) struct SearchState {
+    engine: FuzzyEngine,
+    loaded_filters: Option<Vec<Filter>>,
+    stale: bool,
+}
+
+impl SearchState {
+    pub(super) fn new() -> Self {
+        Self {
+            engine: FuzzyEngine::new(),
+            loaded_filters: None,
+            stale: false,
+        }
+    }
+
+    pub(super) fn mark_stale(&mut self) {
+        self.stale = true;
+    }
+}
+
+impl Default for SearchState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub(super) fn load_rows(vault: &Path, tab: Tab, config: &Config) -> Result<Vec<Row>> {
     match tab {
         Tab::Today => load_today_rows(vault, config),
         Tab::List => query_rows(
@@ -25,15 +50,43 @@ pub(super) fn load_rows(
             },
         ),
         Tab::Stale => load_stale_rows(vault, config),
-        Tab::Search => {
-            if search_input.trim().is_empty() {
-                return Ok(Vec::new());
-            }
-            let mut query = parc_core::search::parse_query(search_input)?;
-            query.limit = Some(200);
-            query_rows(vault, query)
-        }
+        Tab::Search => Ok(Vec::new()),
     }
+}
+
+pub(super) fn load_search_rows(
+    vault: &Path,
+    search_input: &str,
+    state: &mut SearchState,
+) -> Result<Vec<Row>> {
+    let mut query = search::parse_query(search_input)?;
+    query.sort = SortOrder::Score;
+    query.limit = Some(200);
+
+    if state.stale || state.loaded_filters.as_ref() != Some(&query.filters) {
+        let conn = open_index(vault)?;
+        let candidates = search::load_fuzzy_candidates(&conn, &query)?;
+        state.engine.set_candidates(candidates);
+        state.loaded_filters = Some(query.filters.clone());
+        state.stale = false;
+    }
+
+    let pattern = fuzzy_pattern(&query);
+    state.engine.set_pattern(&pattern);
+    state.engine.poll_until_done();
+
+    if search_input.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut hits = state.engine.hits(usize::MAX);
+    retain_phrases(&mut hits, &query);
+
+    if let Some(limit) = query.limit {
+        hits.truncate(limit);
+    }
+
+    Ok(hits.into_iter().map(Row::from).collect())
 }
 
 fn query_rows(vault: &Path, query: SearchQuery) -> Result<Vec<Row>> {
@@ -41,6 +94,40 @@ fn query_rows(vault: &Path, query: SearchQuery) -> Result<Vec<Row>> {
         .into_iter()
         .map(Row::from)
         .collect())
+}
+
+fn fuzzy_pattern(query: &SearchQuery) -> String {
+    query
+        .text_terms
+        .iter()
+        .filter_map(|term| match term {
+            TextTerm::Word(word) => Some(word.as_str()),
+            TextTerm::Phrase(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn retain_phrases(hits: &mut Vec<FuzzyHit>, query: &SearchQuery) {
+    let phrases: Vec<String> = query
+        .text_terms
+        .iter()
+        .filter_map(|term| match term {
+            TextTerm::Phrase(phrase) => Some(phrase.to_lowercase()),
+            TextTerm::Word(_) => None,
+        })
+        .collect();
+    if phrases.is_empty() {
+        return;
+    }
+
+    hits.retain(|hit| {
+        let title_lc = hit.item.title.to_lowercase();
+        let body_lc = hit.item.body.to_lowercase();
+        phrases
+            .iter()
+            .all(|phrase| title_lc.contains(phrase) || body_lc.contains(phrase))
+    });
 }
 
 fn load_today_rows(vault: &Path, config: &Config) -> Result<Vec<Row>> {

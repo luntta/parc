@@ -787,7 +787,10 @@ pub fn fuzzy_search(
     Ok(hits)
 }
 
-fn load_fuzzy_candidates(
+/// Load candidate fragments for fuzzy matching after applying structured
+/// filters in SQL. Bare text terms are intentionally ignored here; callers pass
+/// them to [`crate::fuzzy::FuzzyEngine`].
+pub fn load_fuzzy_candidates(
     conn: &Connection,
     query: &SearchQuery,
 ) -> Result<Vec<crate::fuzzy::FuzzyItem>, ParcError> {

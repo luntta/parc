@@ -6,6 +6,7 @@ use crossterm::cursor::{Hide, Show};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use parc_core::config::load_config;
+use parc_core::fuzzy::FuzzyHit;
 use parc_core::search::SearchResult;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -101,6 +102,7 @@ pub(crate) struct Row {
     pub fragment_type: String,
     pub status: Option<String>,
     pub section: Option<String>,
+    pub title_match_indices: Vec<u32>,
 }
 
 impl From<SearchResult> for Row {
@@ -111,6 +113,20 @@ impl From<SearchResult> for Row {
             fragment_type: result.fragment_type,
             status: result.status,
             section: None,
+            title_match_indices: Vec::new(),
+        }
+    }
+}
+
+impl From<FuzzyHit> for Row {
+    fn from(hit: FuzzyHit) -> Self {
+        Row {
+            id: hit.item.id,
+            title: hit.item.title,
+            fragment_type: hit.item.fragment_type,
+            status: hit.item.status,
+            section: None,
+            title_match_indices: hit.title_match_indices,
         }
     }
 }
