@@ -565,7 +565,7 @@ fn draw_box(stdout: &mut io::Stdout, rect: Rect, title: &str, color: Color) -> R
 
     let inner_width = rect.width.saturating_sub(2) as usize;
     let top = titled_border(title, inner_width);
-    let bottom = format!("+{}+", "-".repeat(inner_width));
+    let bottom = format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(inner_width));
 
     queue!(
         stdout,
@@ -578,9 +578,9 @@ fn draw_box(stdout: &mut io::Stdout, rect: Rect, title: &str, color: Color) -> R
         queue!(
             stdout,
             MoveTo(rect.x, y),
-            Print("|"),
+            Print("\u{2502}"),
             MoveTo(rect.x + rect.width.saturating_sub(1), y),
-            Print("|")
+            Print("\u{2502}")
         )?;
     }
 
@@ -596,12 +596,16 @@ fn draw_box(stdout: &mut io::Stdout, rect: Rect, title: &str, color: Color) -> R
 
 fn titled_border(title: &str, inner_width: usize) -> String {
     if inner_width == 0 {
-        return "++".to_string();
+        return "\u{250C}\u{2510}".to_string();
     }
 
     let clean = truncate(title, inner_width);
     let remaining = inner_width.saturating_sub(clean.len());
-    format!("+{}{}+", clean, "-".repeat(remaining))
+    format!(
+        "\u{250C}{}{}\u{2510}",
+        clean,
+        "\u{2500}".repeat(remaining)
+    )
 }
 
 fn short_id(id: &str, len: usize) -> &str {
