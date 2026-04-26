@@ -1,4 +1,4 @@
 name: note
 alias: "n"
-editor_skip: false
+editor_skip: true
 fields: []

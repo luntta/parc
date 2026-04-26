@@ -28,6 +28,22 @@ enum Commands {
         #[arg(long)]
         global: bool,
     },
+    /// Quickly capture a note
+    #[command(name = "+")]
+    Capture {
+        /// Text to capture. Reads stdin when omitted.
+        #[arg(value_name = "TEXT")]
+        text: Vec<String>,
+        /// Add tags
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Link to other fragments
+        #[arg(long)]
+        link: Vec<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Create a new fragment
     New {
         /// Fragment type (or alias)
@@ -40,6 +56,34 @@ enum Commands {
         /// Body text (skips $EDITOR)
         #[arg(long)]
         body: Option<String>,
+        /// Add tags
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Link to other fragments
+        #[arg(long)]
+        link: Vec<String>,
+        /// Due date (YYYY-MM-DD)
+        #[arg(long)]
+        due: Option<String>,
+        /// Priority level
+        #[arg(long)]
+        priority: Option<String>,
+        /// Status
+        #[arg(long)]
+        status: Option<String>,
+        /// Assignee
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Convert a fragment to another type
+    Promote {
+        /// Fragment ID or prefix
+        id: String,
+        /// New fragment type (or alias)
+        new_type: String,
         /// Add tags
         #[arg(long)]
         tag: Vec<String>,
@@ -398,6 +442,12 @@ fn main() -> anyhow::Result<()> {
             // All other commands: resolve vault once, pass to command
             let vault = resolve_vault(cli.vault.as_deref())?;
             match cli.command {
+                Commands::Capture {
+                    text,
+                    tag,
+                    link,
+                    json,
+                } => commands::capture::run(&vault, text, tag, link, json),
                 Commands::New {
                     type_name,
                     title,
@@ -415,6 +465,28 @@ fn main() -> anyhow::Result<()> {
                     &type_name,
                     title.or(title_flag),
                     body,
+                    tag,
+                    link,
+                    due,
+                    priority,
+                    status,
+                    assignee,
+                    json,
+                ),
+                Commands::Promote {
+                    id,
+                    new_type,
+                    tag,
+                    link,
+                    due,
+                    priority,
+                    status,
+                    assignee,
+                    json,
+                } => commands::promote::run(
+                    &vault,
+                    &id,
+                    &new_type,
                     tag,
                     link,
                     due,

@@ -195,6 +195,97 @@ fn test_full_lifecycle() {
 }
 
 #[test]
+fn test_quick_capture_creates_note_without_editor() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let assert = parc()
+        .args(["+", "Look into connection pooling", "--tag", "backend"])
+        .env("EDITOR", "false")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let id = stdout.trim();
+    let fragment = parc_core::fragment::read_fragment(&tmp.path().join(".parc"), id).unwrap();
+
+    assert_eq!(fragment.fragment_type, "note");
+    assert_eq!(fragment.title, "Look into connection pooling");
+    assert_eq!(fragment.body, "");
+    assert_eq!(fragment.tags, vec!["backend".to_string()]);
+}
+
+#[test]
+fn test_quick_capture_from_stdin_uses_first_line_as_title() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let assert = parc()
+        .arg("+")
+        .write_stdin("Scratch note\nLine one\nLine two\n")
+        .env("EDITOR", "false")
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let id = stdout.trim();
+    let fragment = parc_core::fragment::read_fragment(&tmp.path().join(".parc"), id).unwrap();
+
+    assert_eq!(fragment.fragment_type, "note");
+    assert_eq!(fragment.title, "Scratch note");
+    assert_eq!(fragment.body.trim(), "Line one\nLine two");
+}
+
+#[test]
+fn test_promote_note_to_todo() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id = create_fragment_directly(&tmp, "note", "Promote me", "Body");
+
+    parc()
+        .args([
+            "promote",
+            &id[..8],
+            "todo",
+            "--priority",
+            "high",
+            "--due",
+            "2026-03-01",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Promoted"));
+
+    let fragment = parc_core::fragment::read_fragment(&tmp.path().join(".parc"), &id).unwrap();
+    assert_eq!(fragment.fragment_type, "todo");
+    assert_eq!(fragment.title, "Promote me");
+    assert_eq!(fragment.body.trim(), "Body");
+    assert_eq!(
+        fragment.extra_fields.get("status"),
+        Some(&serde_json::Value::String("open".to_string()))
+    );
+    assert_eq!(
+        fragment.extra_fields.get("priority"),
+        Some(&serde_json::Value::String("high".to_string()))
+    );
+    assert_eq!(
+        fragment.extra_fields.get("due"),
+        Some(&serde_json::Value::String("2026-03-01".to_string()))
+    );
+
+    parc()
+        .args(["list", "todo"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Promote me"));
+}
+
+#[test]
 fn test_todo_with_fields() {
     let tmp = TempDir::new().unwrap();
     init_vault(&tmp);

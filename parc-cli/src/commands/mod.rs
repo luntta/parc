@@ -1,6 +1,7 @@
 pub mod archive;
 pub mod attach;
 pub mod backlinks;
+pub mod capture;
 pub mod completions;
 pub mod delete;
 pub mod doctor;
@@ -14,6 +15,7 @@ pub mod link;
 pub mod list;
 pub mod new;
 pub mod plugin;
+pub mod promote;
 pub mod reindex;
 pub mod schema;
 pub mod search;
