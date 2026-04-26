@@ -156,14 +156,17 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Search fragments (supports DSL: type:todo status:open #tag "phrase")
+    /// Fuzzy-search fragments (supports DSL: type:todo status:open #tag "phrase")
     Search {
-        /// Search query (DSL: type:, status:, priority:, tag:/#, due:, created:, updated:, by:, has:, linked:, is:)
+        /// Search query: bare words are fuzzy-matched against title+body;
+        /// "quoted" phrases must appear as substrings; structured filters
+        /// (type:, status:, priority:, tag:/#, due:, created:, updated:,
+        /// by:, has:, linked:, is:) compose with the fuzzy match.
         query: Vec<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
-        /// Sort order (updated, created, updated-asc, created-asc, random)
+        /// Sort order (score [default], updated, created, updated-asc, created-asc, random)
         #[arg(long)]
         sort: Option<String>,
         /// Limit results

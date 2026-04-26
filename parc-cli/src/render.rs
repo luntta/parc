@@ -1,44 +1,132 @@
 use parc_core::attachment::AttachmentInfo;
 use parc_core::fragment::Fragment;
+use parc_core::fuzzy::FuzzyHit;
 use parc_core::index::BacklinkInfo;
 use parc_core::search::SearchResult;
 use parc_core::tag;
 
+const TITLE_WIDTH: usize = 40;
+
 pub fn print_table(results: &[SearchResult], id_len: usize) {
-    // Header
+    print_table_header(id_len);
+    for result in results {
+        print_row(
+            &result.id,
+            &result.fragment_type,
+            result.status.as_deref(),
+            &result.title,
+            &result.tags,
+            &[],
+            false,
+            id_len,
+        );
+    }
+}
+
+pub fn print_fuzzy_table(hits: &[FuzzyHit], id_len: usize, highlight: bool) {
+    print_table_header(id_len);
+    for hit in hits {
+        print_row(
+            &hit.item.id,
+            &hit.item.fragment_type,
+            hit.item.status.as_deref(),
+            &hit.item.title,
+            &hit.item.tags,
+            &hit.title_match_indices,
+            highlight,
+            id_len,
+        );
+    }
+}
+
+fn print_table_header(id_len: usize) {
     println!(
-        "{:<width$}  {:<10}  {:<12}  {:<40}  TAGS",
+        "{:<width$}  {:<10}  {:<12}  {:<title$}  TAGS",
         "ID",
         "TYPE",
         "STATUS",
         "TITLE",
-        width = id_len
+        width = id_len,
+        title = TITLE_WIDTH,
     );
+}
 
-    for result in results {
-        let short_id = if result.id.len() > id_len {
-            &result.id[..id_len]
-        } else {
-            &result.id
-        };
-        let status = result.status.as_deref().unwrap_or("\u{2014}");
-        let title = if result.title.len() > 40 {
-            format!("{}...", &result.title[..37])
-        } else {
-            result.title.clone()
-        };
-        let tags = result.tags.join(", ");
+#[allow(clippy::too_many_arguments)]
+fn print_row(
+    id: &str,
+    fragment_type: &str,
+    status: Option<&str>,
+    title: &str,
+    tags: &[String],
+    title_match_indices: &[u32],
+    highlight: bool,
+    id_len: usize,
+) {
+    let short_id = if id.len() > id_len { &id[..id_len] } else { id };
+    let status = status.unwrap_or("\u{2014}");
+    let (title_rendered, visible_chars) =
+        render_title(title, title_match_indices, TITLE_WIDTH, highlight);
+    let tags_joined = tags.join(", ");
+    let pad = TITLE_WIDTH.saturating_sub(visible_chars);
+    println!(
+        "{:<width$}  {:<10}  {:<12}  {}{:pad$}  {}",
+        short_id,
+        fragment_type,
+        status,
+        title_rendered,
+        "",
+        tags_joined,
+        width = id_len,
+        pad = pad,
+    );
+}
 
-        println!(
-            "{:<width$}  {:<10}  {:<12}  {:<40}  {}",
-            short_id,
-            result.fragment_type,
-            status,
-            title,
-            tags,
-            width = id_len
-        );
+/// Render a title trimmed to `width` chars with optional ANSI highlighting on
+/// matched character positions. Returns (rendered_string, visible_char_count)
+/// so the caller can pad the column without counting ANSI escapes.
+fn render_title(
+    title: &str,
+    indices: &[u32],
+    width: usize,
+    highlight: bool,
+) -> (String, usize) {
+    let chars: Vec<char> = title.chars().collect();
+    let truncated = chars.len() > width;
+    let visible_len = if truncated { width } else { chars.len() };
+    let body_end = if truncated {
+        width.saturating_sub(3)
+    } else {
+        visible_len
+    };
+
+    if !highlight || indices.is_empty() {
+        let mut s: String = chars.iter().take(body_end).collect();
+        if truncated {
+            s.push_str("...");
+        }
+        return (s, visible_len);
     }
+
+    let mut out = String::new();
+    let mut idx_iter = indices.iter().copied().peekable();
+    for (i, c) in chars.iter().take(body_end).enumerate() {
+        while idx_iter.peek().map_or(false, |&j| (j as usize) < i) {
+            idx_iter.next();
+        }
+        let is_match = idx_iter.peek() == Some(&(i as u32));
+        if is_match {
+            out.push_str("\x1b[1;33m");
+            out.push(*c);
+            out.push_str("\x1b[0m");
+            idx_iter.next();
+        } else {
+            out.push(*c);
+        }
+    }
+    if truncated {
+        out.push_str("...");
+    }
+    (out, visible_len)
 }
 
 pub struct SearchSection {
