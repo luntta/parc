@@ -17,6 +17,32 @@ const HALF_PAGE_LINES: u16 = 5;
 const SEARCH_DEBOUNCE_MS: u64 = 120;
 const FRAGMENT_CACHE_CAP: usize = 64;
 const IDLE_POLL_SECS: u64 = 60;
+const STATUS_LIFETIME_SECS: u64 = 4;
+
+pub(super) enum Status {
+    Idle,
+    Active { text: String, expires_at: Instant },
+}
+
+impl Status {
+    pub(super) fn text(&self) -> &str {
+        match self {
+            Status::Active { text, expires_at } if *expires_at > Instant::now() => text,
+            _ => "",
+        }
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        match self {
+            Status::Active { expires_at, .. } => Some(*expires_at),
+            _ => None,
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        matches!(self, Status::Active { expires_at, .. } if *expires_at <= Instant::now())
+    }
+}
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -28,7 +54,7 @@ pub(super) struct App {
     pub detail_max_scroll: u16,
     pub search_input: String,
     pub rows: Vec<super::Row>,
-    pub status: String,
+    pub status: Status,
     pub mode: Mode,
     pub dirty: bool,
     pub pending_search_load: Option<Instant>,
@@ -49,7 +75,7 @@ impl App {
             detail_max_scroll: 0,
             search_input: String::new(),
             rows,
-            status: String::new(),
+            status: Status::Idle,
             mode: Mode::Normal,
             dirty: true,
             pending_search_load: None,
@@ -95,8 +121,18 @@ impl App {
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
-        self.status = msg.into();
+        self.status = Status::Active {
+            text: msg.into(),
+            expires_at: Instant::now() + Duration::from_secs(STATUS_LIFETIME_SECS),
+        };
         self.dirty = true;
+    }
+
+    fn clear_status(&mut self) {
+        if !matches!(self.status, Status::Idle) {
+            self.status = Status::Idle;
+            self.dirty = true;
+        }
     }
 }
 
@@ -114,16 +150,27 @@ pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Re
             app.dirty = false;
         }
 
-        let timeout = match app.pending_search_load {
-            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+        let now = Instant::now();
+        let next_deadline = [app.pending_search_load, app.status.deadline()]
+            .into_iter()
+            .flatten()
+            .min();
+        let timeout = match next_deadline {
+            Some(deadline) => deadline.saturating_duration_since(now),
             None => Duration::from_secs(IDLE_POLL_SECS),
         };
 
         if !event::poll(timeout)? {
-            // Timeout fired with no event — flush pending debounced search.
-            if app.pending_search_load.take().is_some() {
-                app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
-                app.dirty = true;
+            // Timeout fired with no event — flush pending debounced search and/or status.
+            if let Some(deadline) = app.pending_search_load {
+                if deadline <= Instant::now() {
+                    app.pending_search_load = None;
+                    app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+                    app.dirty = true;
+                }
+            }
+            if app.status.is_expired() {
+                app.clear_status();
             }
             continue;
         }
@@ -176,7 +223,7 @@ fn handle_normal(
             app.list_state.select(Some(0));
             app.detail_scroll = 0;
             app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
-            app.status.clear();
+            app.clear_status();
             app.dirty = true;
         }
         (KeyCode::BackTab, _) => {

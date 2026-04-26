@@ -54,7 +54,7 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
     draw_list(frame, body_chunks[0], app, config);
     draw_detail(frame, body_chunks[1], vault, app);
 
-    draw_footer(frame, outer[3], &app.status, app.focus);
+    draw_footer(frame, outer[3], app.status.text(), app.focus);
 
     match &app.mode {
         Mode::Normal => {}
