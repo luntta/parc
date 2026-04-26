@@ -49,7 +49,10 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     "title": title,
                     "message": message,
                 }),
-                DoctorFinding::AttachmentMismatch { fragment_id, detail } => serde_json::json!({
+                DoctorFinding::AttachmentMismatch {
+                    fragment_id,
+                    detail,
+                } => serde_json::json!({
                     "type": "attachment_mismatch",
                     "fragment_id": fragment_id,
                     "detail": detail,
@@ -58,7 +61,10 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     "type": "vault_size_warning",
                     "total_bytes": total_bytes,
                 }),
-                DoctorFinding::PluginIssue { plugin_name, detail } => serde_json::json!({
+                DoctorFinding::PluginIssue {
+                    plugin_name,
+                    detail,
+                } => serde_json::json!({
                     "type": "plugin_issue",
                     "plugin_name": plugin_name,
                     "detail": detail,
@@ -146,17 +152,20 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                         size_mb
                     );
                 }
-                DoctorFinding::PluginIssue { plugin_name, detail } => {
-                    println!(
-                        "\u{2717} Plugin '{}': {}",
-                        plugin_name, detail
-                    );
+                DoctorFinding::PluginIssue {
+                    plugin_name,
+                    detail,
+                } => {
+                    println!("\u{2717} Plugin '{}': {}", plugin_name, detail);
                 }
             }
         }
 
         if report.findings.is_empty() {
-            println!("Checked {} fragments: no issues found.", report.fragments_checked);
+            println!(
+                "Checked {} fragments: no issues found.",
+                report.fragments_checked
+            );
         } else {
             println!();
             println!(

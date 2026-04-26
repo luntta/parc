@@ -3,7 +3,9 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use parc_core::config::{get_editor, load_config};
-use parc_core::fragment::{self, parse_fragment, read_fragment, serialize_fragment, validate_fragment};
+use parc_core::fragment::{
+    self, parse_fragment, read_fragment, serialize_fragment, validate_fragment,
+};
 use parc_core::hook::{self, HookEvent};
 use parc_core::index;
 use parc_core::schema::load_schemas;
@@ -18,12 +20,11 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     let runner = CliHookRunner;
 
     #[cfg(feature = "wasm-plugins")]
-    let mut plugin_manager =
-        parc_core::plugin::manager::PluginManager::load_all(vault, &config)
-            .unwrap_or_else(|e| {
-                eprintln!("Warning: failed to load plugins: {}", e);
-                parc_core::plugin::manager::PluginManager::empty().unwrap()
-            });
+    let mut plugin_manager = parc_core::plugin::manager::PluginManager::load_all(vault, &config)
+        .unwrap_or_else(|e| {
+            eprintln!("Warning: failed to load plugins: {}", e);
+            parc_core::plugin::manager::PluginManager::empty().unwrap()
+        });
 
     let content = serialize_fragment(&original);
     let editor = get_editor(&config);
@@ -72,9 +73,16 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
 
                             // Run pre-update hooks
                             #[cfg(feature = "wasm-plugins")]
-                            let frag = hook::run_pre_hooks_with_plugins(&runner, vault, HookEvent::PreUpdate, &frag, &mut plugin_manager)?;
+                            let frag = hook::run_pre_hooks_with_plugins(
+                                &runner,
+                                vault,
+                                HookEvent::PreUpdate,
+                                &frag,
+                                &mut plugin_manager,
+                            )?;
                             #[cfg(not(feature = "wasm-plugins"))]
-                            let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
+                            let frag =
+                                hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
 
                             fragment::write_fragment(vault, &frag)?;
 
@@ -83,7 +91,13 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
 
                             // Run post-update hooks
                             #[cfg(feature = "wasm-plugins")]
-                            hook::run_post_hooks_with_plugins(&runner, vault, HookEvent::PostUpdate, &frag, &mut plugin_manager);
+                            hook::run_post_hooks_with_plugins(
+                                &runner,
+                                vault,
+                                HookEvent::PostUpdate,
+                                &frag,
+                                &mut plugin_manager,
+                            );
                             #[cfg(not(feature = "wasm-plugins"))]
                             hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
 
@@ -105,7 +119,13 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
                     frag.updated_at = Utc::now();
 
                     #[cfg(feature = "wasm-plugins")]
-                    let frag = hook::run_pre_hooks_with_plugins(&runner, vault, HookEvent::PreUpdate, &frag, &mut plugin_manager)?;
+                    let frag = hook::run_pre_hooks_with_plugins(
+                        &runner,
+                        vault,
+                        HookEvent::PreUpdate,
+                        &frag,
+                        &mut plugin_manager,
+                    )?;
                     #[cfg(not(feature = "wasm-plugins"))]
                     let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
 
@@ -115,7 +135,13 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
                     index::index_fragment_auto(&conn, &frag, vault)?;
 
                     #[cfg(feature = "wasm-plugins")]
-                    hook::run_post_hooks_with_plugins(&runner, vault, HookEvent::PostUpdate, &frag, &mut plugin_manager);
+                    hook::run_post_hooks_with_plugins(
+                        &runner,
+                        vault,
+                        HookEvent::PostUpdate,
+                        &frag,
+                        &mut plugin_manager,
+                    );
                     #[cfg(not(feature = "wasm-plugins"))]
                     hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
 

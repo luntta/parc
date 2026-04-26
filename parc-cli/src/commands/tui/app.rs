@@ -336,7 +336,11 @@ fn handle_normal(
         (KeyCode::End, _) => match app.focus {
             Focus::List => {
                 let last = app.rows.len().saturating_sub(1);
-                app.select(if app.rows.is_empty() { None } else { Some(last) });
+                app.select(if app.rows.is_empty() {
+                    None
+                } else {
+                    Some(last)
+                });
             }
             Focus::Detail => {
                 app.detail_scroll = app.detail_max_scroll;

@@ -41,10 +41,7 @@ fn run_list(active_vault: &Path, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<10} {:<50} FRAGMENTS",
-        "SCOPE", "PATH"
-    );
+    println!("{:<10} {:<50} FRAGMENTS", "SCOPE", "PATH");
 
     for v in &vaults {
         let active_marker = if v.path == active_vault { " *" } else { "" };

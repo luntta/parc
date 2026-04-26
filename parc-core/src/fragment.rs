@@ -32,9 +32,8 @@ pub fn new_id() -> String {
 /// Reject anything that isn't a valid ULID. Centralized so every filesystem
 /// path built from an id is guarded against traversal.
 pub fn validate_id(id: &str) -> Result<(), ParcError> {
-    ulid::Ulid::from_string(id).map_err(|_| {
-        ParcError::ValidationError(format!("invalid fragment id '{}'", id))
-    })?;
+    ulid::Ulid::from_string(id)
+        .map_err(|_| ParcError::ValidationError(format!("invalid fragment id '{}'", id)))?;
     Ok(())
 }
 
@@ -145,7 +144,10 @@ pub fn parse_fragment(content: &str) -> Result<Fragment, ParcError> {
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(Utc::now);
 
-    let created_by = map.get("created_by").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let created_by = map
+        .get("created_by")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     // Remaining fields go into extra_fields
     let envelope_keys = [
@@ -237,8 +239,7 @@ pub fn serialize_fragment(fragment: &Fragment) -> String {
         map.insert(Y::from("created_by"), Y::from(by.as_str()));
     }
 
-    let yaml = serde_yaml_ng::to_string(&Y::Mapping(map))
-        .unwrap_or_else(|_| String::new());
+    let yaml = serde_yaml_ng::to_string(&Y::Mapping(map)).unwrap_or_else(|_| String::new());
 
     let mut out = String::with_capacity(yaml.len() + fragment.body.len() + 16);
     out.push_str("---\n");
@@ -320,9 +321,7 @@ fn split_frontmatter(content: &str) -> Result<(String, String), ParcError> {
 pub fn create_fragment(vault: &Path, fragment: &Fragment) -> Result<String, ParcError> {
     validate_id(&fragment.id)?;
     let content = serialize_fragment(fragment);
-    let path = vault
-        .join("fragments")
-        .join(format!("{}.md", fragment.id));
+    let path = vault.join("fragments").join(format!("{}.md", fragment.id));
     std::fs::write(&path, content)?;
     Ok(fragment.id.clone())
 }
@@ -347,9 +346,7 @@ pub fn write_fragment(vault: &Path, fragment: &Fragment) -> Result<(), ParcError
     }
 
     let content = serialize_fragment(fragment);
-    let path = vault
-        .join("fragments")
-        .join(format!("{}.md", fragment.id));
+    let path = vault.join("fragments").join(format!("{}.md", fragment.id));
     std::fs::write(&path, content)?;
     Ok(())
 }
@@ -424,7 +421,10 @@ pub fn list_fragment_ids(vault: &Path) -> Result<Vec<String>, ParcError> {
 pub fn resolve_id(vault: &Path, prefix: &str) -> Result<String, ParcError> {
     let upper_prefix = prefix.to_uppercase();
     let ids = list_fragment_ids(vault)?;
-    let matches: Vec<&String> = ids.iter().filter(|id| id.starts_with(&upper_prefix)).collect();
+    let matches: Vec<&String> = ids
+        .iter()
+        .filter(|id| id.starts_with(&upper_prefix))
+        .collect();
 
     match matches.len() {
         0 => Err(ParcError::FragmentNotFound(prefix.to_string())),
@@ -485,10 +485,7 @@ mod tests {
     fn make_test_fragment() -> Fragment {
         let mut extra = BTreeMap::new();
         extra.insert("status".to_string(), Value::String("open".to_string()));
-        extra.insert(
-            "priority".to_string(),
-            Value::String("high".to_string()),
-        );
+        extra.insert("priority".to_string(), Value::String("high".to_string()));
 
         Fragment {
             id: "01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string(),
@@ -594,7 +591,10 @@ mod tests {
         // Delete
         delete_fragment(&vault, "01JQ7V3X").unwrap();
         assert!(read_fragment(&vault, &fragment.id).is_err());
-        assert!(vault.join("trash").join(format!("{}.md", fragment.id)).exists());
+        assert!(vault
+            .join("trash")
+            .join(format!("{}.md", fragment.id))
+            .exists());
     }
 
     #[test]
@@ -608,10 +608,9 @@ mod tests {
         let mut fragment = make_test_fragment();
         assert!(validate_fragment(&fragment, todo_schema).is_ok());
 
-        fragment.extra_fields.insert(
-            "status".to_string(),
-            Value::String("invalid".to_string()),
-        );
+        fragment
+            .extra_fields
+            .insert("status".to_string(), Value::String("invalid".to_string()));
         assert!(validate_fragment(&fragment, todo_schema).is_err());
     }
 

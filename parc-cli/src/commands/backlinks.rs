@@ -33,17 +33,9 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
 
     let id_len = config.id_display_length;
     let short_id = &fragment.id[..id_len.min(fragment.id.len())];
-    println!(
-        "BACKLINKS TO {} \"{}\"",
-        short_id, fragment.title
-    );
+    println!("BACKLINKS TO {} \"{}\"", short_id, fragment.title);
     println!();
-    println!(
-        "{:<width$}  {:<10}  TITLE",
-        "ID",
-        "TYPE",
-        width = id_len
-    );
+    println!("{:<width$}  {:<10}  TITLE", "ID", "TYPE", width = id_len);
 
     for bl in &backlinks {
         let short = if bl.source_id.len() > id_len {

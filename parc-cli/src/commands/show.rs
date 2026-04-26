@@ -62,14 +62,18 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
         // Try plugin rendering first
         #[cfg(feature = "wasm-plugins")]
         {
-            let mut manager =
-                parc_core::plugin::manager::PluginManager::load_all(vault, &config)?;
+            let mut manager = parc_core::plugin::manager::PluginManager::load_all(vault, &config)?;
             if let Ok(Some(rendered)) = manager.render(&fragment) {
                 println!("{}", rendered);
                 return Ok(());
             }
         }
-        render::print_fragment(&fragment, &backlinks, &attachments, config.id_display_length);
+        render::print_fragment(
+            &fragment,
+            &backlinks,
+            &attachments,
+            config.id_display_length,
+        );
     }
 
     Ok(())

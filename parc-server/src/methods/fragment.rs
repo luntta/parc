@@ -209,13 +209,22 @@ pub fn list(vault: &Path, params: Value) -> Result<Value, RpcError> {
 
     let mut filters = Vec::new();
     if let Some(t) = p.fragment_type {
-        filters.push(Filter::Type { value: t, negated: false });
+        filters.push(Filter::Type {
+            value: t,
+            negated: false,
+        });
     }
     if let Some(s) = p.status {
-        filters.push(Filter::Status { value: s, negated: false });
+        filters.push(Filter::Status {
+            value: s,
+            negated: false,
+        });
     }
     if let Some(tag) = p.tag {
-        filters.push(Filter::Tag { value: tag, negated: false });
+        filters.push(Filter::Tag {
+            value: tag,
+            negated: false,
+        });
     }
 
     let query = SearchQuery {

@@ -9,8 +9,7 @@ static WIKI_LINK_RE: LazyLock<Regex> =
 static FENCED_CODE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)```[^\n]*\n.*?```").unwrap());
 
-static INLINE_CODE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"`[^`]+`").unwrap());
+static INLINE_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`]+`").unwrap());
 
 static ULID_PREFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[0-9A-Za-z]{4,}$").unwrap());
@@ -125,7 +124,11 @@ pub fn resolve_link_target(target: &str, candidates: &[FragmentRef]) -> ResolveO
 /// Merge frontmatter links with wiki-links extracted from the body.
 /// Frontmatter links come first. Deduplicates by uppercase comparison.
 /// `resolve_fn` maps a target string to an optional full ID.
-pub fn merge_links<F>(frontmatter_links: &[String], body_links: &[WikiLink], resolve_fn: F) -> Vec<String>
+pub fn merge_links<F>(
+    frontmatter_links: &[String],
+    body_links: &[WikiLink],
+    resolve_fn: F,
+) -> Vec<String>
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -168,7 +171,10 @@ mod tests {
         let links = parse_wiki_links("See [[01JQ7V4Y|Decision about SQLite]] for details.");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].target, "01JQ7V4Y");
-        assert_eq!(links[0].display_text, Some("Decision about SQLite".to_string()));
+        assert_eq!(
+            links[0].display_text,
+            Some("Decision about SQLite".to_string())
+        );
     }
 
     #[test]
@@ -217,8 +223,14 @@ mod tests {
     fn test_merge_links() {
         let fm = vec!["FULL_ID_A".to_string(), "FULL_ID_B".to_string()];
         let body = vec![
-            WikiLink { target: "PREFIX_C".to_string(), display_text: None },
-            WikiLink { target: "PREFIX_A".to_string(), display_text: None },
+            WikiLink {
+                target: "PREFIX_C".to_string(),
+                display_text: None,
+            },
+            WikiLink {
+                target: "PREFIX_A".to_string(),
+                display_text: None,
+            },
         ];
         let merged = merge_links(&fm, &body, |prefix| match prefix {
             "PREFIX_C" => Some("FULL_ID_C".to_string()),
@@ -231,7 +243,10 @@ mod tests {
     #[test]
     fn test_merge_links_unresolvable_skipped() {
         let fm = vec!["FULL_ID_A".to_string()];
-        let body = vec![WikiLink { target: "UNKNOWN".to_string(), display_text: None }];
+        let body = vec![WikiLink {
+            target: "UNKNOWN".to_string(),
+            display_text: None,
+        }];
         let merged = merge_links(&fm, &body, |_| None);
         assert_eq!(merged, vec!["FULL_ID_A"]);
     }

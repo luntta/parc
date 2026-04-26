@@ -204,11 +204,7 @@ pub fn vault_info(vault_path: &Path) -> Result<VaultInfo, ParcError> {
     let fragment_count = if fragments_dir.is_dir() {
         std::fs::read_dir(&fragments_dir)?
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|ext| ext == "md")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
             .count()
     } else {
         0
@@ -265,10 +261,7 @@ const DEFAULT_CONFIG: &str = include_str!("builtin/config.yml");
 pub const BUILTIN_SCHEMAS: &[(&str, &str)] = &[
     ("note.yml", include_str!("builtin/schemas/note.yml")),
     ("todo.yml", include_str!("builtin/schemas/todo.yml")),
-    (
-        "decision.yml",
-        include_str!("builtin/schemas/decision.yml"),
-    ),
+    ("decision.yml", include_str!("builtin/schemas/decision.yml")),
     ("risk.yml", include_str!("builtin/schemas/risk.yml")),
     ("idea.yml", include_str!("builtin/schemas/idea.yml")),
 ];
@@ -276,10 +269,7 @@ pub const BUILTIN_SCHEMAS: &[(&str, &str)] = &[
 const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ("note.md", include_str!("builtin/templates/note.md")),
     ("todo.md", include_str!("builtin/templates/todo.md")),
-    (
-        "decision.md",
-        include_str!("builtin/templates/decision.md"),
-    ),
+    ("decision.md", include_str!("builtin/templates/decision.md")),
     ("risk.md", include_str!("builtin/templates/risk.md")),
     ("idea.md", include_str!("builtin/templates/idea.md")),
 ];

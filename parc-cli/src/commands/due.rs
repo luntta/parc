@@ -25,7 +25,10 @@ pub fn run(vault: &Path, bucket: Option<String>, json: bool) -> Result<()> {
             op: CompareOp::Lte,
             date: next_week,
         },
-        other => bail!("unknown due bucket '{}': expected today, overdue, or this-week", other),
+        other => bail!(
+            "unknown due bucket '{}': expected today, overdue, or this-week",
+            other
+        ),
     };
 
     let mut filters = vec![

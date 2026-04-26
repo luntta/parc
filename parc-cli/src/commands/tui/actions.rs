@@ -150,8 +150,8 @@ pub(super) fn delete(vault: &Path, id: &str) -> Result<String> {
 }
 
 pub(super) fn yank(id: &str) -> Result<String> {
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|e| anyhow!("clipboard unavailable: {}", e))?;
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|e| anyhow!("clipboard unavailable: {}", e))?;
     clipboard
         .set_text(id.to_string())
         .map_err(|e| anyhow!("clipboard write failed: {}", e))?;
@@ -162,5 +162,9 @@ pub(super) fn promote(vault: &Path, id: &str, new_type: &str) -> Result<String> 
     let promoted = fragment::promote_fragment(vault, id, new_type, BTreeMap::new())?;
     let conn = index::open_index(vault)?;
     index::index_fragment_auto(&conn, &promoted, vault)?;
-    Ok(format!("promoted {} to {}", short(&promoted.id), promoted.fragment_type))
+    Ok(format!(
+        "promoted {} to {}",
+        short(&promoted.id),
+        promoted.fragment_type
+    ))
 }

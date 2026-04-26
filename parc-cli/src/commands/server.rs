@@ -6,9 +6,7 @@ use parc_core::config::load_config;
 pub fn run(vault: &Path, socket: bool, socket_path: Option<String>) -> Result<()> {
     let config = load_config(vault)?;
 
-    let use_socket = socket
-        || socket_path.is_some()
-        || config.server.transport == "socket";
+    let use_socket = socket || socket_path.is_some() || config.server.transport == "socket";
 
     let transport = if use_socket {
         let path = socket_path

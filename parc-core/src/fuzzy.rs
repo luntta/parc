@@ -71,13 +71,9 @@ impl FuzzyEngine {
     }
 
     pub fn set_pattern(&mut self, pattern: &str) {
-        self.nuc.pattern.reparse(
-            0,
-            pattern,
-            CaseMatching::Smart,
-            Normalization::Smart,
-            false,
-        );
+        self.nuc
+            .pattern
+            .reparse(0, pattern, CaseMatching::Smart, Normalization::Smart, false);
     }
 
     pub fn tick(&mut self, timeout_ms: u64) -> Status {
@@ -119,7 +115,11 @@ impl FuzzyEngine {
             let title_chars = data.title_char_count();
             indices_buf.clear();
             let score = pattern
-                .indices(item.matcher_columns[0].slice(..), &mut self.matcher, &mut indices_buf)
+                .indices(
+                    item.matcher_columns[0].slice(..),
+                    &mut self.matcher,
+                    &mut indices_buf,
+                )
                 .unwrap_or(0);
             indices_buf.sort_unstable();
             indices_buf.dedup();

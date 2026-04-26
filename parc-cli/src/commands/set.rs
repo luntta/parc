@@ -77,7 +77,12 @@ pub fn run(vault: &Path, id: &str, field: &str, value: &str, json: bool) -> Resu
         });
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        println!("Updated {} field '{}' to '{}'", &fragment.id[..8], field, value);
+        println!(
+            "Updated {} field '{}' to '{}'",
+            &fragment.id[..8],
+            field,
+            value
+        );
     }
     Ok(())
 }

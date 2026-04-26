@@ -56,10 +56,7 @@ impl DoctorReport {
 
 /// Check for broken links: frontmatter links and body wiki-links
 /// that reference non-existent fragment IDs.
-pub fn check_broken_links(
-    fragments: &[Fragment],
-    all_ids: &[String],
-) -> Vec<DoctorFinding> {
+pub fn check_broken_links(fragments: &[Fragment], all_ids: &[String]) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
     let candidates: Vec<link::FragmentRef> = fragments
         .iter()
@@ -109,10 +106,7 @@ pub fn check_broken_links(
 }
 
 /// Check for orphan fragments: fragments with no inbound or outbound links.
-pub fn check_orphans(
-    fragments: &[Fragment],
-    all_ids: &[String],
-) -> Vec<DoctorFinding> {
+pub fn check_orphans(fragments: &[Fragment], all_ids: &[String]) -> Vec<DoctorFinding> {
     use std::collections::HashSet;
 
     // Build set of all IDs that participate in any link relationship
@@ -130,7 +124,8 @@ pub fn check_orphans(
         for link_id in &frag.links {
             let upper = link_id.to_uppercase();
             // Resolve prefix
-            let matches: Vec<&String> = all_ids.iter().filter(|id| id.starts_with(&upper)).collect();
+            let matches: Vec<&String> =
+                all_ids.iter().filter(|id| id.starts_with(&upper)).collect();
             if matches.len() == 1 {
                 linked_ids.insert(frag.id.clone());
                 linked_ids.insert(matches[0].clone());
@@ -182,10 +177,7 @@ pub fn check_schema_violations(
 }
 
 /// Check for attachment mismatches.
-pub fn check_attachments(
-    vault: &Path,
-    fragments: &[Fragment],
-) -> Vec<DoctorFinding> {
+pub fn check_attachments(vault: &Path, fragments: &[Fragment]) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
     let mut referenced_dirs = HashSet::new();
 
@@ -198,7 +190,10 @@ pub fn check_attachments(
             if !file_path.exists() {
                 findings.push(DoctorFinding::AttachmentMismatch {
                     fragment_id: frag.id.clone(),
-                    detail: format!("frontmatter lists '{}' but file not found on disk", filename),
+                    detail: format!(
+                        "frontmatter lists '{}' but file not found on disk",
+                        filename
+                    ),
                 });
             }
         }
@@ -250,7 +245,8 @@ pub fn check_attachments(
                         if !fragment_ids.contains(dir_name) {
                             findings.push(DoctorFinding::AttachmentMismatch {
                                 fragment_id: dir_name.to_string(),
-                                detail: "attachment directory exists but fragment not found".to_string(),
+                                detail: "attachment directory exists but fragment not found"
+                                    .to_string(),
                             });
                         }
                     }
@@ -383,7 +379,9 @@ mod tests {
 
         let findings = check_broken_links(&[frag], &all_ids);
         assert_eq!(findings.len(), 1);
-        assert!(matches!(&findings[0], DoctorFinding::BrokenLink { target_ref, .. } if target_ref == "NONEXISTENT"));
+        assert!(
+            matches!(&findings[0], DoctorFinding::BrokenLink { target_ref, .. } if target_ref == "NONEXISTENT")
+        );
     }
 
     #[test]
@@ -393,7 +391,9 @@ mod tests {
 
         let findings = check_broken_links(&[frag], &all_ids);
         assert_eq!(findings.len(), 1);
-        assert!(matches!(&findings[0], DoctorFinding::BrokenLink { target_ref, .. } if target_ref == "[[DEADBEEF]]"));
+        assert!(
+            matches!(&findings[0], DoctorFinding::BrokenLink { target_ref, .. } if target_ref == "[[DEADBEEF]]")
+        );
     }
 
     #[test]
@@ -443,7 +443,9 @@ mod tests {
 
         let findings = check_orphans(&[frag_a.clone(), frag_b, frag_c], &all_ids);
         assert_eq!(findings.len(), 1);
-        assert!(matches!(&findings[0], DoctorFinding::OrphanFragment { id, .. } if id == &frag_a.id));
+        assert!(
+            matches!(&findings[0], DoctorFinding::OrphanFragment { id, .. } if id == &frag_a.id)
+        );
     }
 
     #[test]
@@ -476,7 +478,9 @@ mod tests {
         let report = run_doctor(&vault).unwrap();
         assert_eq!(report.fragments_checked, 2);
         // No broken links or schema violations; both linked so no orphans
-        let non_orphan_findings: Vec<_> = report.findings.iter()
+        let non_orphan_findings: Vec<_> = report
+            .findings
+            .iter()
             .filter(|f| !matches!(f, DoctorFinding::OrphanFragment { .. }))
             .collect();
         assert!(non_orphan_findings.is_empty());

@@ -338,9 +338,13 @@ fn test_due_today_command_shows_due_todo() {
     let config = parc_core::config::load_config(&vault_path).unwrap();
     let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
     let schema = schemas.resolve("todo").unwrap();
-    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
 
-    let mut fragment = parc_core::fragment::new_fragment("todo", "Due today resurfacing", schema, &config);
+    let mut fragment =
+        parc_core::fragment::new_fragment("todo", "Due today resurfacing", schema, &config);
     fragment
         .extra_fields
         .insert("due".to_string(), serde_json::Value::String(today));
@@ -448,7 +452,12 @@ fn test_search_fts() {
     let tmp = TempDir::new().unwrap();
     init_vault(&tmp);
 
-    create_fragment_directly(&tmp, "note", "SQLite indexing", "Using FTS5 for full-text search");
+    create_fragment_directly(
+        &tmp,
+        "note",
+        "SQLite indexing",
+        "Using FTS5 for full-text search",
+    );
     create_fragment_directly(&tmp, "note", "Redis caching", "Key-value store for caching");
 
     // Search for SQLite
@@ -487,8 +496,7 @@ fn test_hashtag_extraction() {
     let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
     let schema = schemas.resolve("note").unwrap();
 
-    let mut fragment =
-        parc_core::fragment::new_fragment("note", "Hashtag test", schema, &config);
+    let mut fragment = parc_core::fragment::new_fragment("note", "Hashtag test", schema, &config);
     fragment.tags = vec!["explicit".to_string()];
     fragment.body = "This has #inline-tag and #another tag.\n\nCode: `#not-a-tag`\n".to_string();
 
@@ -809,7 +817,8 @@ fn test_wiki_link_in_body_creates_backlink() {
     let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
     let schema = schemas.resolve("note").unwrap();
 
-    let mut fragment = parc_core::fragment::new_fragment("note", "Linker via body", schema, &config);
+    let mut fragment =
+        parc_core::fragment::new_fragment("note", "Linker via body", schema, &config);
     fragment.body = format!("Check out [[{}]] for details.", id_a);
 
     let id_b = parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
@@ -848,7 +857,8 @@ fn test_title_wiki_link_in_body_creates_backlink() {
     let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
     let schema = schemas.resolve("note").unwrap();
 
-    let mut fragment = parc_core::fragment::new_fragment("note", "Linker via title", schema, &config);
+    let mut fragment =
+        parc_core::fragment::new_fragment("note", "Linker via title", schema, &config);
     fragment.body = "Check out [[Auth refactor]] for details.".to_string();
 
     parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
@@ -1232,9 +1242,7 @@ fn test_all_commands_accept_vault_flag() {
         .success();
 
     // doctor
-    let _ = parc()
-        .args(["--vault", vault_str, "doctor"])
-        .assert();
+    let _ = parc().args(["--vault", vault_str, "doctor"]).assert();
 
     // backlinks
     parc()
@@ -1343,14 +1351,16 @@ fn test_due_date_today() {
     let schema = schemas.resolve("todo").unwrap();
 
     let mut fragment = parc_core::fragment::new_fragment("todo", "Due today", schema, &config);
-    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
     let resolved = parc_core::date::resolve_due_date("today").unwrap();
     assert_eq!(resolved, today);
 
-    fragment.extra_fields.insert(
-        "due".to_string(),
-        serde_json::Value::String(resolved),
-    );
+    fragment
+        .extra_fields
+        .insert("due".to_string(), serde_json::Value::String(resolved));
 
     let id = parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
     let conn = parc_core::index::open_index(&vault_path).unwrap();
@@ -1400,7 +1410,10 @@ fn test_set_due_with_relative_date() {
     init_vault(&tmp);
 
     let id = create_fragment_directly(&tmp, "todo", "Due test", "Body");
-    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
 
     parc()
         .args(["set", &id[..8], "due", "today"])
@@ -1471,19 +1484,13 @@ fn test_hook_type_specific_discovery() {
     let vault_path = tmp.path().join(".parc");
 
     // For todos: both hooks
-    let hooks = parc_core::hook::discover_hooks(
-        &vault_path,
-        parc_core::hook::HookEvent::PreCreate,
-        "todo",
-    );
+    let hooks =
+        parc_core::hook::discover_hooks(&vault_path, parc_core::hook::HookEvent::PreCreate, "todo");
     assert_eq!(hooks.len(), 2);
 
     // For notes: only generic
-    let hooks = parc_core::hook::discover_hooks(
-        &vault_path,
-        parc_core::hook::HookEvent::PreCreate,
-        "note",
-    );
+    let hooks =
+        parc_core::hook::discover_hooks(&vault_path, parc_core::hook::HookEvent::PreCreate, "note");
     assert_eq!(hooks.len(), 1);
 }
 

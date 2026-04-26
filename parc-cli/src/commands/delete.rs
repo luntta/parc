@@ -16,16 +16,21 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     #[cfg(feature = "wasm-plugins")]
     let mut plugin_manager = {
         let config = parc_core::config::load_config(vault)?;
-        parc_core::plugin::manager::PluginManager::load_all(vault, &config)
-            .unwrap_or_else(|e| {
-                eprintln!("Warning: failed to load plugins: {}", e);
-                parc_core::plugin::manager::PluginManager::empty().unwrap()
-            })
+        parc_core::plugin::manager::PluginManager::load_all(vault, &config).unwrap_or_else(|e| {
+            eprintln!("Warning: failed to load plugins: {}", e);
+            parc_core::plugin::manager::PluginManager::empty().unwrap()
+        })
     };
 
     // Run pre-delete hooks
     #[cfg(feature = "wasm-plugins")]
-    let _ = hook::run_pre_hooks_with_plugins(&runner, vault, HookEvent::PreDelete, &fragment, &mut plugin_manager)?;
+    let _ = hook::run_pre_hooks_with_plugins(
+        &runner,
+        vault,
+        HookEvent::PreDelete,
+        &fragment,
+        &mut plugin_manager,
+    )?;
     #[cfg(not(feature = "wasm-plugins"))]
     let _ = hook::run_pre_hooks(&runner, vault, HookEvent::PreDelete, &fragment)?;
 
@@ -37,7 +42,13 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
 
     // Run post-delete hooks
     #[cfg(feature = "wasm-plugins")]
-    hook::run_post_hooks_with_plugins(&runner, vault, HookEvent::PostDelete, &fragment, &mut plugin_manager);
+    hook::run_post_hooks_with_plugins(
+        &runner,
+        vault,
+        HookEvent::PostDelete,
+        &fragment,
+        &mut plugin_manager,
+    );
     #[cfg(not(feature = "wasm-plugins"))]
     hook::run_post_hooks(&runner, vault, HookEvent::PostDelete, &fragment);
 

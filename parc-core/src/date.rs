@@ -99,8 +99,7 @@ pub fn resolve_relative_date_to_range(rel: &RelativeDate) -> (String, String) {
         RelativeDate::ThisMonth => {
             let first = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap();
             let last = if today.month() == 12 {
-                NaiveDate::from_ymd_opt(today.year() + 1, 1, 1).unwrap()
-                    - chrono::Duration::days(1)
+                NaiveDate::from_ymd_opt(today.year() + 1, 1, 1).unwrap() - chrono::Duration::days(1)
             } else {
                 NaiveDate::from_ymd_opt(today.year(), today.month() + 1, 1).unwrap()
                     - chrono::Duration::days(1)
@@ -173,16 +172,43 @@ mod tests {
     #[test]
     fn test_parse_relative_date_shorthands() {
         assert_eq!(parse_relative_date("today"), Some(RelativeDate::Today));
-        assert_eq!(parse_relative_date("yesterday"), Some(RelativeDate::Yesterday));
-        assert_eq!(parse_relative_date("tomorrow"), Some(RelativeDate::Tomorrow));
-        assert_eq!(parse_relative_date("this-week"), Some(RelativeDate::ThisWeek));
-        assert_eq!(parse_relative_date("last-week"), Some(RelativeDate::LastWeek));
-        assert_eq!(parse_relative_date("next-week"), Some(RelativeDate::NextWeek));
-        assert_eq!(parse_relative_date("this-month"), Some(RelativeDate::ThisMonth));
-        assert_eq!(parse_relative_date("last-month"), Some(RelativeDate::LastMonth));
+        assert_eq!(
+            parse_relative_date("yesterday"),
+            Some(RelativeDate::Yesterday)
+        );
+        assert_eq!(
+            parse_relative_date("tomorrow"),
+            Some(RelativeDate::Tomorrow)
+        );
+        assert_eq!(
+            parse_relative_date("this-week"),
+            Some(RelativeDate::ThisWeek)
+        );
+        assert_eq!(
+            parse_relative_date("last-week"),
+            Some(RelativeDate::LastWeek)
+        );
+        assert_eq!(
+            parse_relative_date("next-week"),
+            Some(RelativeDate::NextWeek)
+        );
+        assert_eq!(
+            parse_relative_date("this-month"),
+            Some(RelativeDate::ThisMonth)
+        );
+        assert_eq!(
+            parse_relative_date("last-month"),
+            Some(RelativeDate::LastMonth)
+        );
         assert_eq!(parse_relative_date("overdue"), Some(RelativeDate::Overdue));
-        assert_eq!(parse_relative_date("3-days-ago"), Some(RelativeDate::DaysAgo(3)));
-        assert_eq!(parse_relative_date("in-3-days"), Some(RelativeDate::InDays(3)));
+        assert_eq!(
+            parse_relative_date("3-days-ago"),
+            Some(RelativeDate::DaysAgo(3))
+        );
+        assert_eq!(
+            parse_relative_date("in-3-days"),
+            Some(RelativeDate::InDays(3))
+        );
         assert_eq!(parse_relative_date("not-a-date"), None);
     }
 

@@ -145,7 +145,9 @@ pub fn get_builtin_template(type_name: &str) -> Option<&'static str> {
 
 /// Load template from vault or fall back to built-in.
 pub fn load_template(vault_path: &Path, type_name: &str) -> Option<String> {
-    let template_path = vault_path.join("templates").join(format!("{}.md", type_name));
+    let template_path = vault_path
+        .join("templates")
+        .join(format!("{}.md", type_name));
     if template_path.exists() {
         std::fs::read_to_string(template_path).ok()
     } else {
@@ -219,10 +221,7 @@ pub fn add_schema(vault_path: &Path, source_path: &Path) -> Result<String, ParcE
         }
         std::fs::write(
             &template_path,
-            format!(
-                "---\ntype: {}\ntitle: \"\"\n---\n\n",
-                schema.name
-            ),
+            format!("---\ntype: {}\ntitle: \"\"\n---\n\n", schema.name),
         )?;
     }
 

@@ -37,14 +37,30 @@ pub enum HasCondition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filter {
-    Type { value: String, negated: bool },
-    Status { value: String, negated: bool },
-    Priority { op: CompareOp, value: String, negated: bool },
-    Tag { value: String, negated: bool },
+    Type {
+        value: String,
+        negated: bool,
+    },
+    Status {
+        value: String,
+        negated: bool,
+    },
+    Priority {
+        op: CompareOp,
+        value: String,
+        negated: bool,
+    },
+    Tag {
+        value: String,
+        negated: bool,
+    },
     Due(DateFilter),
     Created(DateFilter),
     Updated(DateFilter),
-    CreatedBy { value: String, negated: bool },
+    CreatedBy {
+        value: String,
+        negated: bool,
+    },
     Has(HasCondition),
     Linked(String),
     Is(IsCondition),
@@ -207,40 +223,65 @@ fn parse_filter(field: &str, value: &str) -> Result<Filter, ParcError> {
     match field {
         "type" => {
             let (negated, val) = parse_negation(value);
-            Ok(Filter::Type { value: val.to_string(), negated })
+            Ok(Filter::Type {
+                value: val.to_string(),
+                negated,
+            })
         }
         "status" => {
             let (negated, val) = parse_negation(value);
-            Ok(Filter::Status { value: val.to_string(), negated })
+            Ok(Filter::Status {
+                value: val.to_string(),
+                negated,
+            })
         }
         "priority" => {
             let (op, negated, val) = parse_compare_value(value);
-            Ok(Filter::Priority { op, value: val.to_string(), negated })
+            Ok(Filter::Priority {
+                op,
+                value: val.to_string(),
+                negated,
+            })
         }
         "tag" => {
             let (negated, val) = parse_negation(value);
-            Ok(Filter::Tag { value: val.to_lowercase(), negated })
+            Ok(Filter::Tag {
+                value: val.to_lowercase(),
+                negated,
+            })
         }
         "due" => Ok(Filter::Due(parse_date_filter(value)?)),
         "created" => Ok(Filter::Created(parse_date_filter(value)?)),
         "updated" => Ok(Filter::Updated(parse_date_filter(value)?)),
         "by" => {
             let (negated, val) = parse_negation(value);
-            Ok(Filter::CreatedBy { value: val.to_string(), negated })
+            Ok(Filter::CreatedBy {
+                value: val.to_string(),
+                negated,
+            })
         }
         "has" => match value {
             "attachments" => Ok(Filter::Has(HasCondition::Attachments)),
             "links" => Ok(Filter::Has(HasCondition::Links)),
             "due" => Ok(Filter::Has(HasCondition::Due)),
-            _ => Err(ParcError::ParseError(format!("unknown has: condition '{}'", value))),
+            _ => Err(ParcError::ParseError(format!(
+                "unknown has: condition '{}'",
+                value
+            ))),
         },
         "linked" => Ok(Filter::Linked(value.to_string())),
         "is" => match value {
             "archived" => Ok(Filter::Is(IsCondition::Archived)),
             "all" => Ok(Filter::Is(IsCondition::All)),
-            _ => Err(ParcError::ParseError(format!("unknown is: condition '{}'", value))),
+            _ => Err(ParcError::ParseError(format!(
+                "unknown is: condition '{}'",
+                value
+            ))),
         },
-        _ => Err(ParcError::ParseError(format!("unknown filter field '{}'", field))),
+        _ => Err(ParcError::ParseError(format!(
+            "unknown filter field '{}'",
+            field
+        ))),
     }
 }
 
@@ -295,7 +336,10 @@ fn parse_date_filter(value: &str) -> Result<DateFilter, ParcError> {
         return Ok(DateFilter::RelativeWithOp { op, rel });
     }
     validate_date(val)?;
-    Ok(DateFilter::Absolute { op, date: val.to_string() })
+    Ok(DateFilter::Absolute {
+        op,
+        date: val.to_string(),
+    })
 }
 
 fn parse_relative_date(value: &str) -> Option<RelativeDate> {
@@ -326,10 +370,22 @@ fn priorities_for_op(op: CompareOp, value: &str) -> Option<Vec<String>> {
     let rank = priority_rank(value)?;
     let selected: Vec<String> = match op {
         CompareOp::Eq => vec![value.to_string()],
-        CompareOp::Gt => PRIORITY_ORDER[rank + 1..].iter().map(|s| s.to_string()).collect(),
-        CompareOp::Gte => PRIORITY_ORDER[rank..].iter().map(|s| s.to_string()).collect(),
-        CompareOp::Lt => PRIORITY_ORDER[..rank].iter().map(|s| s.to_string()).collect(),
-        CompareOp::Lte => PRIORITY_ORDER[..=rank].iter().map(|s| s.to_string()).collect(),
+        CompareOp::Gt => PRIORITY_ORDER[rank + 1..]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        CompareOp::Gte => PRIORITY_ORDER[rank..]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        CompareOp::Lt => PRIORITY_ORDER[..rank]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        CompareOp::Lte => PRIORITY_ORDER[..=rank]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
     };
     Some(selected)
 }
@@ -523,7 +579,10 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
 
     // Count positive tag filters to know if we'll have extra JOINs
     // (snippet() can't be used with additional JOINs beyond the FTS table)
-    let has_tag_joins = query.filters.iter().any(|f| matches!(f, Filter::Tag { negated: false, .. }));
+    let has_tag_joins = query
+        .filters
+        .iter()
+        .any(|f| matches!(f, Filter::Tag { negated: false, .. }));
 
     // Base SELECT
     let base_select = if use_fts {
@@ -535,7 +594,8 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
             // Can't use snippet() with additional JOINs
             "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet \
              FROM fragments f \
-             JOIN fragments_fts ON fragments_fts.id = f.id".to_string()
+             JOIN fragments_fts ON fragments_fts.id = f.id"
+                .to_string()
         } else {
             "SELECT f.id, f.type, f.title, f.status, f.updated_at, snippet(fragments_fts, 2, '»', '«', '…', 20) as snippet \
              FROM fragments f \
@@ -543,7 +603,8 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
         }
     } else {
         "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet \
-         FROM fragments f".to_string()
+         FROM fragments f"
+            .to_string()
     };
 
     apply_filters(
@@ -690,9 +751,8 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchResult
     for row in rows {
         let mut result = row.map_err(ParcError::Sqlite)?;
         let tags: Vec<String> = {
-            let mut tag_stmt = conn.prepare(
-                "SELECT tag FROM fragment_tags WHERE fragment_id = ?1 ORDER BY tag",
-            )?;
+            let mut tag_stmt =
+                conn.prepare("SELECT tag FROM fragment_tags WHERE fragment_id = ?1 ORDER BY tag")?;
             let collected: Vec<String> = tag_stmt
                 .query_map([&result.id], |row| row.get(0))?
                 .filter_map(|r| r.ok())
@@ -764,7 +824,9 @@ pub fn fuzzy_search(
                 }
             }
             SortOrder::UpdatedAsc => hits.sort_by(|a, b| a.item.updated_at.cmp(&b.item.updated_at)),
-            SortOrder::CreatedDesc => hits.sort_by(|a, b| b.item.created_at.cmp(&a.item.created_at)),
+            SortOrder::CreatedDesc => {
+                hits.sort_by(|a, b| b.item.created_at.cmp(&a.item.created_at))
+            }
             SortOrder::CreatedAsc => hits.sort_by(|a, b| a.item.created_at.cmp(&b.item.created_at)),
             SortOrder::Random => {
                 // Deterministic-enough shuffle without pulling in `rand`:
@@ -835,8 +897,8 @@ pub fn load_fuzzy_candidates(
     let mut items = Vec::new();
     for row in rows {
         let mut item = row.map_err(ParcError::Sqlite)?;
-        let mut tag_stmt = conn
-            .prepare("SELECT tag FROM fragment_tags WHERE fragment_id = ?1 ORDER BY tag")?;
+        let mut tag_stmt =
+            conn.prepare("SELECT tag FROM fragment_tags WHERE fragment_id = ?1 ORDER BY tag")?;
         item.tags = tag_stmt
             .query_map([&item.id], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
@@ -896,10 +958,16 @@ mod tests {
     ) -> Fragment {
         let mut extra = BTreeMap::new();
         if let Some(s) = status {
-            extra.insert("status".to_string(), serde_json::Value::String(s.to_string()));
+            extra.insert(
+                "status".to_string(),
+                serde_json::Value::String(s.to_string()),
+            );
         }
         if let Some(p) = priority {
-            extra.insert("priority".to_string(), serde_json::Value::String(p.to_string()));
+            extra.insert(
+                "priority".to_string(),
+                serde_json::Value::String(p.to_string()),
+            );
         }
         if let Some(d) = due {
             extra.insert("due".to_string(), serde_json::Value::String(d.to_string()));
@@ -946,7 +1014,10 @@ mod tests {
     #[test]
     fn test_parse_phrase() {
         let q = parse_query("\"exact match\"").unwrap();
-        assert_eq!(q.text_terms, vec![TextTerm::Phrase("exact match".to_string())]);
+        assert_eq!(
+            q.text_terms,
+            vec![TextTerm::Phrase("exact match".to_string())]
+        );
     }
 
     #[test]
@@ -955,7 +1026,10 @@ mod tests {
         assert!(q.text_terms.is_empty());
         assert_eq!(
             q.filters,
-            vec![Filter::Type { value: "todo".to_string(), negated: false }]
+            vec![Filter::Type {
+                value: "todo".to_string(),
+                negated: false
+            }]
         );
     }
 
@@ -964,7 +1038,10 @@ mod tests {
         let q = parse_query("status:!done").unwrap();
         assert_eq!(
             q.filters,
-            vec![Filter::Status { value: "done".to_string(), negated: true }]
+            vec![Filter::Status {
+                value: "done".to_string(),
+                negated: true
+            }]
         );
     }
 
@@ -973,7 +1050,10 @@ mod tests {
         let q = parse_query("#backend").unwrap();
         assert_eq!(
             q.filters,
-            vec![Filter::Tag { value: "backend".to_string(), negated: false }]
+            vec![Filter::Tag {
+                value: "backend".to_string(),
+                negated: false
+            }]
         );
     }
 
@@ -982,14 +1062,20 @@ mod tests {
         let q = parse_query("tag:frontend").unwrap();
         assert_eq!(
             q.filters,
-            vec![Filter::Tag { value: "frontend".to_string(), negated: false }]
+            vec![Filter::Tag {
+                value: "frontend".to_string(),
+                negated: false
+            }]
         );
     }
 
     #[test]
     fn test_parse_date_shorthand_today() {
         let q = parse_query("due:today").unwrap();
-        assert_eq!(q.filters, vec![Filter::Due(DateFilter::Relative(RelativeDate::Today))]);
+        assert_eq!(
+            q.filters,
+            vec![Filter::Due(DateFilter::Relative(RelativeDate::Today))]
+        );
     }
 
     #[test]
@@ -1015,7 +1101,9 @@ mod tests {
         let q = parse_query("created:30-days-ago").unwrap();
         assert_eq!(
             q.filters,
-            vec![Filter::Created(DateFilter::Relative(RelativeDate::DaysAgo(30)))]
+            vec![Filter::Created(DateFilter::Relative(
+                RelativeDate::DaysAgo(30)
+            ))]
         );
     }
 
@@ -1087,15 +1175,24 @@ mod tests {
         assert_eq!(q.filters.len(), 3);
         assert_eq!(
             q.filters[0],
-            Filter::Type { value: "todo".to_string(), negated: false }
+            Filter::Type {
+                value: "todo".to_string(),
+                negated: false
+            }
         );
         assert_eq!(
             q.filters[1],
-            Filter::Status { value: "open".to_string(), negated: false }
+            Filter::Status {
+                value: "open".to_string(),
+                negated: false
+            }
         );
         assert_eq!(
             q.filters[2],
-            Filter::Tag { value: "backend".to_string(), negated: false }
+            Filter::Tag {
+                value: "backend".to_string(),
+                negated: false
+            }
         );
     }
 
@@ -1104,7 +1201,10 @@ mod tests {
         let q = parse_query("by:alice").unwrap();
         assert_eq!(
             q.filters,
-            vec![Filter::CreatedBy { value: "alice".to_string(), negated: false }]
+            vec![Filter::CreatedBy {
+                value: "alice".to_string(),
+                negated: false
+            }]
         );
     }
 
@@ -1113,7 +1213,10 @@ mod tests {
         let q = parse_query("tag:!wip").unwrap();
         assert_eq!(
             q.filters,
-            vec![Filter::Tag { value: "wip".to_string(), negated: true }]
+            vec![Filter::Tag {
+                value: "wip".to_string(),
+                negated: true
+            }]
         );
     }
 
@@ -1235,9 +1338,33 @@ mod tests {
     #[test]
     fn test_search_priority_gte() {
         let (_tmp, conn) = setup_test_vault();
-        let low = make_fragment_with("Low pri", "todo", Some("open"), Some("low"), None, vec![], "");
-        let med = make_fragment_with("Med pri", "todo", Some("open"), Some("medium"), None, vec![], "");
-        let high = make_fragment_with("High pri", "todo", Some("open"), Some("high"), None, vec![], "");
+        let low = make_fragment_with(
+            "Low pri",
+            "todo",
+            Some("open"),
+            Some("low"),
+            None,
+            vec![],
+            "",
+        );
+        let med = make_fragment_with(
+            "Med pri",
+            "todo",
+            Some("open"),
+            Some("medium"),
+            None,
+            vec![],
+            "",
+        );
+        let high = make_fragment_with(
+            "High pri",
+            "todo",
+            Some("open"),
+            Some("high"),
+            None,
+            vec![],
+            "",
+        );
         index::index_fragment(&conn, &low, &[], &[]).unwrap();
         index::index_fragment(&conn, &med, &[], &[]).unwrap();
         index::index_fragment(&conn, &high, &[], &[]).unwrap();
@@ -1267,7 +1394,15 @@ mod tests {
     #[test]
     fn test_search_has_due() {
         let (_tmp, conn) = setup_test_vault();
-        let with_due = make_fragment_with("Has due", "todo", Some("open"), None, Some("2026-03-01"), vec![], "");
+        let with_due = make_fragment_with(
+            "Has due",
+            "todo",
+            Some("open"),
+            None,
+            Some("2026-03-01"),
+            vec![],
+            "",
+        );
         let no_due = make_fragment_with("No due", "todo", Some("open"), None, None, vec![], "");
         index::index_fragment(&conn, &with_due, &[], &[]).unwrap();
         index::index_fragment(&conn, &no_due, &[], &[]).unwrap();
@@ -1300,8 +1435,24 @@ mod tests {
     #[test]
     fn test_search_due_date_absolute() {
         let (_tmp, conn) = setup_test_vault();
-        let frag1 = make_fragment_with("Due soon", "todo", Some("open"), None, Some("2026-03-01"), vec![], "");
-        let frag2 = make_fragment_with("Due later", "todo", Some("open"), None, Some("2026-06-01"), vec![], "");
+        let frag1 = make_fragment_with(
+            "Due soon",
+            "todo",
+            Some("open"),
+            None,
+            Some("2026-03-01"),
+            vec![],
+            "",
+        );
+        let frag2 = make_fragment_with(
+            "Due later",
+            "todo",
+            Some("open"),
+            None,
+            Some("2026-06-01"),
+            vec![],
+            "",
+        );
         index::index_fragment(&conn, &frag1, &[], &[]).unwrap();
         index::index_fragment(&conn, &frag2, &[], &[]).unwrap();
 
@@ -1343,7 +1494,13 @@ mod tests {
 
     // ── Fuzzy integration tests ────────────────────────────────────────
 
-    fn index_simple(conn: &Connection, title: &str, ftype: &str, body: &str, tags: Vec<String>) -> String {
+    fn index_simple(
+        conn: &Connection,
+        title: &str,
+        ftype: &str,
+        body: &str,
+        tags: Vec<String>,
+    ) -> String {
         let frag = make_fragment_with(title, ftype, None, None, None, tags.clone(), body);
         let id = frag.id.clone();
         index::index_fragment(&conn, &frag, &tags, &[]).unwrap();
@@ -1368,7 +1525,13 @@ mod tests {
     #[test]
     fn fuzzy_search_matches_body() {
         let (_tmp, conn) = setup_test_vault();
-        index_simple(&conn, "alpha", "note", "this body mentions xyzzy somewhere", vec![]);
+        index_simple(
+            &conn,
+            "alpha",
+            "note",
+            "this body mentions xyzzy somewhere",
+            vec![],
+        );
         index_simple(&conn, "beta", "note", "no match here", vec![]);
 
         let q = parse_query("xyzzy").unwrap();
@@ -1409,8 +1572,20 @@ mod tests {
     #[test]
     fn fuzzy_search_phrase_post_filter() {
         let (_tmp, conn) = setup_test_vault();
-        index_simple(&conn, "alpha doc", "note", "talks about exact thing", vec![]);
-        index_simple(&conn, "alpha note", "note", "talks about something else", vec![]);
+        index_simple(
+            &conn,
+            "alpha doc",
+            "note",
+            "talks about exact thing",
+            vec![],
+        );
+        index_simple(
+            &conn,
+            "alpha note",
+            "note",
+            "talks about something else",
+            vec![],
+        );
 
         let q = parse_query("alpha \"exact thing\"").unwrap();
         let hits = fuzzy_search(&conn, &q).unwrap();
@@ -1449,7 +1624,8 @@ mod tests {
         let (_tmp, conn) = setup_test_vault();
         // Insert an archived fragment manually
         let mut frag = make_fragment_with("findme", "note", None, None, None, vec![], "");
-        frag.extra_fields.insert("archived".to_string(), serde_json::Value::Bool(true));
+        frag.extra_fields
+            .insert("archived".to_string(), serde_json::Value::Bool(true));
         index::index_fragment(&conn, &frag, &[], &[]).unwrap();
 
         let q = parse_query("findme").unwrap();

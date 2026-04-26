@@ -84,9 +84,13 @@ fn test_plugin_event_handler() {
     let vault = tmp.path().join(".parc");
     parc_core::vault::init_vault(&vault).unwrap();
 
-    let mut instance = runtime.load_plugin(manifest, &wasm_bytes, &vault, "{}").unwrap();
+    let mut instance = runtime
+        .load_plugin(manifest, &wasm_bytes, &vault, "{}")
+        .unwrap();
 
-    let result = instance.call_event("post-create", r#"{"id":"test"}"#).unwrap();
+    let result = instance
+        .call_event("post-create", r#"{"id":"test"}"#)
+        .unwrap();
     assert!(result.is_some());
     let output = result.unwrap();
     assert!(output.contains("event=post-create"));
@@ -104,9 +108,13 @@ fn test_plugin_command_handler() {
     let vault = tmp.path().join(".parc");
     parc_core::vault::init_vault(&vault).unwrap();
 
-    let mut instance = runtime.load_plugin(manifest, &wasm_bytes, &vault, "{}").unwrap();
+    let mut instance = runtime
+        .load_plugin(manifest, &wasm_bytes, &vault, "{}")
+        .unwrap();
 
-    let output = instance.call_command("echo", r#"["hello","world"]"#).unwrap();
+    let output = instance
+        .call_command("echo", r#"["hello","world"]"#)
+        .unwrap();
     assert!(output.contains("cmd=echo"));
     assert!(output.contains("args="));
 }
@@ -225,7 +233,11 @@ fn test_doctor_plugin_checks() {
 
     // Healthy vault with valid plugin
     let findings = parc_core::doctor::check_plugins(&vault);
-    assert!(findings.is_empty(), "expected no findings, got: {:?}", findings);
+    assert!(
+        findings.is_empty(),
+        "expected no findings, got: {:?}",
+        findings
+    );
 
     // Break the plugin by removing the wasm
     std::fs::remove_file(vault.join("plugins").join("echo.wasm")).unwrap();

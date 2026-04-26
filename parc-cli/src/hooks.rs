@@ -48,14 +48,13 @@ impl HookRunner for CliHookRunner {
         }
 
         // Try to parse stdout as modified fragment JSON
-        let modified: Fragment =
-            serde_json::from_str(stdout).map_err(|e| {
-                ParcError::ParseError(format!(
-                    "pre-hook '{}' produced invalid JSON: {}",
-                    script.path.display(),
-                    e
-                ))
-            })?;
+        let modified: Fragment = serde_json::from_str(stdout).map_err(|e| {
+            ParcError::ParseError(format!(
+                "pre-hook '{}' produced invalid JSON: {}",
+                script.path.display(),
+                e
+            ))
+        })?;
         Ok(Some(modified))
     }
 

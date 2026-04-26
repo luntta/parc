@@ -135,7 +135,10 @@ fn test_fragment_lifecycle() {
     ));
     let result = result_of(&resp);
     assert_eq!(result["title"], "Test Note");
-    assert!(result["body"].as_str().unwrap().contains("Hello from integration test."));
+    assert!(result["body"]
+        .as_str()
+        .unwrap()
+        .contains("Hello from integration test."));
 
     // Update
     let resp = h.send_rpc(rpc(
@@ -166,11 +169,7 @@ fn test_fragment_lifecycle() {
     assert_eq!(results.len(), 1);
 
     // Delete
-    let resp = h.send_rpc(rpc(
-        6,
-        "fragment.delete",
-        serde_json::json!({ "id": &id }),
-    ));
+    let resp = h.send_rpc(rpc(6, "fragment.delete", serde_json::json!({ "id": &id })));
     let result = result_of(&resp);
     assert!(result["deleted"].as_bool().unwrap());
 
@@ -329,11 +328,7 @@ fn test_history_lifecycle() {
     ));
 
     // List history
-    let resp = h.send_rpc(rpc(
-        3,
-        "history.list",
-        serde_json::json!({ "id": &id }),
-    ));
+    let resp = h.send_rpc(rpc(3, "history.list", serde_json::json!({ "id": &id })));
     let versions = result_of(&resp).as_array().unwrap();
     assert!(!versions.is_empty(), "should have at least one version");
     let ts = versions[0]["timestamp"].as_str().unwrap().to_string();
@@ -357,11 +352,7 @@ fn test_history_lifecycle() {
     assert_eq!(result["restored_from"], ts);
 
     // Verify restored
-    let resp = h.send_rpc(rpc(
-        6,
-        "fragment.get",
-        serde_json::json!({ "id": &id }),
-    ));
+    let resp = h.send_rpc(rpc(6, "fragment.get", serde_json::json!({ "id": &id })));
     let result = result_of(&resp);
     assert_eq!(result["title"], "V1");
 }
@@ -406,11 +397,7 @@ fn test_schema_operations() {
     assert!(names.contains(&"todo"));
 
     // schema.get
-    let resp = h.send_rpc(rpc(
-        2,
-        "schema.get",
-        serde_json::json!({ "type": "todo" }),
-    ));
+    let resp = h.send_rpc(rpc(2, "schema.get", serde_json::json!({ "type": "todo" })));
     let result = result_of(&resp);
     assert_eq!(result["name"], "todo");
     let fields = result["fields"].as_array().unwrap();

@@ -93,9 +93,8 @@ impl RpcError {
 /// Parse a JSON-RPC request line. Returns a vec of requests (batch support).
 /// On parse failure, returns an error Response.
 pub fn parse_request(line: &str) -> Result<Vec<Request>, Response> {
-    let value: Value = serde_json::from_str(line).map_err(|_| {
-        Response::error(Value::Null, RpcError::parse_error())
-    })?;
+    let value: Value = serde_json::from_str(line)
+        .map_err(|_| Response::error(Value::Null, RpcError::parse_error()))?;
 
     match value {
         Value::Array(arr) => {
@@ -104,17 +103,15 @@ pub fn parse_request(line: &str) -> Result<Vec<Request>, Response> {
             }
             let mut requests = Vec::new();
             for item in arr {
-                let req: Request = serde_json::from_value(item).map_err(|_| {
-                    Response::error(Value::Null, RpcError::invalid_request())
-                })?;
+                let req: Request = serde_json::from_value(item)
+                    .map_err(|_| Response::error(Value::Null, RpcError::invalid_request()))?;
                 requests.push(req);
             }
             Ok(requests)
         }
         Value::Object(_) => {
-            let req: Request = serde_json::from_value(value).map_err(|_| {
-                Response::error(Value::Null, RpcError::invalid_request())
-            })?;
+            let req: Request = serde_json::from_value(value)
+                .map_err(|_| Response::error(Value::Null, RpcError::invalid_request()))?;
             Ok(vec![req])
         }
         _ => Err(Response::error(Value::Null, RpcError::invalid_request())),

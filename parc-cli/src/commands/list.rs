@@ -20,13 +20,22 @@ pub fn run(
 
     let mut filters = Vec::new();
     if let Some(t) = type_name {
-        filters.push(Filter::Type { value: t, negated: false });
+        filters.push(Filter::Type {
+            value: t,
+            negated: false,
+        });
     }
     if let Some(s) = status {
-        filters.push(Filter::Status { value: s, negated: false });
+        filters.push(Filter::Status {
+            value: s,
+            negated: false,
+        });
     }
     for tag in tags {
-        filters.push(Filter::Tag { value: tag, negated: false });
+        filters.push(Filter::Tag {
+            value: tag,
+            negated: false,
+        });
     }
 
     let query = SearchQuery {

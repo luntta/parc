@@ -17,9 +17,8 @@ pub fn validate_snapshot_timestamp(ts: &str) -> Result<(), ParcError> {
             ts
         )));
     }
-    DateTime::parse_from_rfc3339(ts).map_err(|_| {
-        ParcError::ValidationError(format!("invalid snapshot timestamp '{}'", ts))
-    })?;
+    DateTime::parse_from_rfc3339(ts)
+        .map_err(|_| ParcError::ValidationError(format!("invalid snapshot timestamp '{}'", ts)))?;
     Ok(())
 }
 
@@ -33,9 +32,7 @@ pub struct VersionEntry {
 /// Save a snapshot of the current fragment file before it is overwritten.
 /// If the fragment file doesn't exist (new fragment), this is a no-op.
 pub fn save_snapshot(vault: &Path, fragment_id: &str) -> Result<(), ParcError> {
-    let fragment_path = vault
-        .join("fragments")
-        .join(format!("{}.md", fragment_id));
+    let fragment_path = vault.join("fragments").join(format!("{}.md", fragment_id));
 
     if !fragment_path.exists() {
         return Ok(());
@@ -45,8 +42,7 @@ pub fn save_snapshot(vault: &Path, fragment_id: &str) -> Result<(), ParcError> {
 
     // Use current time as the snapshot timestamp (when the snapshot was taken).
     // Micros precision to avoid collisions in fast operations.
-    let timestamp = Utc::now()
-        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    let timestamp = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
 
     let history_dir = vault.join("history").join(fragment_id);
     std::fs::create_dir_all(&history_dir)?;
@@ -138,9 +134,7 @@ pub fn restore_version(
     // but write_fragment checks config — we already saved above manually,
     // so just write directly to avoid double-snapshot)
     let content = fragment::serialize_fragment(&old);
-    let path = vault
-        .join("fragments")
-        .join(format!("{}.md", fragment_id));
+    let path = vault.join("fragments").join(format!("{}.md", fragment_id));
     std::fs::write(&path, content)?;
 
     Ok(old)
@@ -156,9 +150,7 @@ pub fn diff_versions(
     let full_id = fragment::resolve_id(vault, fragment_id)?;
 
     // Read current version
-    let current_path = vault
-        .join("fragments")
-        .join(format!("{}.md", full_id));
+    let current_path = vault.join("fragments").join(format!("{}.md", full_id));
     let current_content = std::fs::read_to_string(&current_path)?;
 
     // Determine which historical version to diff against

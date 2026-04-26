@@ -41,11 +41,7 @@ pub fn run(vault: &Path, id_a: &str, id_b: &str, json: bool) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        println!(
-            "Unlinked {} \u{2194} {}",
-            &frag_a.id[..8],
-            &frag_b.id[..8]
-        );
+        println!("Unlinked {} \u{2194} {}", &frag_a.id[..8], &frag_b.id[..8]);
     }
     Ok(())
 }

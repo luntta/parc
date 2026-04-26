@@ -151,9 +151,7 @@ fn highlighted_title(title: &str, indices: &[u32]) -> Vec<Span<'static>> {
         return vec![Span::raw(title.to_string())];
     }
 
-    let highlight_style = Style::default()
-        .fg(ACTIVE_TAB)
-        .add_modifier(Modifier::BOLD);
+    let highlight_style = Style::default().fg(ACTIVE_TAB).add_modifier(Modifier::BOLD);
     let mut spans = Vec::new();
     let mut plain = String::new();
     let mut idx_iter = indices.iter().copied().peekable();
@@ -262,9 +260,8 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None);
-        let mut scrollbar_state =
-            ScrollbarState::new(total.saturating_sub(viewport) as usize)
-                .position(app.detail_scroll as usize);
+        let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(viewport) as usize)
+            .position(app.detail_scroll as usize);
         frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
     }
 }

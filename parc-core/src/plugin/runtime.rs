@@ -150,7 +150,9 @@ impl WasmRuntime {
         })?;
 
         // Call parc_plugin_init if it exists
-        if let Ok(init_fn) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "parc_plugin_init") {
+        if let Ok(init_fn) =
+            instance.get_typed_func::<(i32, i32), i32>(&mut store, "parc_plugin_init")
+        {
             let config_bytes = config_json.as_bytes();
             let (ptr, len) = write_to_guest(&mut store, &instance, config_bytes)?;
             store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
@@ -218,10 +220,7 @@ impl PluginInstance {
     }
 
     /// Call a validation handler: `parc_validate(fragment_ptr, fragment_len) -> i32`
-    pub fn call_validate(
-        &mut self,
-        fragment_json: &str,
-    ) -> Result<ValidationResult, ParcError> {
+    pub fn call_validate(&mut self, fragment_json: &str) -> Result<ValidationResult, ParcError> {
         let func = match self
             .instance
             .get_typed_func::<(i32, i32), i32>(&mut self.store, "parc_validate")
@@ -237,8 +236,7 @@ impl PluginInstance {
 
         self.store.data_mut().output_buffer.clear();
 
-        let (ptr, len) =
-            write_to_guest(&mut self.store, &self.instance, fragment_json.as_bytes())?;
+        let (ptr, len) = write_to_guest(&mut self.store, &self.instance, fragment_json.as_bytes())?;
 
         self.store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
         let result = func.call(&mut self.store, (ptr, len)).map_err(|e| {
@@ -270,10 +268,7 @@ impl PluginInstance {
     }
 
     /// Call a render handler: `parc_render(fragment_ptr, fragment_len) -> i32`
-    pub fn call_render(
-        &mut self,
-        fragment_json: &str,
-    ) -> Result<Option<String>, ParcError> {
+    pub fn call_render(&mut self, fragment_json: &str) -> Result<Option<String>, ParcError> {
         let func = match self
             .instance
             .get_typed_func::<(i32, i32), i32>(&mut self.store, "parc_render")
@@ -284,8 +279,7 @@ impl PluginInstance {
 
         self.store.data_mut().output_buffer.clear();
 
-        let (ptr, len) =
-            write_to_guest(&mut self.store, &self.instance, fragment_json.as_bytes())?;
+        let (ptr, len) = write_to_guest(&mut self.store, &self.instance, fragment_json.as_bytes())?;
 
         self.store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
         let _result = func.call(&mut self.store, (ptr, len)).map_err(|e| {
@@ -306,11 +300,7 @@ impl PluginInstance {
     }
 
     /// Call a command handler: `parc_command(cmd_ptr, cmd_len, args_ptr, args_len) -> i32`
-    pub fn call_command(
-        &mut self,
-        cmd: &str,
-        args_json: &str,
-    ) -> Result<String, ParcError> {
+    pub fn call_command(&mut self, cmd: &str, args_json: &str) -> Result<String, ParcError> {
         let func = self
             .instance
             .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, "parc_command")
@@ -323,8 +313,7 @@ impl PluginInstance {
 
         self.store.data_mut().output_buffer.clear();
 
-        let (cmd_ptr, cmd_len) =
-            write_to_guest(&mut self.store, &self.instance, cmd.as_bytes())?;
+        let (cmd_ptr, cmd_len) = write_to_guest(&mut self.store, &self.instance, cmd.as_bytes())?;
         let (args_ptr, args_len) =
             write_to_guest(&mut self.store, &self.instance, args_json.as_bytes())?;
 
@@ -363,9 +352,9 @@ fn write_to_guest(
 
     let len = data.len() as i32;
     store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
-    let ptr = alloc_fn.call(&mut *store, len).map_err(|e| {
-        ParcError::PluginError(format!("parc_alloc failed: {}", e))
-    })?;
+    let ptr = alloc_fn
+        .call(&mut *store, len)
+        .map_err(|e| ParcError::PluginError(format!("parc_alloc failed: {}", e)))?;
 
     let memory = instance
         .get_memory(&mut *store, "memory")
@@ -401,9 +390,9 @@ fn free_from_guest(
     len: i32,
 ) -> Result<(), ParcError> {
     if let Ok(free_fn) = instance.get_typed_func::<(i32, i32), ()>(&mut *store, "parc_free") {
-        free_fn.call(&mut *store, (ptr, len)).map_err(|e| {
-            ParcError::PluginError(format!("parc_free failed: {}", e))
-        })?;
+        free_fn
+            .call(&mut *store, (ptr, len))
+            .map_err(|e| ParcError::PluginError(format!("parc_free failed: {}", e)))?;
     }
     Ok(())
 }

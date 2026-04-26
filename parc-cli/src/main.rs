@@ -10,7 +10,10 @@ use parc_core::schema::load_schemas;
 use parc_core::vault::resolve_vault;
 
 #[derive(Parser)]
-#[command(name = "parc", about = "Personal Archive — structured fragments of thought")]
+#[command(
+    name = "parc",
+    about = "Personal Archive — structured fragments of thought"
+)]
 #[command(allow_external_subcommands = true)]
 struct Cli {
     /// Path to vault (overrides PARC_VAULT and vault discovery)
@@ -506,9 +509,13 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Completions { shell }) => commands::completions::run(&shell),
         Some(Commands::Vault { subcommand, json }) => {
             let vault = resolve_vault(cli.vault.as_deref())?;
-            commands::vault::run(&vault, subcommand.map(|s| match s {
-                VaultCommands::List { json } => commands::vault::VaultSubcommand::List { json },
-            }), json)
+            commands::vault::run(
+                &vault,
+                subcommand.map(|s| match s {
+                    VaultCommands::List { json } => commands::vault::VaultSubcommand::List { json },
+                }),
+                json,
+            )
         }
         Some(command) => {
             // All other commands: resolve vault once, pass to command
@@ -556,16 +563,7 @@ fn main() -> anyhow::Result<()> {
                     assignee,
                     json,
                 } => commands::promote::run(
-                    &vault,
-                    &id,
-                    &new_type,
-                    tag,
-                    link,
-                    due,
-                    priority,
-                    status,
-                    assignee,
-                    json,
+                    &vault, &id, &new_type, tag, link, due, priority, status, assignee, json,
                 ),
                 Commands::List {
                     type_name,
@@ -576,7 +574,12 @@ fn main() -> anyhow::Result<()> {
                 } => commands::list::run(&vault, type_name, status, tag, json, limit),
                 Commands::Show { id, json } => commands::show::run(&vault, &id, json),
                 Commands::Edit { id, json } => commands::edit::run(&vault, &id, json),
-                Commands::Set { id, field, value, json } => commands::set::run(&vault, &id, &field, &value, json),
+                Commands::Set {
+                    id,
+                    field,
+                    value,
+                    json,
+                } => commands::set::run(&vault, &id, &field, &value, json),
                 Commands::Search {
                     query,
                     json,
@@ -600,8 +603,12 @@ fn main() -> anyhow::Result<()> {
                 } => commands::random::run(&vault, limit, type_name, include_done, json),
                 Commands::Review { since, json } => commands::review::run(&vault, since, json),
                 Commands::Delete { id, json } => commands::delete::run(&vault, &id, json),
-                Commands::Link { id_a, id_b, json } => commands::link::run(&vault, &id_a, &id_b, json),
-                Commands::Unlink { id_a, id_b, json } => commands::unlink::run(&vault, &id_a, &id_b, json),
+                Commands::Link { id_a, id_b, json } => {
+                    commands::link::run(&vault, &id_a, &id_b, json)
+                }
+                Commands::Unlink { id_a, id_b, json } => {
+                    commands::unlink::run(&vault, &id_a, &id_b, json)
+                }
                 Commands::Backlinks { id, json } => commands::backlinks::run(&vault, &id, json),
                 Commands::Doctor { json } => commands::doctor::run(&vault, json),
                 Commands::History {
@@ -621,29 +628,41 @@ fn main() -> anyhow::Result<()> {
                 Commands::Detach { id, filename, json } => {
                     commands::attach::run_detach(&vault, &id, &filename, json)
                 }
-                Commands::Attachments { id, json } => commands::attach::run_attachments(&vault, &id, json),
+                Commands::Attachments { id, json } => {
+                    commands::attach::run_attachments(&vault, &id, json)
+                }
                 Commands::Schema { subcommand } => match subcommand {
                     SchemaCommands::Add { path } => commands::schema::run_add(&vault, &path),
                 },
                 Commands::Reindex { json } => commands::reindex::run(&vault, json),
                 Commands::Types { json } => commands::types::run(&vault, json),
                 Commands::Tags { json } => commands::tags::run(&vault, json),
-                Commands::Archive { id, undo, json } => commands::archive::run(&vault, &id, undo, json),
-                Commands::Trash { purge, id, restore, json } => {
-                    commands::trash::run(&vault, purge, id, restore, json)
+                Commands::Archive { id, undo, json } => {
+                    commands::archive::run(&vault, &id, undo, json)
                 }
-                Commands::Export { format, output, query } => {
-                    commands::export::run(&vault, &format, output.as_deref(), query)
-                }
-                Commands::Import { file, dry_run, json } => {
-                    commands::import::run(&vault, &file, dry_run, json)
-                }
+                Commands::Trash {
+                    purge,
+                    id,
+                    restore,
+                    json,
+                } => commands::trash::run(&vault, purge, id, restore, json),
+                Commands::Export {
+                    format,
+                    output,
+                    query,
+                } => commands::export::run(&vault, &format, output.as_deref(), query),
+                Commands::Import {
+                    file,
+                    dry_run,
+                    json,
+                } => commands::import::run(&vault, &file, dry_run, json),
                 Commands::GitHooks { subcommand } => match subcommand {
                     GitHooksCommands::Install => commands::git_hooks::run_install(&vault),
                 },
-                Commands::Server { socket, socket_path } => {
-                    commands::server::run(&vault, socket, socket_path)
-                }
+                Commands::Server {
+                    socket,
+                    socket_path,
+                } => commands::server::run(&vault, socket, socket_path),
                 Commands::Plugin { subcommand } => match subcommand {
                     PluginCommands::List { json } => commands::plugin::run_list(&vault, json),
                     PluginCommands::Info { name, json } => {
@@ -656,10 +675,10 @@ fn main() -> anyhow::Result<()> {
                         commands::plugin::run_remove(&vault, &name, force)
                     }
                 },
-                Commands::External(args) => {
-                    run_external_command(&vault, args)
+                Commands::External(args) => run_external_command(&vault, args),
+                Commands::Init { .. } | Commands::Vault { .. } | Commands::Completions { .. } => {
+                    unreachable!()
                 }
-                Commands::Init { .. } | Commands::Vault { .. } | Commands::Completions { .. } => unreachable!(),
             }
         }
     }
@@ -711,8 +730,8 @@ fn run_external_command(vault: &std::path::Path, args: Vec<String>) -> anyhow::R
     if let Ok(schemas) = load_schemas(vault) {
         if schemas.resolve(cmd_name).is_some() {
             let remaining = &args[1..];
-            let alias_args = AliasNewArgs::try_parse_from(remaining)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let alias_args =
+                AliasNewArgs::try_parse_from(remaining).map_err(|e| anyhow::anyhow!("{}", e))?;
             return commands::new::run(
                 vault,
                 cmd_name,

@@ -115,10 +115,7 @@ pub fn index_fragment(
     }
 
     // Update FTS
-    conn.execute(
-        "DELETE FROM fragments_fts WHERE id = ?1",
-        [&fragment.id],
-    )?;
+    conn.execute("DELETE FROM fragments_fts WHERE id = ?1", [&fragment.id])?;
     let tags_str = merged_tags.join(" ");
     conn.execute(
         "INSERT INTO fragments_fts (id, title, body, tags) VALUES (?1, ?2, ?3, ?4)",
@@ -213,12 +210,15 @@ pub fn index_fragment_auto(
 
     let link_candidates = load_fragment_refs(vault)?;
     let body_links = link::parse_wiki_links(&fragment.body);
-    let merged_links = link::merge_links(&fragment.links, &body_links, |target| {
-        match link::resolve_link_target(target, &link_candidates) {
-            link::ResolveOutcome::Unique(id) => Some(id),
-            link::ResolveOutcome::Ambiguous(_) | link::ResolveOutcome::None => None,
-        }
-    });
+    let merged_links =
+        link::merge_links(
+            &fragment.links,
+            &body_links,
+            |target| match link::resolve_link_target(target, &link_candidates) {
+                link::ResolveOutcome::Unique(id) => Some(id),
+                link::ResolveOutcome::Ambiguous(_) | link::ResolveOutcome::None => None,
+            },
+        );
 
     index_fragment(conn, fragment, &merged_tags, &merged_links)
 }

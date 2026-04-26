@@ -108,11 +108,7 @@ pub fn run_info(vault: &Path, name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn run_install(
-    vault: &Path,
-    wasm_path: &str,
-    manifest_path: Option<&str>,
-) -> Result<()> {
+pub fn run_install(vault: &Path, wasm_path: &str, manifest_path: Option<&str>) -> Result<()> {
     let wasm_src = std::path::Path::new(wasm_path);
     if !wasm_src.exists() {
         anyhow::bail!("wasm file not found: {}", wasm_path);

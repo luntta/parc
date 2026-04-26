@@ -26,8 +26,7 @@ pub fn attach(vault: &Path, params: Value) -> Result<Value, RpcError> {
         )));
     }
 
-    let filename =
-        att::attach_file(vault, &p.id, source, false).map_err(map_parc_error)?;
+    let filename = att::attach_file(vault, &p.id, source, false).map_err(map_parc_error)?;
     let full_id = fragment::resolve_id(vault, &p.id).map_err(map_parc_error)?;
 
     let size = source.metadata().map(|m| m.len()).unwrap_or(0);

@@ -84,12 +84,7 @@ fn print_row(
 /// Render a title trimmed to `width` chars with optional ANSI highlighting on
 /// matched character positions. Returns (rendered_string, visible_char_count)
 /// so the caller can pad the column without counting ANSI escapes.
-fn render_title(
-    title: &str,
-    indices: &[u32],
-    width: usize,
-    highlight: bool,
-) -> (String, usize) {
+fn render_title(title: &str, indices: &[u32], width: usize, highlight: bool) -> (String, usize) {
     let chars: Vec<char> = title.chars().collect();
     let truncated = chars.len() > width;
     let visible_len = if truncated { width } else { chars.len() };
@@ -158,7 +153,12 @@ pub fn print_sections(sections: &[SearchSection], id_len: usize) {
     }
 }
 
-pub fn print_fragment(fragment: &Fragment, backlinks: &[BacklinkInfo], attachments: &[AttachmentInfo], id_len: usize) {
+pub fn print_fragment(
+    fragment: &Fragment,
+    backlinks: &[BacklinkInfo],
+    attachments: &[AttachmentInfo],
+    id_len: usize,
+) {
     let inline_tags = tag::extract_inline_tags(&fragment.body);
     let merged_tags = tag::merge_tags(&fragment.tags, &inline_tags);
 
@@ -177,18 +177,8 @@ pub fn print_fragment(fragment: &Fragment, backlinks: &[BacklinkInfo], attachmen
             println!("{}: {}", capitalize(key), s);
         }
     }
-    println!(
-        "Created: {}",
-        fragment
-            .created_at
-            .format("%Y-%m-%d %H:%M")
-    );
-    println!(
-        "Updated: {}",
-        fragment
-            .updated_at
-            .format("%Y-%m-%d %H:%M")
-    );
+    println!("Created: {}", fragment.created_at.format("%Y-%m-%d %H:%M"));
+    println!("Updated: {}", fragment.updated_at.format("%Y-%m-%d %H:%M"));
     if let Some(ref by) = fragment.created_by {
         println!("By:      {}", by);
     }

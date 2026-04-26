@@ -106,11 +106,7 @@ pub fn attach_file(
 }
 
 /// Remove an attachment from a fragment.
-pub fn detach_file(
-    vault: &Path,
-    id_or_prefix: &str,
-    filename: &str,
-) -> Result<(), ParcError> {
+pub fn detach_file(vault: &Path, id_or_prefix: &str, filename: &str) -> Result<(), ParcError> {
     validate_attachment_filename(filename)?;
     let full_id = fragment::resolve_id(vault, id_or_prefix)?;
 
@@ -207,8 +203,8 @@ fn remove_inline_code(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fragment::{new_fragment, create_fragment};
     use crate::config::load_config;
+    use crate::fragment::{create_fragment, new_fragment};
     use crate::schema::load_schemas;
 
     fn setup_vault() -> (tempfile::TempDir, PathBuf) {
@@ -265,7 +261,11 @@ mod tests {
         assert_eq!(filename, "test.txt");
 
         // File should be copied to attachments dir
-        assert!(vault.join("attachments").join(&id).join("test.txt").exists());
+        assert!(vault
+            .join("attachments")
+            .join(&id)
+            .join("test.txt")
+            .exists());
         // Source should still exist (copy, not move)
         assert!(test_file.exists());
 
@@ -291,7 +291,11 @@ mod tests {
         // Source should be gone
         assert!(!test_file.exists());
         // File should be in attachments
-        assert!(vault.join("attachments").join(&id).join("moveme.txt").exists());
+        assert!(vault
+            .join("attachments")
+            .join(&id)
+            .join("moveme.txt")
+            .exists());
     }
 
     #[test]

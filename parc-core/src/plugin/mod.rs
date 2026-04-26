@@ -72,10 +72,16 @@ pub struct DiscoveredPlugin {
 
 /// Load a plugin manifest from a TOML file.
 pub fn load_manifest(path: &Path) -> Result<PluginManifest, ParcError> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| ParcError::PluginError(format!("failed to read manifest {}: {}", path.display(), e)))?;
-    let manifest: PluginManifest = toml::from_str(&content)
-        .map_err(|e| ParcError::PluginError(format!("failed to parse manifest {}: {}", path.display(), e)))?;
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        ParcError::PluginError(format!("failed to read manifest {}: {}", path.display(), e))
+    })?;
+    let manifest: PluginManifest = toml::from_str(&content).map_err(|e| {
+        ParcError::PluginError(format!(
+            "failed to parse manifest {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
     Ok(manifest)
 }
 
@@ -104,7 +110,11 @@ pub fn discover_plugins(vault: &Path) -> Result<Vec<DiscoveredPlugin>, ParcError
                     });
                 }
                 Err(e) => {
-                    eprintln!("Warning: skipping plugin manifest {}: {}", path.display(), e);
+                    eprintln!(
+                        "Warning: skipping plugin manifest {}: {}",
+                        path.display(),
+                        e
+                    );
                 }
             }
         }
@@ -129,8 +139,13 @@ pub fn validate_manifest(manifest: &PluginManifest, vault: &Path) -> Result<(), 
     }
 
     let valid_hooks = [
-        "pre-create", "post-create", "pre-update", "post-update",
-        "pre-delete", "post-delete", "*",
+        "pre-create",
+        "post-create",
+        "pre-update",
+        "post-update",
+        "pre-delete",
+        "post-delete",
+        "*",
     ];
     for hook in &manifest.capabilities.hooks {
         if !valid_hooks.contains(&hook.as_str()) {

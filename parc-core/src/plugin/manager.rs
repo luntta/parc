@@ -5,8 +5,8 @@ use crate::error::ParcError;
 use crate::fragment::Fragment;
 use crate::hook::HookEvent;
 
-use super::runtime::{PluginInstance, ValidationResult, WasmRuntime};
 use super::discover_plugins;
+use super::runtime::{PluginInstance, ValidationResult, WasmRuntime};
 
 /// Describes a command provided by a plugin.
 #[derive(Debug, Clone)]
@@ -205,9 +205,7 @@ impl PluginManager {
             .plugins
             .iter_mut()
             .find(|p| p.manifest.plugin.name == plugin_name)
-            .ok_or_else(|| {
-                ParcError::PluginError(format!("plugin '{}' not found", plugin_name))
-            })?;
+            .ok_or_else(|| ParcError::PluginError(format!("plugin '{}' not found", plugin_name)))?;
 
         let args_json = serde_json::to_string(args).unwrap_or_else(|_| "[]".into());
         plugin.call_command(cmd, &args_json)

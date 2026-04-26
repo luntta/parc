@@ -44,7 +44,10 @@ fn render_block<'a>(node: &'a AstNode<'a>, out: &mut Vec<Line<'static>>, indent:
             let style = Style::default()
                 .fg(HEADING_COLOR)
                 .add_modifier(Modifier::BOLD);
-            let mut spans = vec![Span::styled(format!("{} ", "#".repeat(h.level as usize)), style)];
+            let mut spans = vec![Span::styled(
+                format!("{} ", "#".repeat(h.level as usize)),
+                style,
+            )];
             spans.extend(inline_spans(node, style));
             push_with_indent(out, spans, indent);
             out.push(Line::raw(""));
@@ -247,14 +250,12 @@ mod tests {
     #[test]
     fn renders_heading_and_paragraph() {
         let lines = render_body("# Hello\n\nworld");
-        assert!(lines.iter().any(|l| l
-            .spans
+        assert!(lines
             .iter()
-            .any(|s| s.content.contains("Hello"))));
-        assert!(lines.iter().any(|l| l
-            .spans
+            .any(|l| l.spans.iter().any(|s| s.content.contains("Hello"))));
+        assert!(lines
             .iter()
-            .any(|s| s.content.contains("world"))));
+            .any(|l| l.spans.iter().any(|s| s.content.contains("world"))));
     }
 
     #[test]

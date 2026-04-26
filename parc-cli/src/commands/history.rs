@@ -63,8 +63,7 @@ pub fn run(
     }
 
     if diff {
-        let diff_output =
-            history::diff_versions(vault, &full_id, diff_timestamp.as_deref())?;
+        let diff_output = history::diff_versions(vault, &full_id, diff_timestamp.as_deref())?;
 
         if json {
             let json_val = serde_json::json!({

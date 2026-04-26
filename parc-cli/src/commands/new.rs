@@ -79,12 +79,11 @@ pub fn run(
     let runner = CliHookRunner;
 
     #[cfg(feature = "wasm-plugins")]
-    let mut plugin_manager =
-        parc_core::plugin::manager::PluginManager::load_all(vault, &config)
-            .unwrap_or_else(|e| {
-                eprintln!("Warning: failed to load plugins: {}", e);
-                parc_core::plugin::manager::PluginManager::empty().unwrap()
-            });
+    let mut plugin_manager = parc_core::plugin::manager::PluginManager::load_all(vault, &config)
+        .unwrap_or_else(|e| {
+            eprintln!("Warning: failed to load plugins: {}", e);
+            parc_core::plugin::manager::PluginManager::empty().unwrap()
+        });
 
     if should_open_editor {
         // Prepare template content
@@ -97,7 +96,13 @@ pub fn run(
 
         // Run pre-create hooks
         #[cfg(feature = "wasm-plugins")]
-        let fragment = hook::run_pre_hooks_with_plugins(&runner, vault, HookEvent::PreCreate, &fragment, &mut plugin_manager)?;
+        let fragment = hook::run_pre_hooks_with_plugins(
+            &runner,
+            vault,
+            HookEvent::PreCreate,
+            &fragment,
+            &mut plugin_manager,
+        )?;
         #[cfg(not(feature = "wasm-plugins"))]
         let fragment = hook::run_pre_hooks(&runner, vault, HookEvent::PreCreate, &fragment)?;
 
@@ -109,7 +114,13 @@ pub fn run(
 
         // Run post-create hooks
         #[cfg(feature = "wasm-plugins")]
-        hook::run_post_hooks_with_plugins(&runner, vault, HookEvent::PostCreate, &fragment, &mut plugin_manager);
+        hook::run_post_hooks_with_plugins(
+            &runner,
+            vault,
+            HookEvent::PostCreate,
+            &fragment,
+            &mut plugin_manager,
+        );
         #[cfg(not(feature = "wasm-plugins"))]
         hook::run_post_hooks(&runner, vault, HookEvent::PostCreate, &fragment);
 
@@ -120,7 +131,13 @@ pub fn run(
 
         // Run pre-create hooks
         #[cfg(feature = "wasm-plugins")]
-        let fragment = hook::run_pre_hooks_with_plugins(&runner, vault, HookEvent::PreCreate, &fragment, &mut plugin_manager)?;
+        let fragment = hook::run_pre_hooks_with_plugins(
+            &runner,
+            vault,
+            HookEvent::PreCreate,
+            &fragment,
+            &mut plugin_manager,
+        )?;
         #[cfg(not(feature = "wasm-plugins"))]
         let fragment = hook::run_pre_hooks(&runner, vault, HookEvent::PreCreate, &fragment)?;
 
@@ -131,7 +148,13 @@ pub fn run(
 
         // Run post-create hooks
         #[cfg(feature = "wasm-plugins")]
-        hook::run_post_hooks_with_plugins(&runner, vault, HookEvent::PostCreate, &fragment, &mut plugin_manager);
+        hook::run_post_hooks_with_plugins(
+            &runner,
+            vault,
+            HookEvent::PostCreate,
+            &fragment,
+            &mut plugin_manager,
+        );
         #[cfg(not(feature = "wasm-plugins"))]
         hook::run_post_hooks(&runner, vault, HookEvent::PostCreate, &fragment);
 
