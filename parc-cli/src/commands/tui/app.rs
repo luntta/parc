@@ -1,74 +1,79 @@
-use std::io;
+use std::io::Stdout;
+use std::path::Path;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use parc_core::config::Config;
-use std::path::Path;
+use ratatui::backend::CrosstermBackend;
+use ratatui::widgets::ListState;
+use ratatui::Terminal;
 
 use super::{data, ui, Tab};
 
-pub(super) fn run_loop(stdout: &mut io::Stdout, vault: &Path, config: &Config) -> Result<()> {
+pub(super) fn run_loop(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    vault: &Path,
+    config: &Config,
+) -> Result<()> {
     let mut tab = Tab::Today;
-    let mut selected = 0usize;
+    let mut list_state = ListState::default();
+    list_state.select(Some(0));
     let mut search_input = String::new();
     let mut rows = data::load_rows(vault, tab, &search_input, config)?;
     let mut status = String::new();
-    // Repaint only when state changes. Without this, a 250ms poll-and-draw
-    // loop redraws ~4×/sec while idle and the screen visibly flickers.
     let mut dirty = true;
 
     loop {
-        if selected >= rows.len() {
-            selected = rows.len().saturating_sub(1);
-        }
+        clamp_selection(&mut list_state, rows.len());
 
         if dirty {
-            ui::draw(
-                stdout,
-                vault,
-                config,
-                tab,
-                &rows,
-                selected,
-                &search_input,
-                &status,
-            )?;
+            terminal.draw(|frame| {
+                ui::draw(
+                    frame,
+                    vault,
+                    config,
+                    tab,
+                    &rows,
+                    &mut list_state,
+                    &search_input,
+                    &status,
+                );
+            })?;
             dirty = false;
         }
 
-        // Block until something happens. No timeout = no idle redraws.
         match event::read()? {
             Event::Key(key) => match key.code {
                 KeyCode::Char('q') if key.modifiers.is_empty() => break,
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                 KeyCode::Tab => {
                     tab = tab.next();
-                    selected = 0;
+                    list_state.select(Some(0));
                     rows = data::load_rows(vault, tab, &search_input, config)?;
                     status.clear();
                     dirty = true;
                 }
                 KeyCode::Char('1') => {
                     tab = Tab::Today;
-                    selected = 0;
+                    list_state.select(Some(0));
                     rows = data::load_rows(vault, tab, &search_input, config)?;
                     dirty = true;
                 }
                 KeyCode::Char('2') => {
                     tab = Tab::List;
-                    selected = 0;
+                    list_state.select(Some(0));
                     rows = data::load_rows(vault, tab, &search_input, config)?;
                     dirty = true;
                 }
                 KeyCode::Char('3') => {
                     tab = Tab::Stale;
-                    selected = 0;
+                    list_state.select(Some(0));
                     rows = data::load_rows(vault, tab, &search_input, config)?;
                     dirty = true;
                 }
                 KeyCode::Char('4') | KeyCode::Char('/') => {
                     tab = Tab::Search;
-                    selected = 0;
+                    list_state.select(Some(0));
                     rows = data::load_rows(vault, tab, &search_input, config)?;
                     dirty = true;
                 }
@@ -78,27 +83,30 @@ pub(super) fn run_loop(stdout: &mut io::Stdout, vault: &Path, config: &Config) -
                     dirty = true;
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if selected + 1 < rows.len() {
-                        selected += 1;
+                    let len = rows.len();
+                    let cur = list_state.selected().unwrap_or(0);
+                    if cur + 1 < len {
+                        list_state.select(Some(cur + 1));
                         dirty = true;
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    if selected > 0 {
-                        selected -= 1;
+                    let cur = list_state.selected().unwrap_or(0);
+                    if cur > 0 {
+                        list_state.select(Some(cur - 1));
                         dirty = true;
                     }
                 }
                 KeyCode::Backspace if tab == Tab::Search => {
                     if search_input.pop().is_some() {
-                        selected = 0;
+                        list_state.select(Some(0));
                         rows = data::load_rows(vault, tab, &search_input, config)?;
                         dirty = true;
                     }
                 }
                 KeyCode::Esc if tab == Tab::Search && !search_input.is_empty() => {
                     search_input.clear();
-                    selected = 0;
+                    list_state.select(Some(0));
                     rows = data::load_rows(vault, tab, &search_input, config)?;
                     dirty = true;
                 }
@@ -106,7 +114,7 @@ pub(super) fn run_loop(stdout: &mut io::Stdout, vault: &Path, config: &Config) -
                     if tab == Tab::Search && !key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
                     search_input.push(c);
-                    selected = 0;
+                    list_state.select(Some(0));
                     rows = data::load_rows(vault, tab, &search_input, config)?;
                     dirty = true;
                 }
@@ -120,4 +128,15 @@ pub(super) fn run_loop(stdout: &mut io::Stdout, vault: &Path, config: &Config) -
     }
 
     Ok(())
+}
+
+fn clamp_selection(list_state: &mut ListState, len: usize) {
+    if len == 0 {
+        list_state.select(None);
+        return;
+    }
+    let cur = list_state.selected().unwrap_or(0);
+    if cur >= len {
+        list_state.select(Some(len - 1));
+    }
 }

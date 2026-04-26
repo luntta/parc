@@ -1,297 +1,216 @@
-use std::io::{self, Write};
 use std::path::Path;
 
-use anyhow::Result;
-use crossterm::cursor::MoveTo;
-use crossterm::queue;
-use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
-use crossterm::terminal::{
-    self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate,
-};
 use parc_core::config::Config;
 use parc_core::fragment;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Paragraph, Tabs, Wrap};
+use ratatui::Frame;
 
 use super::{Row, Tab};
 
-const MENU_BORDER: Color = Color::DarkCyan;
-const LIST_BORDER: Color = Color::DarkBlue;
-const DETAIL_BORDER: Color = Color::DarkGreen;
-const FOOTER_BORDER: Color = Color::DarkGrey;
+const MENU_BORDER: Color = Color::DarkGray;
+const LIST_BORDER: Color = Color::Blue;
+const DETAIL_BORDER: Color = Color::Green;
+const FOOTER_BORDER: Color = Color::DarkGray;
 const ACTIVE_TAB: Color = Color::Yellow;
-const MUTED_TEXT: Color = Color::DarkGrey;
-
-#[derive(Clone, Copy)]
-struct Rect {
-    x: u16,
-    y: u16,
-    width: u16,
-    height: u16,
-}
+const MUTED_TEXT: Color = Color::DarkGray;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw(
-    stdout: &mut io::Stdout,
+    frame: &mut Frame,
     vault: &Path,
     config: &Config,
     tab: Tab,
     rows: &[Row],
-    selected: usize,
+    list_state: &mut ListState,
     search_input: &str,
     status: &str,
-) -> Result<()> {
-    let (width, height) = terminal::size()?;
-    // Begin a synchronized update so terminals that support DEC mode 2026
-    // commit the whole frame at once instead of revealing it line-by-line.
-    // On terminals that don't, this is just an inert escape sequence.
-    queue!(stdout, BeginSynchronizedUpdate)?;
-    if width < 48 || height < 10 {
-        queue!(
-            stdout,
-            Clear(ClearType::All),
-            MoveTo(0, 0),
-            SetForegroundColor(MENU_BORDER),
-            Print("parc"),
-            ResetColor,
-            MoveTo(0, 1),
-            Print("Terminal is too small for the TUI.")
-        )?;
-        queue!(stdout, EndSynchronizedUpdate)?;
-        stdout.flush()?;
-        return Ok(());
+) {
+    let area = frame.area();
+    if area.width < 48 || area.height < 10 {
+        let msg = Paragraph::new("Terminal is too small for the TUI.")
+            .style(Style::default().fg(Color::Red));
+        frame.render_widget(msg, area);
+        return;
     }
 
-    let menu_height = if tab == Tab::Search { 5 } else { 3 };
-    let footer_height = 3;
-    let body_height = height.saturating_sub(menu_height + footer_height);
-    let left_width = (width / 2).max(34).min(width.saturating_sub(24));
-    let right_width = width.saturating_sub(left_width);
-    let menu_rect = Rect {
-        x: 0,
-        y: 0,
-        width,
-        height: menu_height,
-    };
-    let list_rect = Rect {
-        x: 0,
-        y: menu_height,
-        width: left_width,
-        height: body_height,
-    };
-    let detail_rect = Rect {
-        x: left_width,
-        y: menu_height,
-        width: right_width,
-        height: body_height,
-    };
-    let footer_rect = Rect {
-        x: 0,
-        y: height.saturating_sub(footer_height),
-        width,
-        height: footer_height,
-    };
+    let search_height = if tab == Tab::Search { 3 } else { 0 };
+    let outer = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(search_height),
+        Constraint::Min(1),
+        Constraint::Length(3),
+    ])
+    .split(area);
 
-    queue!(stdout, Clear(ClearType::All), MoveTo(0, 0))?;
-    draw_box(stdout, menu_rect, " parc ", MENU_BORDER)?;
-    draw_tabs(stdout, menu_rect, tab)?;
-
+    draw_menu(frame, outer[0], tab);
     if tab == Tab::Search {
-        let search_rect = Rect {
-            x: 2,
-            y: 2,
-            width: width.saturating_sub(4),
-            height: 3,
-        };
-        draw_box(stdout, search_rect, " search ", MENU_BORDER)?;
-        queue!(
-            stdout,
-            MoveTo(search_rect.x + 2, search_rect.y + 1),
-            SetForegroundColor(ACTIVE_TAB),
-            Print("/"),
-            ResetColor,
-            Print(truncate(
-                search_input,
-                search_rect.width.saturating_sub(5) as usize
-            ))
-        )?;
+        draw_search_input(frame, outer[1], search_input);
     }
 
-    draw_box(
-        stdout,
-        list_rect,
-        &format!(" {} ", tab.title()),
-        LIST_BORDER,
-    )?;
-    draw_box(stdout, detail_rect, " detail ", DETAIL_BORDER)?;
+    let body = outer[2];
+    let left_width = (body.width / 2).max(34).min(body.width.saturating_sub(24));
+    let body_chunks = Layout::horizontal([
+        Constraint::Length(left_width),
+        Constraint::Min(1),
+    ])
+    .split(body);
 
-    let visible_rows = list_rect.height.saturating_sub(2) as usize;
-    for (idx, row) in rows.iter().take(visible_rows).enumerate() {
-        let y = list_rect.y + 1 + idx as u16;
-        queue!(stdout, MoveTo(list_rect.x + 1, y))?;
-        if idx == selected {
-            queue!(stdout, SetAttribute(Attribute::Reverse))?;
-        }
-        let section = row.section.as_deref().unwrap_or("");
-        let short = short_id(&row.id, config.id_display_length);
-        let status = row.status.as_deref().unwrap_or("-");
-        let line = if section.is_empty() {
-            format!(
-                "{}  {:<8} {:<10} {}",
-                short, row.fragment_type, status, row.title
-            )
-        } else {
-            format!(
-                "{}  {:<8} {:<10} {} - {}",
-                short, row.fragment_type, status, section, row.title
-            )
-        };
-        queue!(
-            stdout,
-            Print(truncate(&line, list_rect.width.saturating_sub(2) as usize))
-        )?;
-        if idx == selected {
-            queue!(stdout, SetAttribute(Attribute::Reset))?;
-        }
+    draw_list(frame, body_chunks[0], tab, rows, list_state, config);
+    draw_detail(frame, body_chunks[1], vault, list_state, rows);
+
+    draw_footer(frame, outer[3], status);
+}
+
+fn draw_menu(frame: &mut Frame, area: Rect, tab: Tab) {
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(MENU_BORDER))
+        .title(" parc ");
+    let titles: Vec<&str> = [Tab::Today, Tab::List, Tab::Stale, Tab::Search]
+        .iter()
+        .map(|t| t.title())
+        .collect();
+    let tabs = Tabs::new(titles)
+        .block(block)
+        .select(tab.index())
+        .style(Style::default().fg(MUTED_TEXT))
+        .highlight_style(
+            Style::default()
+                .fg(ACTIVE_TAB)
+                .add_modifier(Modifier::REVERSED),
+        )
+        .divider(" ");
+    frame.render_widget(tabs, area);
+}
+
+fn draw_search_input(frame: &mut Frame, area: Rect, search_input: &str) {
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(MENU_BORDER))
+        .title(" search ");
+    let line = Line::from(vec![
+        Span::styled("/", Style::default().fg(ACTIVE_TAB)),
+        Span::raw(search_input.to_string()),
+    ]);
+    let paragraph = Paragraph::new(line).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+fn draw_list(
+    frame: &mut Frame,
+    area: Rect,
+    tab: Tab,
+    rows: &[Row],
+    list_state: &mut ListState,
+    config: &Config,
+) {
+    let title = format!(" {} ", tab.title());
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(LIST_BORDER))
+        .title(title);
+
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| ListItem::new(format_row(row, config.id_display_length)))
+        .collect();
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+
+    frame.render_stateful_widget(list, area, list_state);
+}
+
+fn format_row(row: &Row, id_len: usize) -> Line<'static> {
+    let short = short_id(&row.id, id_len).to_string();
+    let status = row.status.as_deref().unwrap_or("-").to_string();
+    let title = row.title.clone();
+    match &row.section {
+        Some(section) => Line::from(format!(
+            "{}  {:<8} {:<10} {} - {}",
+            short, row.fragment_type, status, section, title
+        )),
+        None => Line::from(format!(
+            "{}  {:<8} {:<10} {}",
+            short, row.fragment_type, status, title
+        )),
     }
+}
 
-    draw_detail(stdout, vault, rows.get(selected), detail_rect)?;
+fn draw_detail(
+    frame: &mut Frame,
+    area: Rect,
+    vault: &Path,
+    list_state: &ListState,
+    rows: &[Row],
+) {
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(DETAIL_BORDER))
+        .title(" detail ");
 
-    let footer = if status.is_empty() {
+    let row = list_state.selected().and_then(|i| rows.get(i));
+    let Some(row) = row else {
+        let paragraph = Paragraph::new(Line::from(Span::styled(
+            "No selection",
+            Style::default().fg(MUTED_TEXT),
+        )))
+        .block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    };
+
+    let lines = match fragment::read_fragment(vault, &row.id) {
+        Ok(fragment) => {
+            let mut lines: Vec<Line> = Vec::new();
+            lines.push(Line::from(Span::styled(
+                fragment.title.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(format!("ID: {}", fragment.id)));
+            lines.push(Line::from(format!("Type: {}", fragment.fragment_type)));
+            if !fragment.tags.is_empty() {
+                lines.push(Line::from(format!("Tags: {}", fragment.tags.join(", "))));
+            }
+            for (key, value) in &fragment.extra_fields {
+                if let Some(s) = value.as_str() {
+                    lines.push(Line::from(format!("{}: {}", key, s)));
+                }
+            }
+            lines.push(Line::from(""));
+            lines.extend(fragment.body.lines().map(|l| Line::from(l.to_string())));
+            lines
+        }
+        Err(err) => vec![Line::from(Span::styled(
+            format!("Failed to load fragment: {}", err),
+            Style::default().fg(Color::Red),
+        ))],
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn draw_footer(frame: &mut Frame, area: Rect, status: &str) {
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(FOOTER_BORDER))
+        .title(" keys ");
+    let text = if status.is_empty() {
         "tab/1-4 tabs  j/k move  / search  r reload  q quit".to_string()
     } else {
         format!("{}  -  tab/1-4 tabs  j/k move  / search  q quit", status)
     };
-    draw_box(stdout, footer_rect, " keys ", FOOTER_BORDER)?;
-    queue!(
-        stdout,
-        MoveTo(footer_rect.x + 2, footer_rect.y + 1),
-        SetForegroundColor(MUTED_TEXT),
-        Print(truncate(
-            &footer,
-            footer_rect.width.saturating_sub(4) as usize
-        )),
-        ResetColor
-    )?;
-
-    queue!(stdout, EndSynchronizedUpdate)?;
-    stdout.flush()?;
-    Ok(())
-}
-
-fn draw_tabs(stdout: &mut io::Stdout, rect: Rect, active: Tab) -> Result<()> {
-    queue!(stdout, MoveTo(rect.x + 2, rect.y + 1))?;
-    for tab in [Tab::Today, Tab::List, Tab::Stale, Tab::Search] {
-        if tab == active {
-            queue!(
-                stdout,
-                SetForegroundColor(ACTIVE_TAB),
-                SetAttribute(Attribute::Reverse)
-            )?;
-        } else {
-            queue!(stdout, SetForegroundColor(MUTED_TEXT))?;
-        }
-        queue!(stdout, Print(format!(" {} ", tab.title())))?;
-        if tab == active {
-            queue!(stdout, SetAttribute(Attribute::Reset))?;
-        }
-        queue!(stdout, ResetColor)?;
-        queue!(stdout, Print(" "))?;
-    }
-    Ok(())
-}
-
-fn draw_detail(stdout: &mut io::Stdout, vault: &Path, row: Option<&Row>, rect: Rect) -> Result<()> {
-    let Some(row) = row else {
-        queue!(
-            stdout,
-            MoveTo(rect.x + 2, rect.y + 1),
-            SetForegroundColor(MUTED_TEXT),
-            Print("No selection"),
-            ResetColor
-        )?;
-        return Ok(());
-    };
-
-    let fragment = fragment::read_fragment(vault, &row.id)?;
-    let detail_width = rect.width.saturating_sub(4) as usize;
-    let mut lines = vec![
-        fragment.title,
-        format!("ID: {}", fragment.id),
-        format!("Type: {}", fragment.fragment_type),
-    ];
-    if !fragment.tags.is_empty() {
-        lines.push(format!("Tags: {}", fragment.tags.join(", ")));
-    }
-    for (key, value) in &fragment.extra_fields {
-        if let Some(s) = value.as_str() {
-            lines.push(format!("{}: {}", key, s));
-        }
-    }
-    lines.push(String::new());
-    lines.extend(fragment.body.lines().map(|line| line.to_string()));
-
-    for (idx, line) in wrap_lines(lines, detail_width)
-        .into_iter()
-        .take(rect.height.saturating_sub(2) as usize)
-        .enumerate()
-    {
-        queue!(
-            stdout,
-            MoveTo(rect.x + 2, rect.y + 1 + idx as u16),
-            Print(line)
-        )?;
-    }
-
-    Ok(())
-}
-
-fn draw_box(stdout: &mut io::Stdout, rect: Rect, title: &str, color: Color) -> Result<()> {
-    if rect.width < 2 || rect.height < 2 {
-        return Ok(());
-    }
-
-    let inner_width = rect.width.saturating_sub(2) as usize;
-    let top = titled_border(title, inner_width);
-    let bottom = format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(inner_width));
-
-    queue!(
-        stdout,
-        SetForegroundColor(color),
-        MoveTo(rect.x, rect.y),
-        Print(top)
-    )?;
-
-    for y in rect.y + 1..rect.y + rect.height.saturating_sub(1) {
-        queue!(
-            stdout,
-            MoveTo(rect.x, y),
-            Print("\u{2502}"),
-            MoveTo(rect.x + rect.width.saturating_sub(1), y),
-            Print("\u{2502}")
-        )?;
-    }
-
-    queue!(
-        stdout,
-        MoveTo(rect.x, rect.y + rect.height.saturating_sub(1)),
-        Print(bottom),
-        ResetColor
-    )?;
-
-    Ok(())
-}
-
-fn titled_border(title: &str, inner_width: usize) -> String {
-    if inner_width == 0 {
-        return "\u{250C}\u{2510}".to_string();
-    }
-
-    let clean = truncate(title, inner_width);
-    let remaining = inner_width.saturating_sub(clean.len());
-    format!(
-        "\u{250C}{}{}\u{2510}",
-        clean,
-        "\u{2500}".repeat(remaining)
-    )
+    let paragraph = Paragraph::new(text)
+        .style(Style::default().fg(MUTED_TEXT))
+        .block(block);
+    frame.render_widget(paragraph, area);
 }
 
 fn short_id(id: &str, len: usize) -> &str {
@@ -299,111 +218,5 @@ fn short_id(id: &str, len: usize) -> &str {
         &id[..len]
     } else {
         id
-    }
-}
-
-fn truncate(s: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    for c in s.chars().take(max_width) {
-        out.push(c);
-    }
-    out
-}
-
-fn wrap_lines(lines: Vec<String>, max_width: usize) -> Vec<String> {
-    lines
-        .into_iter()
-        .flat_map(|line| wrap_line(&line, max_width))
-        .collect()
-}
-
-fn wrap_line(line: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 {
-        return vec![String::new()];
-    }
-    if line.trim().is_empty() {
-        return vec![String::new()];
-    }
-
-    let mut wrapped = Vec::new();
-    let mut current = String::new();
-    let mut current_width = 0usize;
-
-    for word in line.split_whitespace() {
-        let word_width = word.chars().count();
-        if word_width > max_width {
-            if !current.is_empty() {
-                wrapped.push(current);
-                current = String::new();
-                current_width = 0;
-            }
-            wrapped.extend(chunk_word(word, max_width));
-            continue;
-        }
-
-        if current.is_empty() {
-            current.push_str(word);
-            current_width = word_width;
-        } else if current_width + 1 + word_width <= max_width {
-            current.push(' ');
-            current.push_str(word);
-            current_width += 1 + word_width;
-        } else {
-            wrapped.push(current);
-            current = word.to_string();
-            current_width = word_width;
-        }
-    }
-
-    if !current.is_empty() {
-        wrapped.push(current);
-    }
-    wrapped
-}
-
-fn chunk_word(word: &str, max_width: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-
-    for c in word.chars() {
-        if current.chars().count() == max_width {
-            chunks.push(current);
-            current = String::new();
-        }
-        current.push(c);
-    }
-
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
-}
-
-#[cfg(test)]
-mod tests {
-    use super::wrap_line;
-
-    #[test]
-    fn wraps_detail_line_on_word_boundaries() {
-        assert_eq!(
-            wrap_line("alpha beta gamma delta", 12),
-            vec!["alpha beta".to_string(), "gamma delta".to_string()]
-        );
-    }
-
-    #[test]
-    fn wraps_detail_line_with_long_words() {
-        assert_eq!(
-            wrap_line("alpha betagammadelta z", 8),
-            vec![
-                "alpha".to_string(),
-                "betagamm".to_string(),
-                "adelta".to_string(),
-                "z".to_string()
-            ]
-        );
     }
 }

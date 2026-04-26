@@ -7,6 +7,8 @@ use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use parc_core::config::load_config;
 use parc_core::search::SearchResult;
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
 
 mod app;
 mod data;
@@ -38,6 +40,15 @@ impl Tab {
             Tab::Search => Tab::Today,
         }
     }
+
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Tab::Today => 0,
+            Tab::List => 1,
+            Tab::Stale => 2,
+            Tab::Search => 3,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -67,8 +78,12 @@ pub fn run(vault: &Path) -> Result<()> {
 
     terminal::enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen, Hide)?;
-    let result = app::run_loop(&mut stdout, vault, &config);
-    execute!(stdout, Show, LeaveAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = app::run_loop(&mut terminal, vault, &config);
+
+    execute!(terminal.backend_mut(), Show, LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
 
     result
