@@ -158,12 +158,65 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
-        /// Sort order (updated, created, updated-asc, created-asc)
+        /// Sort order (updated, created, updated-asc, created-asc, random)
         #[arg(long)]
         sort: Option<String>,
         /// Limit results
         #[arg(long)]
         limit: Option<usize>,
+    },
+    /// Show today's resurfacing digest
+    Today {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show due and overdue todos
+    Due {
+        /// Bucket: today, this-week, or overdue
+        bucket: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show open work that has gone quiet
+    Stale {
+        /// Days since last update
+        #[arg(long)]
+        days: Option<u64>,
+        /// Fragment types to include, comma-separated
+        #[arg(long = "types", value_delimiter = ',')]
+        types: Vec<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Limit results
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Show random resurfaced fragments
+    Random {
+        /// Limit results
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Fragment type to include
+        #[arg(long = "type")]
+        type_name: Option<String>,
+        /// Include completed or closed fragments when a type is specified
+        #[arg(long)]
+        include_done: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a multi-section review digest
+    Review {
+        /// Review window (default from config)
+        #[arg(long)]
+        since: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Delete a fragment (move to trash)
     Delete {
@@ -511,6 +564,21 @@ fn main() -> anyhow::Result<()> {
                     sort,
                     limit,
                 } => commands::search::run(&vault, query, json, sort, limit),
+                Commands::Today { json } => commands::today::run(&vault, json),
+                Commands::Due { bucket, json } => commands::due::run(&vault, bucket, json),
+                Commands::Stale {
+                    days,
+                    types,
+                    json,
+                    limit,
+                } => commands::stale::run(&vault, days, types, json, limit),
+                Commands::Random {
+                    limit,
+                    type_name,
+                    include_done,
+                    json,
+                } => commands::random::run(&vault, limit, type_name, include_done, json),
+                Commands::Review { since, json } => commands::review::run(&vault, since, json),
                 Commands::Delete { id, json } => commands::delete::run(&vault, &id, json),
                 Commands::Link { id_a, id_b, json } => commands::link::run(&vault, &id_a, &id_b, json),
                 Commands::Unlink { id_a, id_b, json } => commands::unlink::run(&vault, &id_a, &id_b, json),

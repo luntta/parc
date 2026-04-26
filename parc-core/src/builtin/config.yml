@@ -11,3 +11,7 @@ aliases:
   d: decision
   r: risk
   i: idea
+resurfacing:
+  stale_days: 30
+  review_window: this-week
+  today_section_limit: 10

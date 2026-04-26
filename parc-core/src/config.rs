@@ -30,6 +30,7 @@ pub struct Config {
     pub aliases: BTreeMap<String, String>,
     pub history_enabled: bool,
     pub server: ServerConfig,
+    pub resurfacing: ResurfacingConfig,
     pub plugins: HashMap<String, serde_yaml::Value>,
 }
 
@@ -44,6 +45,23 @@ impl Default for ServerConfig {
         ServerConfig {
             transport: "stdio".to_string(),
             socket_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResurfacingConfig {
+    pub stale_days: u64,
+    pub review_window: String,
+    pub today_section_limit: usize,
+}
+
+impl Default for ResurfacingConfig {
+    fn default() -> Self {
+        ResurfacingConfig {
+            stale_days: 30,
+            review_window: "this-week".to_string(),
+            today_section_limit: 10,
         }
     }
 }
@@ -67,6 +85,7 @@ impl Default for Config {
             aliases,
             history_enabled: true,
             server: ServerConfig::default(),
+            resurfacing: ResurfacingConfig::default(),
             plugins: HashMap::new(),
         }
     }
@@ -83,6 +102,13 @@ struct ServerConfigFile {
     #[serde(default = "default_transport")]
     transport: String,
     socket_path: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct ResurfacingConfigFile {
+    stale_days: Option<u64>,
+    review_window: Option<String>,
+    today_section_limit: Option<usize>,
 }
 
 impl Default for ServerConfigFile {
@@ -120,6 +146,8 @@ struct ConfigFile {
     history: Option<HistoryConfig>,
     #[serde(default)]
     server: Option<ServerConfigFile>,
+    #[serde(default)]
+    resurfacing: Option<ResurfacingConfigFile>,
     #[serde(default)]
     plugins: HashMap<String, serde_yaml::Value>,
 }
@@ -178,6 +206,17 @@ pub fn load_config(vault: &Path) -> Result<Config, ParcError> {
             socket_path: server.socket_path,
         };
     }
+    if let Some(resurfacing) = raw.resurfacing {
+        if let Some(stale_days) = resurfacing.stale_days {
+            config.resurfacing.stale_days = stale_days;
+        }
+        if let Some(review_window) = resurfacing.review_window {
+            config.resurfacing.review_window = review_window;
+        }
+        if let Some(today_section_limit) = resurfacing.today_section_limit {
+            config.resurfacing.today_section_limit = today_section_limit;
+        }
+    }
     config.plugins = raw.plugins;
 
     Ok(config)
@@ -202,6 +241,8 @@ mod tests {
         assert_eq!(config.id_display_length, 8);
         assert_eq!(config.date_format, DateFormat::Relative);
         assert_eq!(config.aliases.get("t").unwrap(), "todo");
+        assert_eq!(config.resurfacing.stale_days, 30);
+        assert_eq!(config.resurfacing.today_section_limit, 10);
     }
 
     #[test]

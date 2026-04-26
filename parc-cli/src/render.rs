@@ -41,6 +41,35 @@ pub fn print_table(results: &[SearchResult], id_len: usize) {
     }
 }
 
+pub struct SearchSection {
+    pub title: String,
+    pub results: Vec<SearchResult>,
+    pub total: usize,
+}
+
+pub fn print_sections(sections: &[SearchSection], id_len: usize) {
+    let mut printed_any = false;
+
+    for section in sections {
+        println!("{}", section.title);
+        if section.results.is_empty() {
+            println!("No fragments found.");
+        } else {
+            print_table(&section.results, id_len);
+            let hidden = section.total.saturating_sub(section.results.len());
+            if hidden > 0 {
+                println!("+{} more", hidden);
+            }
+        }
+        println!();
+        printed_any = true;
+    }
+
+    if !printed_any {
+        println!("No fragments found.");
+    }
+}
+
 pub fn print_fragment(fragment: &Fragment, backlinks: &[BacklinkInfo], attachments: &[AttachmentInfo], id_len: usize) {
     let inline_tags = tag::extract_inline_tags(&fragment.body);
     let merged_tags = tag::merge_tags(&fragment.tags, &inline_tags);

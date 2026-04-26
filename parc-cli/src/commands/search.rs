@@ -24,6 +24,7 @@ pub fn run(
         Some("updated-asc") => SortOrder::UpdatedAsc,
         Some("created") => SortOrder::CreatedDesc,
         Some("created-asc") => SortOrder::CreatedAsc,
+        Some("random") => SortOrder::Random,
         _ => SortOrder::UpdatedDesc,
     };
 

@@ -286,6 +286,73 @@ fn test_promote_note_to_todo() {
 }
 
 #[test]
+fn test_random_defaults_to_non_todos() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    create_fragment_directly(&tmp, "note", "Random note", "Body");
+    create_fragment_directly(&tmp, "todo", "Random todo", "Body");
+
+    parc()
+        .args(["random", "--limit", "10"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Random note"))
+        .stdout(predicate::str::contains("Random todo").not());
+}
+
+#[test]
+fn test_due_today_command_shows_due_todo() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let vault_path = tmp.path().join(".parc");
+    let config = parc_core::config::load_config(&vault_path).unwrap();
+    let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
+    let schema = schemas.resolve("todo").unwrap();
+    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+
+    let mut fragment = parc_core::fragment::new_fragment("todo", "Due today resurfacing", schema, &config);
+    fragment
+        .extra_fields
+        .insert("due".to_string(), serde_json::Value::String(today));
+    parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
+    let conn = parc_core::index::open_index(&vault_path).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
+
+    parc()
+        .args(["due", "today"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Due today resurfacing"));
+}
+
+#[test]
+fn test_today_and_review_json_sections() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    parc()
+        .args(["today", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("touched_today"))
+        .stdout(predicate::str::contains("due_today_overdue"))
+        .stdout(predicate::str::contains("open_high_priority"));
+
+    parc()
+        .args(["review", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("edited"))
+        .stdout(predicate::str::contains("stale_todos"));
+}
+
+#[test]
 fn test_todo_with_fields() {
     let tmp = TempDir::new().unwrap();
     init_vault(&tmp);

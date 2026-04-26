@@ -24,6 +24,7 @@ pub enum CompareOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DateFilter {
     Relative(RelativeDate),
+    RelativeWithOp { op: CompareOp, rel: RelativeDate },
     Absolute { op: CompareOp, date: String },
 }
 
@@ -62,6 +63,7 @@ pub enum SortOrder {
     UpdatedAsc,
     CreatedDesc,
     CreatedAsc,
+    Random,
 }
 
 #[derive(Debug)]
@@ -287,7 +289,7 @@ fn parse_date_filter(value: &str) -> Result<DateFilter, ParcError> {
 
     // After operator: could be relative or absolute
     if let Some(rel) = parse_relative_date(val) {
-        return Ok(DateFilter::Relative(rel));
+        return Ok(DateFilter::RelativeWithOp { op, rel });
     }
     validate_date(val)?;
     Ok(DateFilter::Absolute { op, date: val.to_string() })
@@ -516,6 +518,7 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
         SortOrder::UpdatedAsc => "f.updated_at ASC",
         SortOrder::CreatedDesc => "f.created_at DESC",
         SortOrder::CreatedAsc => "f.created_at ASC",
+        SortOrder::Random => "RANDOM()",
     };
     sql += &format!(" ORDER BY {}", order);
 
@@ -562,6 +565,23 @@ fn apply_date_condition(
                 params.push(Box::new(end));
                 *param_idx += 2;
             }
+        }
+        DateFilter::RelativeWithOp { op, rel } => {
+            let (start, end) = resolve_relative_date(rel);
+            let boundary = match op {
+                CompareOp::Lt | CompareOp::Lte => end,
+                CompareOp::Gt | CompareOp::Gte | CompareOp::Eq => start,
+            };
+            let sql_op = match op {
+                CompareOp::Eq => "=",
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
+            };
+            conditions.push(format!("{} {} ?{}", column, sql_op, *param_idx));
+            params.push(Box::new(boundary));
+            *param_idx += 1;
         }
         DateFilter::Absolute { op, date } => {
             let sql_op = match op {
@@ -800,6 +820,18 @@ mod tests {
             vec![Filter::Created(DateFilter::Absolute {
                 op: CompareOp::Gt,
                 date: "2026-01-01".to_string(),
+            })]
+        );
+    }
+
+    #[test]
+    fn test_parse_relative_date_comparison() {
+        let q = parse_query("due:<=today").unwrap();
+        assert_eq!(
+            q.filters,
+            vec![Filter::Due(DateFilter::RelativeWithOp {
+                op: CompareOp::Lte,
+                rel: RelativeDate::Today,
             })]
         );
     }
