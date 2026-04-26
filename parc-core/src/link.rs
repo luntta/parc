@@ -12,10 +12,26 @@ static FENCED_CODE_RE: LazyLock<Regex> =
 static INLINE_CODE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"`[^`]+`").unwrap());
 
+static ULID_PREFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[0-9A-Za-z]{4,}$").unwrap());
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WikiLink {
     pub target: String,
     pub display_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FragmentRef {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveOutcome {
+    Unique(String),
+    Ambiguous(Vec<String>),
+    None,
 }
 
 /// Parse wiki-links from Markdown body, ignoring code blocks and inline code.
@@ -57,6 +73,53 @@ fn find_code_ranges(body: &str) -> Vec<Range<usize>> {
         ranges.push(m.start()..m.end());
     }
     ranges
+}
+
+/// Resolve a wiki-link target against known fragment IDs and titles.
+///
+/// Resolution order is ULID prefix, exact title, then unique title prefix.
+pub fn resolve_link_target(target: &str, candidates: &[FragmentRef]) -> ResolveOutcome {
+    let target = target.trim();
+    if target.is_empty() {
+        return ResolveOutcome::None;
+    }
+
+    if ULID_PREFIX_RE.is_match(target) {
+        let upper = target.to_uppercase();
+        let matches: Vec<String> = candidates
+            .iter()
+            .filter(|candidate| candidate.id.starts_with(&upper))
+            .map(|candidate| candidate.id.clone())
+            .collect();
+        match matches.len() {
+            0 => {}
+            1 => return ResolveOutcome::Unique(matches[0].clone()),
+            _ => return ResolveOutcome::Ambiguous(matches),
+        }
+    }
+
+    let folded = target.to_lowercase();
+    let exact: Vec<String> = candidates
+        .iter()
+        .filter(|candidate| candidate.title.to_lowercase() == folded)
+        .map(|candidate| candidate.id.clone())
+        .collect();
+    match exact.len() {
+        1 => return ResolveOutcome::Unique(exact[0].clone()),
+        n if n > 1 => return ResolveOutcome::Ambiguous(exact),
+        _ => {}
+    }
+
+    let prefix: Vec<String> = candidates
+        .iter()
+        .filter(|candidate| candidate.title.to_lowercase().starts_with(&folded))
+        .map(|candidate| candidate.id.clone())
+        .collect();
+    match prefix.len() {
+        0 => ResolveOutcome::None,
+        1 => ResolveOutcome::Unique(prefix[0].clone()),
+        _ => ResolveOutcome::Ambiguous(prefix),
+    }
 }
 
 /// Merge frontmatter links with wiki-links extracted from the body.
@@ -171,5 +234,55 @@ mod tests {
         let body = vec![WikiLink { target: "UNKNOWN".to_string(), display_text: None }];
         let merged = merge_links(&fm, &body, |_| None);
         assert_eq!(merged, vec!["FULL_ID_A"]);
+    }
+
+    #[test]
+    fn test_resolve_link_target_id_prefix() {
+        let candidates = vec![
+            FragmentRef {
+                id: "01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string(),
+                title: "Auth refactor".to_string(),
+            },
+            FragmentRef {
+                id: "01JQ7V4YAB1234567890ABCDEF".to_string(),
+                title: "Database notes".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            resolve_link_target("01jq7v3x", &candidates),
+            ResolveOutcome::Unique("01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string())
+        );
+        assert!(matches!(
+            resolve_link_target("01JQ7V", &candidates),
+            ResolveOutcome::Ambiguous(matches) if matches.len() == 2
+        ));
+    }
+
+    #[test]
+    fn test_resolve_link_target_title_exact_and_prefix() {
+        let candidates = vec![
+            FragmentRef {
+                id: "01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string(),
+                title: "Auth refactor".to_string(),
+            },
+            FragmentRef {
+                id: "01JQ7V4YAB1234567890ABCDEF".to_string(),
+                title: "Database notes".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            resolve_link_target("auth REFACTOR", &candidates),
+            ResolveOutcome::Unique("01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string())
+        );
+        assert_eq!(
+            resolve_link_target("Database", &candidates),
+            ResolveOutcome::Unique("01JQ7V4YAB1234567890ABCDEF".to_string())
+        );
+        assert_eq!(
+            resolve_link_target("notes", &candidates),
+            ResolveOutcome::None
+        );
     }
 }

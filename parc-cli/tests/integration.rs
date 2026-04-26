@@ -743,6 +743,33 @@ fn test_wiki_link_in_body_creates_backlink() {
 }
 
 #[test]
+fn test_title_wiki_link_in_body_creates_backlink() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let id_a = create_fragment_directly(&tmp, "note", "Auth refactor", "I am the target");
+
+    let vault_path = tmp.path().join(".parc");
+    let config = parc_core::config::load_config(&vault_path).unwrap();
+    let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
+    let schema = schemas.resolve("note").unwrap();
+
+    let mut fragment = parc_core::fragment::new_fragment("note", "Linker via title", schema, &config);
+    fragment.body = "Check out [[Auth refactor]] for details.".to_string();
+
+    parc_core::fragment::create_fragment(&vault_path, &fragment).unwrap();
+    let conn = parc_core::index::open_index(&vault_path).unwrap();
+    parc_core::index::index_fragment_auto(&conn, &fragment, &vault_path).unwrap();
+
+    parc()
+        .args(["backlinks", &id_a])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Linker via title"));
+}
+
+#[test]
 fn test_doctor_healthy() {
     let tmp = TempDir::new().unwrap();
     init_vault(&tmp);

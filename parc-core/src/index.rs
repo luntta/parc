@@ -162,6 +162,7 @@ pub fn reindex(vault: &Path) -> Result<usize, ParcError> {
     )?;
 
     let all_ids = fragment::list_fragment_ids(vault)?;
+    let link_candidates = load_fragment_refs(vault)?;
     let mut count = 0;
     let mut warnings = Vec::new();
 
@@ -174,8 +175,11 @@ pub fn reindex(vault: &Path) -> Result<usize, ParcError> {
                     let merged_tags = tag::merge_tags(&frag.tags, &inline_tags);
 
                     let body_links = link::parse_wiki_links(&frag.body);
-                    let merged_links = link::merge_links(&frag.links, &body_links, |prefix| {
-                        resolve_prefix(prefix, &all_ids)
+                    let merged_links = link::merge_links(&frag.links, &body_links, |target| {
+                        match link::resolve_link_target(target, &link_candidates) {
+                            link::ResolveOutcome::Unique(id) => Some(id),
+                            link::ResolveOutcome::Ambiguous(_) | link::ResolveOutcome::None => None,
+                        }
                     });
 
                     if let Err(e) = index_fragment(&conn, &frag, &merged_tags, &merged_links) {
@@ -207,17 +211,37 @@ pub fn index_fragment_auto(
     let inline_tags = tag::extract_inline_tags(&fragment.body);
     let merged_tags = tag::merge_tags(&fragment.tags, &inline_tags);
 
-    let all_ids = fragment::list_fragment_ids(vault)?;
+    let link_candidates = load_fragment_refs(vault)?;
     let body_links = link::parse_wiki_links(&fragment.body);
-    let merged_links = link::merge_links(&fragment.links, &body_links, |prefix| {
-        resolve_prefix(prefix, &all_ids)
+    let merged_links = link::merge_links(&fragment.links, &body_links, |target| {
+        match link::resolve_link_target(target, &link_candidates) {
+            link::ResolveOutcome::Unique(id) => Some(id),
+            link::ResolveOutcome::Ambiguous(_) | link::ResolveOutcome::None => None,
+        }
     });
 
     index_fragment(conn, fragment, &merged_tags, &merged_links)
 }
 
+fn load_fragment_refs(vault: &Path) -> Result<Vec<link::FragmentRef>, ParcError> {
+    let mut refs = Vec::new();
+    for id in fragment::list_fragment_ids(vault)? {
+        let path = vault.join("fragments").join(format!("{}.md", id));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(frag) = fragment::parse_fragment(&content) {
+                refs.push(link::FragmentRef {
+                    id: frag.id,
+                    title: frag.title,
+                });
+            }
+        }
+    }
+    Ok(refs)
+}
+
 /// Resolve a prefix against a list of known IDs.
 /// Returns Some(full_id) if exactly one match, None otherwise.
+#[cfg(test)]
 fn resolve_prefix(prefix: &str, all_ids: &[String]) -> Option<String> {
     let upper = prefix.to_uppercase();
     let matches: Vec<&String> = all_ids.iter().filter(|id| id.starts_with(&upper)).collect();
@@ -413,6 +437,27 @@ mod tests {
         assert_eq!(count, 2);
 
         // Verify backlink was created from body wiki-link
+        let conn = open_index(&vault).unwrap();
+        let backlinks = get_backlinks(&conn, &frag_a.id).unwrap();
+        assert_eq!(backlinks.len(), 1);
+        assert_eq!(backlinks[0].source_id, frag_b.id);
+    }
+
+    #[test]
+    fn test_reindex_with_title_wiki_links() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+
+        let frag_a = make_fragment("Auth refactor", "I am the target.");
+        fragment::create_fragment(&vault, &frag_a).unwrap();
+
+        let frag_b = make_fragment("Linker", "Links to [[Auth refactor]].");
+        fragment::create_fragment(&vault, &frag_b).unwrap();
+
+        let count = reindex(&vault).unwrap();
+        assert_eq!(count, 2);
+
         let conn = open_index(&vault).unwrap();
         let backlinks = get_backlinks(&conn, &frag_a.id).unwrap();
         assert_eq!(backlinks.len(), 1);

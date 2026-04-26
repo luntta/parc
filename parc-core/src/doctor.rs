@@ -14,6 +14,12 @@ pub enum DoctorFinding {
         source_title: String,
         target_ref: String,
     },
+    AmbiguousLink {
+        source_id: String,
+        source_title: String,
+        target_ref: String,
+        matches: Vec<String>,
+    },
     OrphanFragment {
         id: String,
         title: String,
@@ -55,6 +61,13 @@ pub fn check_broken_links(
     all_ids: &[String],
 ) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
+    let candidates: Vec<link::FragmentRef> = fragments
+        .iter()
+        .map(|fragment| link::FragmentRef {
+            id: fragment.id.clone(),
+            title: fragment.title.clone(),
+        })
+        .collect();
 
     for frag in fragments {
         // Check frontmatter links
@@ -73,14 +86,21 @@ pub fn check_broken_links(
         // Check body wiki-links
         let wiki_links = link::parse_wiki_links(&frag.body);
         for wl in &wiki_links {
-            let upper = wl.target.to_uppercase();
-            let found = all_ids.iter().any(|id| id.starts_with(&upper));
-            if !found {
-                findings.push(DoctorFinding::BrokenLink {
+            match link::resolve_link_target(&wl.target, &candidates) {
+                link::ResolveOutcome::Unique(_) => {}
+                link::ResolveOutcome::Ambiguous(matches) => {
+                    findings.push(DoctorFinding::AmbiguousLink {
+                        source_id: frag.id.clone(),
+                        source_title: frag.title.clone(),
+                        target_ref: format!("[[{}]]", wl.target),
+                        matches,
+                    });
+                }
+                link::ResolveOutcome::None => findings.push(DoctorFinding::BrokenLink {
                     source_id: frag.id.clone(),
                     source_title: frag.title.clone(),
                     target_ref: format!("[[{}]]", wl.target),
-                });
+                }),
             }
         }
     }
@@ -97,6 +117,13 @@ pub fn check_orphans(
 
     // Build set of all IDs that participate in any link relationship
     let mut linked_ids = HashSet::new();
+    let candidates: Vec<link::FragmentRef> = fragments
+        .iter()
+        .map(|fragment| link::FragmentRef {
+            id: fragment.id.clone(),
+            title: fragment.title.clone(),
+        })
+        .collect();
 
     for frag in fragments {
         // Outbound frontmatter links
@@ -113,11 +140,11 @@ pub fn check_orphans(
         // Outbound body wiki-links
         let wiki_links = link::parse_wiki_links(&frag.body);
         for wl in &wiki_links {
-            let upper = wl.target.to_uppercase();
-            let matches: Vec<&String> = all_ids.iter().filter(|id| id.starts_with(&upper)).collect();
-            if matches.len() == 1 {
+            if let link::ResolveOutcome::Unique(target_id) =
+                link::resolve_link_target(&wl.target, &candidates)
+            {
                 linked_ids.insert(frag.id.clone());
-                linked_ids.insert(matches[0].clone());
+                linked_ids.insert(target_id);
             }
         }
     }
@@ -381,6 +408,32 @@ mod tests {
     }
 
     #[test]
+    fn test_title_wiki_link_is_not_broken() {
+        let frag_a = make_fragment("Auth refactor", "Body");
+        let frag_b = make_fragment("B", "See [[Auth refactor]].");
+        let all_ids = vec![frag_a.id.clone(), frag_b.id.clone()];
+
+        let findings = check_broken_links(&[frag_a, frag_b], &all_ids);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn test_ambiguous_title_wiki_link() {
+        let frag_a = make_fragment("Auth refactor", "Body");
+        let frag_b = make_fragment("Auth rewrite", "Body");
+        let frag_c = make_fragment("C", "See [[Auth]].");
+        let all_ids = vec![frag_a.id.clone(), frag_b.id.clone(), frag_c.id.clone()];
+
+        let findings = check_broken_links(&[frag_a, frag_b, frag_c], &all_ids);
+        assert_eq!(findings.len(), 1);
+        assert!(matches!(
+            &findings[0],
+            DoctorFinding::AmbiguousLink { target_ref, matches, .. }
+                if target_ref == "[[Auth]]" && matches.len() == 2
+        ));
+    }
+
+    #[test]
     fn test_orphan_detection() {
         let frag_a = make_fragment("Orphan", "No links");
         let frag_b = make_fragment("B", "Body");
@@ -391,6 +444,16 @@ mod tests {
         let findings = check_orphans(&[frag_a.clone(), frag_b, frag_c], &all_ids);
         assert_eq!(findings.len(), 1);
         assert!(matches!(&findings[0], DoctorFinding::OrphanFragment { id, .. } if id == &frag_a.id));
+    }
+
+    #[test]
+    fn test_title_wiki_link_counts_for_orphan_detection() {
+        let frag_a = make_fragment("Auth refactor", "Body");
+        let frag_b = make_fragment("B", "See [[Auth refactor]].");
+        let all_ids = vec![frag_a.id.clone(), frag_b.id.clone()];
+
+        let findings = check_orphans(&[frag_a, frag_b], &all_ids);
+        assert!(findings.is_empty());
     }
 
     #[test]
@@ -405,7 +468,7 @@ mod tests {
         frag_a.links = vec![frag_b.id.clone()];
         frag_b.links = vec![frag_a.id.clone()];
         // Fix body link to point to B
-        frag_a.body = format!("See [[{}]].", &frag_b.id[..8]);
+        frag_a.body = format!("See [[{}]].", frag_b.id);
 
         fragment::create_fragment(&vault, &frag_a).unwrap();
         fragment::create_fragment(&vault, &frag_b).unwrap();

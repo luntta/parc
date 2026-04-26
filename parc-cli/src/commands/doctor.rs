@@ -26,6 +26,18 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     "source_title": source_title,
                     "target_ref": target_ref,
                 }),
+                DoctorFinding::AmbiguousLink {
+                    source_id,
+                    source_title,
+                    target_ref,
+                    matches,
+                } => serde_json::json!({
+                    "type": "ambiguous_link",
+                    "source_id": source_id,
+                    "source_title": source_title,
+                    "target_ref": target_ref,
+                    "matches": matches,
+                }),
                 DoctorFinding::OrphanFragment { id, title } => serde_json::json!({
                     "type": "orphan",
                     "id": id,
@@ -68,11 +80,38 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     source_title,
                     target_ref,
                 } => {
+                    if target_ref.starts_with("[[") {
+                        println!(
+                            "\u{2717} Unresolved wiki-link: {} \"{}\" \u{2192} {} (no unique ID or title match)",
+                            &source_id[..8.min(source_id.len())],
+                            source_title,
+                            target_ref
+                        );
+                    } else {
+                        println!(
+                            "\u{2717} Broken link: {} \"{}\" \u{2192} {} (not found)",
+                            &source_id[..8.min(source_id.len())],
+                            source_title,
+                            target_ref
+                        );
+                    }
+                }
+                DoctorFinding::AmbiguousLink {
+                    source_id,
+                    source_title,
+                    target_ref,
+                    matches,
+                } => {
                     println!(
-                        "\u{2717} Broken link: {} \"{}\" \u{2192} {} (not found)",
+                        "\u{2717} Ambiguous wiki-link: {} \"{}\" \u{2192} {} (matches: {})",
                         &source_id[..8.min(source_id.len())],
                         source_title,
-                        target_ref
+                        target_ref,
+                        matches
+                            .iter()
+                            .map(|id| &id[..8.min(id.len())])
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     );
                 }
                 DoctorFinding::SchemaViolation { id, title, message } => {

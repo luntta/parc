@@ -49,6 +49,19 @@ pub fn doctor(state: State<'_, AppState>) -> Result<DoctorReportDto, GuiError> {
                     d.insert("target_ref".into(), serde_json::json!(target_ref));
                     ("broken_link".into(), d)
                 }
+                doctor::DoctorFinding::AmbiguousLink {
+                    source_id,
+                    source_title,
+                    target_ref,
+                    matches,
+                } => {
+                    let mut d = std::collections::BTreeMap::new();
+                    d.insert("source_id".into(), serde_json::json!(source_id));
+                    d.insert("source_title".into(), serde_json::json!(source_title));
+                    d.insert("target_ref".into(), serde_json::json!(target_ref));
+                    d.insert("matches".into(), serde_json::json!(matches));
+                    ("ambiguous_link".into(), d)
+                }
                 doctor::DoctorFinding::OrphanFragment { id, title } => {
                     let mut d = std::collections::BTreeMap::new();
                     d.insert("id".into(), serde_json::json!(id));

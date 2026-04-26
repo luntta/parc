@@ -44,6 +44,18 @@ pub fn doctor(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
                 "source_title": source_title,
                 "target_ref": target_ref,
             }),
+            doctor::DoctorFinding::AmbiguousLink {
+                source_id,
+                source_title,
+                target_ref,
+                matches,
+            } => serde_json::json!({
+                "type": "ambiguous_link",
+                "source_id": source_id,
+                "source_title": source_title,
+                "target_ref": target_ref,
+                "matches": matches,
+            }),
             doctor::DoctorFinding::OrphanFragment { id, title } => serde_json::json!({
                 "type": "orphan",
                 "id": id,
