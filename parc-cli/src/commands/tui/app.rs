@@ -1,5 +1,6 @@
 use std::io::Stdout;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -8,10 +9,14 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::ListState;
 use ratatui::Terminal;
 
+use super::cache::FragmentCache;
 use super::{actions, data, ui, ConfirmAction, Focus, InputAction, Mode, Tab};
 
 const PAGE_LINES: u16 = 10;
 const HALF_PAGE_LINES: u16 = 5;
+const SEARCH_DEBOUNCE_MS: u64 = 120;
+const FRAGMENT_CACHE_CAP: usize = 64;
+const IDLE_POLL_SECS: u64 = 60;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -26,6 +31,8 @@ pub(super) struct App {
     pub status: String,
     pub mode: Mode,
     pub dirty: bool,
+    pub pending_search_load: Option<Instant>,
+    pub cache: FragmentCache,
 }
 
 impl App {
@@ -45,6 +52,8 @@ impl App {
             status: String::new(),
             mode: Mode::Normal,
             dirty: true,
+            pending_search_load: None,
+            cache: FragmentCache::new(FRAGMENT_CACHE_CAP),
         }
     }
 
@@ -103,6 +112,20 @@ pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Re
                 ui::draw(frame, vault, config, &mut app);
             })?;
             app.dirty = false;
+        }
+
+        let timeout = match app.pending_search_load {
+            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+            None => Duration::from_secs(IDLE_POLL_SECS),
+        };
+
+        if !event::poll(timeout)? {
+            // Timeout fired with no event — flush pending debounced search.
+            if app.pending_search_load.take().is_some() {
+                app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+                app.dirty = true;
+            }
+            continue;
         }
 
         let event = event::read()?;
@@ -181,6 +204,7 @@ fn handle_normal(
             if let Some(id) = app.selected_id() {
                 match actions::edit(terminal, vault, &id) {
                     Ok(msg) => {
+                        app.cache.invalidate(&id);
                         app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
                         app.set_status(msg);
                     }
@@ -192,6 +216,7 @@ fn handle_normal(
             if let Some(id) = app.selected_id() {
                 match actions::toggle_status(vault, &id) {
                     Ok(msg) => {
+                        app.cache.invalidate(&id);
                         app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
                         app.set_status(msg);
                     }
@@ -203,6 +228,7 @@ fn handle_normal(
             if let Some(id) = app.selected_id() {
                 match actions::archive(vault, &id) {
                     Ok(msg) => {
+                        app.cache.invalidate(&id);
                         app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
                         app.set_status(msg);
                     }
@@ -300,7 +326,8 @@ fn handle_normal(
             if app.search_input.pop().is_some() {
                 app.list_state.select(Some(0));
                 app.detail_scroll = 0;
-                app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+                app.pending_search_load =
+                    Some(Instant::now() + Duration::from_millis(SEARCH_DEBOUNCE_MS));
                 app.dirty = true;
             }
         }
@@ -308,6 +335,7 @@ fn handle_normal(
             app.search_input.clear();
             app.list_state.select(Some(0));
             app.detail_scroll = 0;
+            app.pending_search_load = None;
             app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
             app.dirty = true;
         }
@@ -315,7 +343,8 @@ fn handle_normal(
             app.search_input.push(c);
             app.list_state.select(Some(0));
             app.detail_scroll = 0;
-            app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
+            app.pending_search_load =
+                Some(Instant::now() + Duration::from_millis(SEARCH_DEBOUNCE_MS));
             app.dirty = true;
         }
         _ => {}
@@ -336,6 +365,7 @@ fn handle_confirm(
             match action {
                 ConfirmAction::Delete { id } => match actions::delete(vault, &id) {
                     Ok(msg) => {
+                        app.cache.invalidate(&id);
                         app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
                         app.set_status(msg);
                     }
@@ -378,6 +408,7 @@ fn handle_input(
                 match action {
                     InputAction::Promote { id } => match actions::promote(vault, &id, &trimmed) {
                         Ok(msg) => {
+                            app.cache.invalidate(&id);
                             app.rows =
                                 data::load_rows(vault, app.tab, &app.search_input, config)?;
                             app.set_status(msg);
@@ -429,6 +460,7 @@ fn switch_tab(app: &mut App, tab: Tab, vault: &Path, config: &Config) -> Result<
     app.tab = tab;
     app.list_state.select(Some(0));
     app.detail_scroll = 0;
+    app.pending_search_load = None;
     app.rows = data::load_rows(vault, app.tab, &app.search_input, config)?;
     app.dirty = true;
     Ok(())

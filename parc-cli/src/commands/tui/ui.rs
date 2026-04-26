@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use parc_core::config::Config;
-use parc_core::fragment;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -158,8 +157,12 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         .border_style(Style::default().fg(border_color))
         .title(" detail ");
 
-    let row = app.list_state.selected().and_then(|i| app.rows.get(i));
-    let Some(row) = row else {
+    let row_id = app
+        .list_state
+        .selected()
+        .and_then(|i| app.rows.get(i))
+        .map(|r| r.id.clone());
+    let Some(id) = row_id else {
         let paragraph = Paragraph::new(Line::from(Span::styled(
             "No selection",
             Style::default().fg(MUTED_TEXT),
@@ -170,7 +173,7 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         return;
     };
 
-    let lines = match fragment::read_fragment(vault, &row.id) {
+    let lines = match app.cache.get_or_load(vault, &id) {
         Ok(fragment) => {
             let muted = Style::default().fg(MUTED_TEXT);
             let mut lines: Vec<Line> = Vec::new();

@@ -12,6 +12,7 @@ use ratatui::Terminal;
 
 mod actions;
 mod app;
+mod cache;
 mod data;
 mod markdown;
 mod ui;
