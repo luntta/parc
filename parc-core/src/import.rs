@@ -65,11 +65,13 @@ pub fn import_json(
             }
         };
 
-        // Check if ID already exists — if so, generate new one
+        // Use the original id only if it's a valid ULID and not already taken;
+        // otherwise mint a fresh one. Prevents path-traversal via crafted ids.
         let original_id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let id = if !original_id.is_empty() && existing_ids.contains(&original_id.to_string()) {
-            fragment::new_id()
-        } else if original_id.is_empty() {
+        let id = if original_id.is_empty()
+            || existing_ids.contains(&original_id.to_string())
+            || fragment::validate_id(original_id).is_err()
+        {
             fragment::new_id()
         } else {
             original_id.to_string()

@@ -1,4 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread;
+use std::time::Duration;
 
 use wasmtime::*;
 
@@ -6,17 +12,62 @@ use crate::error::ParcError;
 
 use super::PluginManifest;
 
+/// Hard cap on linear-memory growth per plugin instance. Plugins that try to
+/// grow past this fail their `memory.grow` and the call returns an error,
+/// rather than the host being OOM-killed.
+const MAX_PLUGIN_MEMORY_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+
+/// Hard cap on table size per plugin instance.
+const MAX_PLUGIN_TABLE_ELEMENTS: usize = 100_000;
+
+/// Each guest call gets this many epoch ticks before it is interrupted. The
+/// ticker thread (see `WasmRuntime::new`) increments the epoch every 100ms,
+/// so a deadline of 50 ≈ 5 seconds wall clock.
+const PLUGIN_CALL_EPOCH_DEADLINE: u64 = 50;
+
+/// Per-instance limiter enforcing `MAX_PLUGIN_MEMORY_BYTES` and table size.
+pub struct PluginLimits;
+
+impl ResourceLimiter for PluginLimits {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        Ok(desired <= MAX_PLUGIN_MEMORY_BYTES)
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        Ok(desired <= MAX_PLUGIN_TABLE_ELEMENTS)
+    }
+}
+
 /// Per-instance state stored in the wasmtime Store.
 pub struct PluginState {
     pub manifest: PluginManifest,
     pub output_buffer: Vec<u8>,
     pub vault_path: PathBuf,
     pub config_json: String,
+    pub limits: PluginLimits,
 }
 
 /// Wraps a wasmtime Engine for compiling and loading plugins.
 pub struct WasmRuntime {
     engine: Engine,
+    /// Tells the epoch ticker thread to exit when the runtime drops.
+    ticker_stop: Arc<AtomicBool>,
+}
+
+impl Drop for WasmRuntime {
+    fn drop(&mut self) {
+        self.ticker_stop.store(true, Ordering::SeqCst);
+    }
 }
 
 /// A loaded, instantiated plugin ready to receive calls.
@@ -35,8 +86,30 @@ pub struct ValidationResult {
 
 impl WasmRuntime {
     pub fn new() -> Result<Self, ParcError> {
-        let engine = Engine::default();
-        Ok(WasmRuntime { engine })
+        // Enable epoch-based interruption. Combined with the ticker thread
+        // below and `set_epoch_deadline` per call, this lets us stop runaway
+        // plugins (infinite loops, pathological wasm) without trusting them
+        // to cooperate.
+        let mut config = Config::new();
+        config.epoch_interruption(true);
+        let engine = Engine::new(&config).map_err(|e| {
+            ParcError::PluginError(format!("failed to build wasmtime engine: {}", e))
+        })?;
+
+        let ticker_stop = Arc::new(AtomicBool::new(false));
+        let ticker_engine = engine.clone();
+        let ticker_flag = Arc::clone(&ticker_stop);
+        thread::spawn(move || {
+            while !ticker_flag.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(100));
+                ticker_engine.increment_epoch();
+            }
+        });
+
+        Ok(WasmRuntime {
+            engine,
+            ticker_stop,
+        })
     }
 
     /// Load and instantiate a plugin from its manifest and wasm bytes.
@@ -59,9 +132,11 @@ impl WasmRuntime {
             output_buffer: Vec::new(),
             vault_path: vault_path.to_path_buf(),
             config_json: config_json.to_string(),
+            limits: PluginLimits,
         };
 
         let mut store = Store::new(&self.engine, state);
+        store.limiter(|state| &mut state.limits);
         let mut linker = Linker::new(&self.engine);
 
         // Register host functions
@@ -78,6 +153,7 @@ impl WasmRuntime {
         if let Ok(init_fn) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "parc_plugin_init") {
             let config_bytes = config_json.as_bytes();
             let (ptr, len) = write_to_guest(&mut store, &instance, config_bytes)?;
+            store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
             let _result = init_fn.call(&mut store, (ptr, len)).map_err(|e| {
                 ParcError::PluginError(format!(
                     "plugin '{}' init failed: {}",
@@ -116,6 +192,7 @@ impl PluginInstance {
         let (frag_ptr, frag_len) =
             write_to_guest(&mut self.store, &self.instance, fragment_json.as_bytes())?;
 
+        self.store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
         let result = func
             .call(&mut self.store, (event_ptr, event_len, frag_ptr, frag_len))
             .map_err(|e| {
@@ -163,6 +240,7 @@ impl PluginInstance {
         let (ptr, len) =
             write_to_guest(&mut self.store, &self.instance, fragment_json.as_bytes())?;
 
+        self.store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
         let result = func.call(&mut self.store, (ptr, len)).map_err(|e| {
             ParcError::PluginError(format!(
                 "plugin '{}' validate failed: {}",
@@ -209,6 +287,7 @@ impl PluginInstance {
         let (ptr, len) =
             write_to_guest(&mut self.store, &self.instance, fragment_json.as_bytes())?;
 
+        self.store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
         let _result = func.call(&mut self.store, (ptr, len)).map_err(|e| {
             ParcError::PluginError(format!(
                 "plugin '{}' render failed: {}",
@@ -249,6 +328,7 @@ impl PluginInstance {
         let (args_ptr, args_len) =
             write_to_guest(&mut self.store, &self.instance, args_json.as_bytes())?;
 
+        self.store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
         func.call(&mut self.store, (cmd_ptr, cmd_len, args_ptr, args_len))
             .map_err(|e| {
                 ParcError::PluginError(format!(
@@ -271,11 +351,18 @@ fn write_to_guest(
     instance: &Instance,
     data: &[u8],
 ) -> Result<(i32, i32), ParcError> {
+    if data.len() > i32::MAX as usize {
+        return Err(ParcError::PluginError(
+            "payload too large for wasm32 plugin".into(),
+        ));
+    }
+
     let alloc_fn = instance
         .get_typed_func::<i32, i32>(&mut *store, "parc_alloc")
         .map_err(|_| ParcError::PluginError("plugin does not export parc_alloc".into()))?;
 
     let len = data.len() as i32;
+    store.set_epoch_deadline(PLUGIN_CALL_EPOCH_DEADLINE);
     let ptr = alloc_fn.call(&mut *store, len).map_err(|e| {
         ParcError::PluginError(format!("parc_alloc failed: {}", e))
     })?;
@@ -284,7 +371,24 @@ fn write_to_guest(
         .get_memory(&mut *store, "memory")
         .ok_or_else(|| ParcError::PluginError("plugin has no 'memory' export".into()))?;
 
-    memory.data_mut(&mut *store)[ptr as usize..ptr as usize + data.len()].copy_from_slice(data);
+    // The plugin returned `ptr` itself, so we cannot trust it. Bounds-check
+    // (ptr, ptr+len) against the actual memory size before slicing — otherwise
+    // a buggy or hostile plugin can panic the host.
+    let mem_size = memory.data_size(&mut *store);
+    let start = ptr as usize;
+    let end = start
+        .checked_add(data.len())
+        .ok_or_else(|| ParcError::PluginError("parc_alloc returned ptr+len overflow".into()))?;
+    if ptr < 0 || end > mem_size {
+        return Err(ParcError::PluginError(format!(
+            "parc_alloc returned out-of-bounds region: ptr={} len={} mem_size={}",
+            ptr,
+            data.len(),
+            mem_size
+        )));
+    }
+
+    memory.data_mut(&mut *store)[start..end].copy_from_slice(data);
 
     Ok((ptr, len))
 }

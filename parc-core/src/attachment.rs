@@ -5,6 +5,37 @@ use regex::Regex;
 use crate::error::ParcError;
 use crate::fragment;
 
+/// Reject filenames that could escape the per-fragment attachment directory.
+/// Filenames must be a single path component with no separators or `..`.
+pub fn validate_attachment_filename(name: &str) -> Result<(), ParcError> {
+    if name.is_empty() {
+        return Err(ParcError::ValidationError(
+            "attachment filename cannot be empty".into(),
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err(ParcError::ValidationError(format!(
+            "invalid attachment filename '{}'",
+            name
+        )));
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return Err(ParcError::ValidationError(format!(
+            "attachment filename '{}' must not contain path separators",
+            name
+        )));
+    }
+    // A real Path::file_name() round-trip should be a no-op for valid names.
+    let p = Path::new(name);
+    if p.file_name().and_then(|n| n.to_str()) != Some(name) {
+        return Err(ParcError::ValidationError(format!(
+            "invalid attachment filename '{}'",
+            name
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct AttachmentInfo {
     pub filename: String,
@@ -40,6 +71,7 @@ pub fn attach_file(
         .and_then(|n| n.to_str())
         .ok_or_else(|| ParcError::ValidationError("invalid filename".into()))?
         .to_string();
+    validate_attachment_filename(&filename)?;
 
     let attach_dir = vault.join("attachments").join(&full_id);
     std::fs::create_dir_all(&attach_dir)?;
@@ -79,6 +111,7 @@ pub fn detach_file(
     id_or_prefix: &str,
     filename: &str,
 ) -> Result<(), ParcError> {
+    validate_attachment_filename(filename)?;
     let full_id = fragment::resolve_id(vault, id_or_prefix)?;
 
     let attach_path = vault.join("attachments").join(&full_id).join(filename);
@@ -191,6 +224,32 @@ mod tests {
         let schema = schemas.resolve("note").unwrap();
         let frag = new_fragment("note", "Test", schema, &config);
         create_fragment(vault, &frag).unwrap()
+    }
+
+    #[test]
+    fn test_validate_attachment_filename() {
+        assert!(validate_attachment_filename("ok.txt").is_ok());
+        assert!(validate_attachment_filename("with space.png").is_ok());
+        assert!(validate_attachment_filename("").is_err());
+        assert!(validate_attachment_filename(".").is_err());
+        assert!(validate_attachment_filename("..").is_err());
+        assert!(validate_attachment_filename("../sibling.txt").is_err());
+        assert!(validate_attachment_filename("a/b.txt").is_err());
+        assert!(validate_attachment_filename("a\\b.txt").is_err());
+    }
+
+    #[test]
+    fn test_detach_rejects_traversal() {
+        let (_tmp, vault) = setup_vault();
+        let id = create_test_fragment(&vault);
+        // Plant a sibling file we want to protect
+        let sibling = vault.join("attachments").join("sibling.txt");
+        std::fs::create_dir_all(sibling.parent().unwrap()).unwrap();
+        std::fs::write(&sibling, "do not delete").unwrap();
+
+        let result = detach_file(&vault, &id, "../sibling.txt");
+        assert!(matches!(result, Err(ParcError::ValidationError(_))));
+        assert!(sibling.exists());
     }
 
     #[test]

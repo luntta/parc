@@ -1925,11 +1925,12 @@ fn test_attachments_roundtrip_in_frontmatter() {
         .assert()
         .success();
 
-    // Read the raw file and verify attachments in frontmatter
+    // Read the raw file and verify attachments in frontmatter (indent style
+    // is YAML-emitter-defined; just check the key and value are present).
     let fragment_path = vault_path.join("fragments").join(format!("{}.md", id));
     let content = std::fs::read_to_string(&fragment_path).unwrap();
     assert!(content.contains("attachments:"));
-    assert!(content.contains("  - doc.pdf"));
+    assert!(content.contains("- doc.pdf"));
 }
 
 // ═══════════════════════════════════════════════════════════════════════

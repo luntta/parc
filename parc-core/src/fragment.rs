@@ -29,6 +29,15 @@ pub fn new_id() -> String {
     ulid::Ulid::new().to_string()
 }
 
+/// Reject anything that isn't a valid ULID. Centralized so every filesystem
+/// path built from an id is guarded against traversal.
+pub fn validate_id(id: &str) -> Result<(), ParcError> {
+    ulid::Ulid::from_string(id).map_err(|_| {
+        ParcError::ValidationError(format!("invalid fragment id '{}'", id))
+    })?;
+    Ok(())
+}
+
 /// Create a new fragment with defaults from a schema.
 pub fn new_fragment(
     fragment_type: &str,
@@ -68,7 +77,7 @@ pub fn parse_fragment(content: &str) -> Result<Fragment, ParcError> {
     let (frontmatter, body) = split_frontmatter(content)?;
 
     // Parse YAML into a generic map, then convert to JSON values
-    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&frontmatter)?;
+    let yaml_value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&frontmatter)?;
     let json_value: Value = serde_json::to_value(&yaml_value)?;
     let map = json_value
         .as_object()
@@ -172,106 +181,107 @@ pub fn parse_fragment(content: &str) -> Result<Fragment, ParcError> {
     })
 }
 
-/// Serialize a fragment to Markdown with YAML frontmatter.
+/// Serialize a fragment to Markdown with YAML frontmatter. Built via
+/// `serde_yaml_ng::Mapping` rather than hand-formatted strings — escapes every
+/// value so attacker-controlled titles, tags, or extra-field contents cannot
+/// inject new top-level frontmatter keys on round-trip.
 pub fn serialize_fragment(fragment: &Fragment) -> String {
-    let mut lines = Vec::new();
-    lines.push("---".to_string());
-    lines.push(format!("id: {}", fragment.id));
-    lines.push(format!("type: {}", fragment.fragment_type));
-    lines.push(format!("title: {}", yaml_escape_string(&fragment.title)));
-    // Tags: one per line
-    if fragment.tags.is_empty() {
-        lines.push("tags: []".to_string());
-    } else {
-        lines.push("tags:".to_string());
-        for tag in &fragment.tags {
-            lines.push(format!("  - {}", tag));
-        }
-    }
-    // Links
-    if fragment.links.is_empty() {
-        lines.push("links: []".to_string());
-    } else {
-        lines.push("links:".to_string());
-        for link in &fragment.links {
-            lines.push(format!("  - {}", link));
-        }
-    }
-    // Attachments
+    use serde_yaml_ng::Value as Y;
+
+    let mut map = serde_yaml_ng::Mapping::new();
+    map.insert(Y::from("id"), Y::from(fragment.id.as_str()));
+    map.insert(Y::from("type"), Y::from(fragment.fragment_type.as_str()));
+    map.insert(Y::from("title"), Y::from(fragment.title.as_str()));
+    map.insert(
+        Y::from("tags"),
+        Y::Sequence(fragment.tags.iter().map(|t| Y::from(t.as_str())).collect()),
+    );
+    map.insert(
+        Y::from("links"),
+        Y::Sequence(fragment.links.iter().map(|l| Y::from(l.as_str())).collect()),
+    );
     if !fragment.attachments.is_empty() {
-        lines.push("attachments:".to_string());
-        for attachment in &fragment.attachments {
-            lines.push(format!("  - {}", attachment));
-        }
+        map.insert(
+            Y::from("attachments"),
+            Y::Sequence(
+                fragment
+                    .attachments
+                    .iter()
+                    .map(|a| Y::from(a.as_str()))
+                    .collect(),
+            ),
+        );
     }
-    // Extra fields (type-specific)
     for (key, value) in &fragment.extra_fields {
-        lines.push(format_yaml_field(key, value));
+        map.insert(Y::from(key.as_str()), json_to_yaml(value));
     }
-    // Timestamps
-    lines.push(format!(
-        "created_at: {}",
-        fragment.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-    ));
-    lines.push(format!(
-        "updated_at: {}",
-        fragment.updated_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-    ));
+    map.insert(
+        Y::from("created_at"),
+        Y::from(
+            fragment
+                .created_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                .as_str(),
+        ),
+    );
+    map.insert(
+        Y::from("updated_at"),
+        Y::from(
+            fragment
+                .updated_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                .as_str(),
+        ),
+    );
     if let Some(ref by) = fragment.created_by {
-        lines.push(format!("created_by: {}", by));
+        map.insert(Y::from("created_by"), Y::from(by.as_str()));
     }
-    lines.push("---".to_string());
 
-    if fragment.body.is_empty() {
-        lines.push(String::new());
-    } else {
-        // Ensure body is separated from frontmatter
+    let yaml = serde_yaml_ng::to_string(&Y::Mapping(map))
+        .unwrap_or_else(|_| String::new());
+
+    let mut out = String::with_capacity(yaml.len() + fragment.body.len() + 16);
+    out.push_str("---\n");
+    out.push_str(&yaml);
+    // serde_yaml_ng's Mapping output already ends with '\n'; the doc end marker
+    // sits on its own line.
+    out.push_str("---\n");
+    if !fragment.body.is_empty() {
         let body = fragment.body.trim_start_matches('\n');
-        lines.push(String::new());
-        lines.push(body.to_string());
+        out.push('\n');
+        out.push_str(body);
     }
-
-    lines.join("\n")
+    out
 }
 
-fn yaml_escape_string(s: &str) -> String {
-    if s.is_empty()
-        || s.contains(':')
-        || s.contains('#')
-        || s.contains('\'')
-        || s.contains('"')
-        || s.contains('\n')
-        || s.starts_with(' ')
-        || s.starts_with('{')
-        || s.starts_with('[')
-    {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-    } else {
-        s.to_string()
-    }
-}
-
-fn format_yaml_field(key: &str, value: &Value) -> String {
+/// Convert a `serde_json::Value` (used for type-specific extra fields) into a
+/// `serde_yaml_ng::Value` so it can be embedded in the frontmatter mapping.
+fn json_to_yaml(value: &Value) -> serde_yaml_ng::Value {
+    use serde_yaml_ng::Value as Y;
     match value {
-        Value::String(s) => format!("{}: {}", key, s),
-        Value::Number(n) => format!("{}: {}", key, n),
-        Value::Bool(b) => format!("{}: {}", key, b),
-        Value::Null => format!("{}: null", key),
-        Value::Array(arr) => {
-            if arr.is_empty() {
-                format!("{}: []", key)
+        Value::Null => Y::Null,
+        Value::Bool(b) => Y::Bool(*b),
+        Value::Number(n) => {
+            // serde_yaml_ng accepts numbers via its From<i64>/From<f64>/etc.
+            if let Some(i) = n.as_i64() {
+                Y::from(i)
+            } else if let Some(u) = n.as_u64() {
+                Y::from(u)
+            } else if let Some(f) = n.as_f64() {
+                Y::from(f)
             } else {
-                let mut lines = vec![format!("{}:", key)];
-                for item in arr {
-                    match item {
-                        Value::String(s) => lines.push(format!("  - {}", s)),
-                        other => lines.push(format!("  - {}", other)),
-                    }
-                }
-                lines.join("\n")
+                Y::from(n.to_string())
             }
         }
-        Value::Object(_) => format!("{}: {}", key, value),
+        Value::String(s) => Y::from(s.as_str()),
+        Value::Array(arr) => Y::Sequence(arr.iter().map(json_to_yaml).collect()),
+        Value::Object(obj) => {
+            let mut m = serde_yaml_ng::Mapping::new();
+            for (k, v) in obj {
+                m.insert(Y::from(k.as_str()), json_to_yaml(v));
+            }
+            Y::Mapping(m)
+        }
     }
 }
 
@@ -308,6 +318,7 @@ fn split_frontmatter(content: &str) -> Result<(String, String), ParcError> {
 
 /// Write a new fragment to disk. Returns the fragment ID.
 pub fn create_fragment(vault: &Path, fragment: &Fragment) -> Result<String, ParcError> {
+    validate_id(&fragment.id)?;
     let content = serialize_fragment(fragment);
     let path = vault
         .join("fragments")
@@ -327,6 +338,8 @@ pub fn read_fragment(vault: &Path, id_or_prefix: &str) -> Result<Fragment, ParcE
 /// Overwrite a fragment file. Saves a history snapshot before overwriting
 /// if history is enabled in config.
 pub fn write_fragment(vault: &Path, fragment: &Fragment) -> Result<(), ParcError> {
+    validate_id(&fragment.id)?;
+
     // Save history snapshot of the current version before overwriting
     let config = crate::config::load_config(vault)?;
     if config.history_enabled {
@@ -494,6 +507,55 @@ mod tests {
             extra_fields: extra,
             body: "Body content with #inline-tag.\n".to_string(),
         }
+    }
+
+    #[test]
+    fn test_validate_id() {
+        assert!(validate_id("01JQ7V3XKP5GQZ2N8R6T1WBMVH").is_ok());
+        assert!(validate_id("../../../etc/passwd").is_err());
+        assert!(validate_id("../config").is_err());
+        assert!(validate_id("").is_err());
+        assert!(validate_id("01JQ7V3XKP5GQZ2N8R6T1WBMV").is_err()); // 25 chars
+        assert!(validate_id("01JQ7V3XKP5GQZ2N8R6T1WBMV/").is_err()); // slash
+        assert!(validate_id("01JQ7V3XKP5GQZ2N8R6T1WBMVHX").is_err()); // 27 chars
+    }
+
+    #[test]
+    fn test_create_fragment_rejects_bad_id() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+
+        let mut frag = make_test_fragment();
+        frag.id = "../../../tmp/pwned".to_string();
+        let result = create_fragment(&vault, &frag);
+        assert!(matches!(result, Err(ParcError::ValidationError(_))));
+        assert!(!tmp.path().join("tmp/pwned.md").exists());
+    }
+
+    #[test]
+    fn test_serialize_resists_yaml_injection() {
+        // A title carrying a newline + fake-key payload must NOT round-trip
+        // as a new top-level frontmatter key. The YAML emitter has to quote
+        // or block-scalar-encode the value.
+        let mut frag = make_test_fragment();
+        frag.title = "ok\ncreated_by: attacker".to_string();
+        frag.extra_fields.insert(
+            "status".to_string(),
+            Value::String("open\nadmin: true".to_string()),
+        );
+
+        let serialized = serialize_fragment(&frag);
+        let parsed = parse_fragment(&serialized).unwrap();
+
+        // Values come back intact; injected keys do NOT appear at top level.
+        assert_eq!(parsed.title, "ok\ncreated_by: attacker");
+        assert_eq!(parsed.created_by.as_deref(), Some("alice")); // unchanged
+        assert_eq!(
+            parsed.extra_fields.get("status"),
+            Some(&Value::String("open\nadmin: true".to_string()))
+        );
+        assert!(!parsed.extra_fields.contains_key("admin"));
     }
 
     #[test]

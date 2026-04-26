@@ -1,9 +1,25 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal;
+
+#[cfg(unix)]
+fn bind_owner_only(path: &Path) -> anyhow::Result<UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+    let listener = UnixListener::bind(path)?;
+    // Force 0600. UnixListener::bind respects the process umask, which is
+    // typically 0022 -> world-readable. The server has no auth, so a permissive
+    // socket means anyone on the host can read/write the entire vault.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+#[cfg(not(unix))]
+fn bind_owner_only(path: &Path) -> anyhow::Result<UnixListener> {
+    Ok(UnixListener::bind(path)?)
+}
 
 use crate::jsonrpc::{self, Response, RpcError};
 use crate::router::Router;
@@ -91,9 +107,12 @@ pub async fn run_socket(router: Arc<Router>, socket_path: PathBuf) -> anyhow::Re
         let _ = std::fs::remove_file(&socket_path);
     }
 
-    let listener = UnixListener::bind(&socket_path)?;
+    // Bind with a strict umask so the socket is owner-only from the moment
+    // it appears, then chmod 0600 as belt-and-suspenders. The server has no
+    // auth: anyone who can connect() can read/write the entire vault.
+    let listener = bind_owner_only(&socket_path)?;
     eprintln!(
-        "parc-server listening on {}",
+        "parc-server listening on {} (mode 0600)",
         socket_path.to_string_lossy()
     );
 

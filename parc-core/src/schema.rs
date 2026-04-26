@@ -61,7 +61,7 @@ fn parse_field_type(type_str: &str, values: Vec<String>) -> FieldType {
 }
 
 pub fn parse_schema(yaml: &str) -> Result<Schema, ParcError> {
-    let raw: SchemaFile = serde_yaml::from_str(yaml)?;
+    let raw: SchemaFile = serde_yaml_ng::from_str(yaml)?;
     let fields = raw
         .fields
         .into_iter()
@@ -159,10 +159,40 @@ pub fn validate_schema_file(source_path: &Path) -> Result<Schema, ParcError> {
     parse_schema(&content)
 }
 
+/// Schema names become file names in `schemas/` and `templates/`. Restrict to
+/// a strict identifier so a malicious schema cannot overwrite arbitrary files
+/// (e.g. name='../config').
+pub fn validate_schema_name(name: &str) -> Result<(), ParcError> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(ParcError::ValidationError(format!(
+            "schema name '{}' must be 1-64 characters",
+            name
+        )));
+    }
+    let first = name.as_bytes()[0];
+    if !(first.is_ascii_lowercase() || first.is_ascii_alphabetic()) {
+        return Err(ParcError::ValidationError(format!(
+            "schema name '{}' must start with a letter",
+            name
+        )));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(ParcError::ValidationError(format!(
+            "schema name '{}' must contain only letters, digits, '_' or '-'",
+            name
+        )));
+    }
+    Ok(())
+}
+
 /// Register a user-defined schema by copying it into the vault's schemas/ directory.
 /// Returns the schema name. Errors if a schema with the same name already exists.
 pub fn add_schema(vault_path: &Path, source_path: &Path) -> Result<String, ParcError> {
     let schema = validate_schema_file(source_path)?;
+    validate_schema_name(&schema.name)?;
     let registry = load_schemas(vault_path)?;
 
     if registry.get_by_name(&schema.name).is_some() {

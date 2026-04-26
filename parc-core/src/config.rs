@@ -31,7 +31,7 @@ pub struct Config {
     pub history_enabled: bool,
     pub server: ServerConfig,
     pub resurfacing: ResurfacingConfig,
-    pub plugins: HashMap<String, serde_yaml::Value>,
+    pub plugins: HashMap<String, serde_yaml_ng::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -149,7 +149,7 @@ struct ConfigFile {
     #[serde(default)]
     resurfacing: Option<ResurfacingConfigFile>,
     #[serde(default)]
-    plugins: HashMap<String, serde_yaml::Value>,
+    plugins: HashMap<String, serde_yaml_ng::Value>,
 }
 
 fn default_date_format() -> String {
@@ -170,7 +170,7 @@ pub fn load_config(vault: &Path) -> Result<Config, ParcError> {
     }
 
     let content = std::fs::read_to_string(&config_path)?;
-    let raw: ConfigFile = serde_yaml::from_str(&content)?;
+    let raw: ConfigFile = serde_yaml_ng::from_str(&content)?;
 
     let mut config = Config::default();
 

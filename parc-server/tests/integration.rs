@@ -611,3 +611,44 @@ fn test_schema_get_unknown() {
     let err = error_of(&resp);
     assert_eq!(err["code"], -32602);
 }
+
+// ── Unix socket is bound 0600 ───────────────────────────────────────
+
+#[cfg(unix)]
+#[test]
+fn test_socket_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let vault = tmp.path().join(".parc");
+    parc_core::vault::init_vault(&vault).expect("init vault");
+    let socket = tmp.path().join("server.sock");
+
+    let bin = env!("CARGO_BIN_EXE_parc-server");
+    let mut child = Command::new(bin)
+        .arg("--vault")
+        .arg(&vault)
+        .arg("--socket-path")
+        .arg(&socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn parc-server");
+
+    // Wait until the socket appears (server bound), with a timeout.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !socket.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "socket never appeared");
+
+    let mode = std::fs::metadata(&socket)
+        .expect("stat socket")
+        .permissions()
+        .mode()
+        & 0o777;
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(mode, 0o600, "socket mode is {:o}, expected 0600", mode);
+}

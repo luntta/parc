@@ -1,10 +1,27 @@
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use similar::{ChangeTag, TextDiff};
 
 use crate::error::ParcError;
 use crate::fragment::{self, Fragment};
+
+/// Snapshot timestamps must round-trip through chrono RFC3339 parsing,
+/// matching the format `save_snapshot` writes. Anything else (notably `..`
+/// segments or path separators) is rejected to prevent path traversal in
+/// `read_version` / `restore_version` / `diff_versions`.
+pub fn validate_snapshot_timestamp(ts: &str) -> Result<(), ParcError> {
+    if ts.contains('/') || ts.contains('\\') || ts.contains('\0') || ts.contains("..") {
+        return Err(ParcError::ValidationError(format!(
+            "invalid snapshot timestamp '{}'",
+            ts
+        )));
+    }
+    DateTime::parse_from_rfc3339(ts).map_err(|_| {
+        ParcError::ValidationError(format!("invalid snapshot timestamp '{}'", ts))
+    })?;
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct VersionEntry {
@@ -80,6 +97,8 @@ pub fn read_version(
     fragment_id: &str,
     timestamp: &str,
 ) -> Result<Fragment, ParcError> {
+    fragment::validate_id(fragment_id)?;
+    validate_snapshot_timestamp(timestamp)?;
     let snapshot_path = vault
         .join("history")
         .join(fragment_id)
@@ -105,6 +124,9 @@ pub fn restore_version(
     fragment_id: &str,
     timestamp: &str,
 ) -> Result<Fragment, ParcError> {
+    fragment::validate_id(fragment_id)?;
+    validate_snapshot_timestamp(timestamp)?;
+
     // Save current version as a snapshot first
     save_snapshot(vault, fragment_id)?;
 
@@ -152,6 +174,7 @@ pub fn diff_versions(
             versions[0].timestamp.clone()
         }
     };
+    validate_snapshot_timestamp(&ts)?;
 
     let snapshot_path = vault
         .join("history")
@@ -216,6 +239,29 @@ mod tests {
             extra_fields: BTreeMap::new(),
             body: body.to_string(),
         }
+    }
+
+    #[test]
+    fn test_validate_snapshot_timestamp() {
+        assert!(validate_snapshot_timestamp("2026-04-26T12:34:56.123456Z").is_ok());
+        assert!(validate_snapshot_timestamp("2026-04-26T12:34:56Z").is_ok());
+        assert!(validate_snapshot_timestamp("../../etc/passwd").is_err());
+        assert!(validate_snapshot_timestamp("../../fragments/other").is_err());
+        assert!(validate_snapshot_timestamp("not-a-date").is_err());
+        assert!(validate_snapshot_timestamp("").is_err());
+    }
+
+    #[test]
+    fn test_read_version_rejects_traversal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+
+        let frag = make_fragment("01TEST000000000000000000FF", "V1", "Body v1");
+        fragment::create_fragment(&vault, &frag).unwrap();
+
+        let result = read_version(&vault, &frag.id, "../../config");
+        assert!(matches!(result, Err(ParcError::ValidationError(_))));
     }
 
     #[test]
