@@ -42,7 +42,7 @@ pub fn run(
     )
 }
 
-fn split_capture_text(input: &str) -> (String, String) {
+pub(crate) fn split_capture_text(input: &str) -> (String, String) {
     if !input.contains('\n') && input.chars().count() <= SHORT_TITLE_LIMIT {
         return (input.trim().to_string(), String::new());
     }

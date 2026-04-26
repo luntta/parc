@@ -5,12 +5,15 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use parc_core::config::Config;
+use parc_core::schema::load_schemas;
 use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::ListState;
 use ratatui::Terminal;
 
 use super::cache::FragmentCache;
-use super::{actions, data, ui, ConfirmAction, Focus, InputAction, Mode, Tab};
+use super::{
+    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, Mode, Tab,
+};
 
 const PAGE_LINES: u16 = 10;
 const HALF_PAGE_LINES: u16 = 5;
@@ -174,6 +177,7 @@ pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Re
                     action,
                     prompt,
                 } => handle_input(&mut app, key, prompt, value, action, vault, config)?,
+                Mode::Capture(form) => handle_capture(&mut app, key, form, vault, config)?,
                 Mode::Help => handle_help(&mut app, key)?,
             },
             Event::Resize(_, _) => {
@@ -232,6 +236,15 @@ fn handle_normal(
         (KeyCode::Char('?'), _) if app.tab != Tab::Search => {
             app.mode = Mode::Help;
             app.dirty = true;
+        }
+        (KeyCode::Char('c'), _) if plain && app.tab != Tab::Search => {
+            match new_capture_form(vault) {
+                Ok(form) => {
+                    app.mode = Mode::Capture(form);
+                    app.dirty = true;
+                }
+                Err(err) => app.set_status(format!("capture unavailable: {}", err)),
+            }
         }
 
         (KeyCode::Char('e'), _) if plain && app.tab != Tab::Search => {
@@ -469,6 +482,82 @@ fn handle_input(
     Ok(true)
 }
 
+fn handle_capture(
+    app: &mut App,
+    key: KeyEvent,
+    mut form: CaptureForm,
+    vault: &Path,
+    config: &Config,
+) -> Result<bool> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = Mode::Normal;
+            app.set_status("cancelled");
+        }
+        KeyCode::Tab => {
+            form.next_field();
+            app.mode = Mode::Capture(form);
+            app.dirty = true;
+        }
+        KeyCode::BackTab => {
+            form.previous_field();
+            app.mode = Mode::Capture(form);
+            app.dirty = true;
+        }
+        KeyCode::Left | KeyCode::Up if form.focus == CaptureField::Type => {
+            form.previous_type();
+            app.mode = Mode::Capture(form);
+            app.dirty = true;
+        }
+        KeyCode::Right | KeyCode::Down if form.focus == CaptureField::Type => {
+            form.next_type();
+            app.mode = Mode::Capture(form);
+            app.dirty = true;
+        }
+        KeyCode::Backspace => {
+            form.backspace();
+            app.mode = Mode::Capture(form);
+            app.dirty = true;
+        }
+        KeyCode::Enter => match submit_capture(app, &form, vault, config) {
+            Ok(()) => {}
+            Err(err) => {
+                app.mode = Mode::Capture(form);
+                app.set_status(format!("capture failed: {}", err));
+            }
+        },
+        KeyCode::Char(ch) if !ctrl => {
+            form.push_char(ch);
+            app.mode = Mode::Capture(form);
+            app.dirty = true;
+        }
+        _ => {
+            app.mode = Mode::Capture(form);
+        }
+    }
+    Ok(true)
+}
+
+fn submit_capture(app: &mut App, form: &CaptureForm, vault: &Path, config: &Config) -> Result<()> {
+    let input = actions::CaptureInput {
+        text: form.text.clone(),
+        fragment_type: form.current_type().to_string(),
+        tags: form.tags.clone(),
+        status: form.status.clone(),
+        due: form.due.clone(),
+        priority: form.priority.clone(),
+        assignee: form.assignee.clone(),
+    };
+    let (id, msg) = actions::capture(vault, input)?;
+    app.mode = Mode::Normal;
+    app.search.mark_stale();
+    reload_rows(app, vault, config)?;
+    select_row_by_id(app, &id);
+    app.set_status(msg);
+    Ok(())
+}
+
 fn handle_help(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
@@ -495,6 +584,22 @@ fn reload_rows(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
         _ => data::load_rows(vault, app.tab, config)?,
     };
     Ok(())
+}
+
+fn new_capture_form(vault: &Path) -> Result<CaptureForm> {
+    let schemas = load_schemas(vault)?;
+    let types = schemas
+        .list()
+        .into_iter()
+        .map(|schema| schema.name.clone())
+        .collect();
+    Ok(CaptureForm::new(types))
+}
+
+fn select_row_by_id(app: &mut App, id: &str) {
+    if let Some(idx) = app.rows.iter().position(|row| row.id == id) {
+        app.select(Some(idx));
+    }
 }
 
 fn clamp_selection(app: &mut App) {

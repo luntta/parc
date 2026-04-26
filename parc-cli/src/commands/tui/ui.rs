@@ -14,7 +14,7 @@ use ratatui::Frame;
 use super::app::App;
 use super::highlight;
 use super::markdown;
-use super::{Focus, Mode, Row, Tab};
+use super::{CaptureField, CaptureForm, Focus, Mode, Row, Tab};
 
 const MENU_BORDER: Color = Color::DarkGray;
 const LIST_BORDER: Color = Color::Blue;
@@ -63,6 +63,7 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
         Mode::Help => draw_help(frame, area),
         Mode::Confirm { prompt, .. } => draw_confirm(frame, area, prompt),
         Mode::Input { prompt, value, .. } => draw_input(frame, area, prompt, value),
+        Mode::Capture(form) => draw_capture(frame, area, form),
     }
 }
 
@@ -285,7 +286,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, status: &str, focus: Focus) {
         Focus::Detail => "[detail]",
     };
     let base = format!(
-        "{} 1-4 tabs  S-tab focus  arrows move  e edit  t toggle  p promote  a archive  d delete  y yank  ? help  q quit",
+        "{} 1-4 tabs  S-tab focus  arrows move  c capture  e edit  t toggle  p promote  a archive  d delete  y yank  ? help  q quit",
         focus_label
     );
     let text = if status.is_empty() {
@@ -317,6 +318,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  Ctrl-d/u    half-page scroll"),
         Line::from(""),
         Line::from("Actions on selected fragment"),
+        Line::from("  c           capture a new fragment"),
         Line::from("  e           edit in $EDITOR"),
         Line::from("  t           toggle todo status (open ↔ done)"),
         Line::from("  p           promote to another type"),
@@ -383,6 +385,82 @@ fn draw_input(frame: &mut Frame, area: Rect, prompt: &str, value: &str) {
     ];
     let paragraph = Paragraph::new(body).block(block);
     frame.render_widget(paragraph, popup);
+}
+
+fn draw_capture(frame: &mut Frame, area: Rect, form: &CaptureForm) {
+    let popup = centered_rect_lines(88, 14, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(ACTIVE_TAB))
+        .title(" capture ");
+
+    let body = vec![
+        Line::from(""),
+        capture_field_line(form, CaptureField::Text, &form.text),
+        capture_field_line(form, CaptureField::Type, form.current_type()),
+        capture_field_line(form, CaptureField::Tags, &form.tags),
+        capture_field_line(form, CaptureField::Status, &form.status),
+        capture_field_line(form, CaptureField::Due, &form.due),
+        capture_field_line(form, CaptureField::Priority, &form.priority),
+        capture_field_line(form, CaptureField::Assignee, &form.assignee),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter create  -  Tab fields  -  Esc cancel",
+            Style::default().fg(MUTED_TEXT),
+        )),
+        Line::from(Span::styled(
+            "Type field: arrows cycle, first letter jumps",
+            Style::default().fg(MUTED_TEXT),
+        )),
+    ];
+
+    let paragraph = Paragraph::new(body).block(block);
+    frame.render_widget(paragraph, popup);
+}
+
+fn capture_field_line(form: &CaptureForm, field: CaptureField, value: &str) -> Line<'static> {
+    let active = form.focus == field;
+    let border_style = if active {
+        Style::default().fg(ACTIVE_TAB)
+    } else {
+        Style::default().fg(MUTED_TEXT)
+    };
+    let label_style = border_style.add_modifier(Modifier::BOLD);
+    let value_style = if active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default()
+    };
+    let display = if field == CaptureField::Type {
+        format!("{} / {}", form.type_index + 1, form.type_choices.len())
+    } else {
+        value.to_string()
+    };
+    let value = if field == CaptureField::Type {
+        format!("{}  {}", value, display)
+    } else {
+        display
+    };
+    let value = fit_capture_value(&format!("{}{}", value, if active { "_" } else { "" }), 40);
+
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled("┌─", border_style),
+        Span::styled(format!(" {:<9} ", field.label()), label_style),
+        Span::styled("┤ ", border_style),
+        Span::styled(format!("{:<40}", value), value_style),
+        Span::styled(" ├─┐", border_style),
+    ])
+}
+
+fn fit_capture_value(value: &str, width: usize) -> String {
+    let len = value.chars().count();
+    if len <= width {
+        value.to_string()
+    } else {
+        value.chars().skip(len.saturating_sub(width)).collect()
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

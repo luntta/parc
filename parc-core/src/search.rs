@@ -477,7 +477,7 @@ fn apply_filters(
             }
             Filter::Created(df) => {
                 apply_date_condition(
-                    "substr(f.created_at, 1, 10)",
+                    "date(f.created_at, 'localtime')",
                     df,
                     conditions,
                     params,
@@ -486,7 +486,7 @@ fn apply_filters(
             }
             Filter::Updated(df) => {
                 apply_date_condition(
-                    "substr(f.updated_at, 1, 10)",
+                    "date(f.updated_at, 'localtime')",
                     df,
                     conditions,
                     params,
@@ -1129,6 +1129,37 @@ mod tests {
                 rel: RelativeDate::Today,
             })]
         );
+    }
+
+    #[test]
+    fn test_timestamp_date_filters_use_local_date() {
+        let q = SearchQuery {
+            text_terms: Vec::new(),
+            filters: vec![
+                Filter::Created(DateFilter::Absolute {
+                    op: CompareOp::Eq,
+                    date: "2026-04-27".to_string(),
+                }),
+                Filter::Updated(DateFilter::Absolute {
+                    op: CompareOp::Eq,
+                    date: "2026-04-27".to_string(),
+                }),
+            ],
+            sort: SortOrder::UpdatedDesc,
+            limit: None,
+        };
+
+        let compiled = compile_query(&q).unwrap();
+
+        assert!(compiled
+            .sql
+            .contains("date(f.created_at, 'localtime') = ?1"));
+        assert!(compiled
+            .sql
+            .contains("date(f.updated_at, 'localtime') = ?2"));
+        assert!(!compiled.sql.contains("substr(f.created_at"));
+        assert!(!compiled.sql.contains("substr(f.updated_at"));
+        assert_eq!(compiled.params.len(), 2);
     }
 
     #[test]

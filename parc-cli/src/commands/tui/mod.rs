@@ -31,6 +31,7 @@ pub(crate) enum Mode {
         value: String,
         action: InputAction,
     },
+    Capture(CaptureForm),
     Help,
 }
 
@@ -42,6 +43,171 @@ pub(crate) enum ConfirmAction {
 #[derive(Clone)]
 pub(crate) enum InputAction {
     Promote { id: String },
+}
+
+#[derive(Clone)]
+pub(crate) struct CaptureForm {
+    pub text: String,
+    pub type_choices: Vec<String>,
+    pub type_index: usize,
+    pub tags: String,
+    pub status: String,
+    pub due: String,
+    pub priority: String,
+    pub assignee: String,
+    pub focus: CaptureField,
+}
+
+impl CaptureForm {
+    pub(crate) fn new(type_choices: Vec<String>) -> Self {
+        let type_choices = if type_choices.is_empty() {
+            vec!["note".to_string()]
+        } else {
+            type_choices
+        };
+        let type_index = type_choices
+            .iter()
+            .position(|name| name == "note")
+            .unwrap_or(0);
+
+        Self {
+            text: String::new(),
+            type_choices,
+            type_index,
+            tags: String::new(),
+            status: String::new(),
+            due: String::new(),
+            priority: String::new(),
+            assignee: String::new(),
+            focus: CaptureField::Text,
+        }
+    }
+
+    pub(crate) fn current_type(&self) -> &str {
+        self.type_choices
+            .get(self.type_index)
+            .map(String::as_str)
+            .unwrap_or("note")
+    }
+
+    pub(crate) fn next_type(&mut self) {
+        if !self.type_choices.is_empty() {
+            self.type_index = (self.type_index + 1) % self.type_choices.len();
+        }
+    }
+
+    pub(crate) fn previous_type(&mut self) {
+        if !self.type_choices.is_empty() {
+            self.type_index = if self.type_index == 0 {
+                self.type_choices.len() - 1
+            } else {
+                self.type_index - 1
+            };
+        }
+    }
+
+    pub(crate) fn select_type_starting_with(&mut self, ch: char) {
+        if let Some(idx) = self
+            .type_choices
+            .iter()
+            .position(|name| name.starts_with(ch.to_ascii_lowercase()))
+        {
+            self.type_index = idx;
+        }
+    }
+
+    pub(crate) fn next_field(&mut self) {
+        self.focus = self.focus.next();
+    }
+
+    pub(crate) fn previous_field(&mut self) {
+        self.focus = self.focus.previous();
+    }
+
+    pub(crate) fn push_char(&mut self, ch: char) {
+        match self.focus {
+            CaptureField::Text => self.text.push(ch),
+            CaptureField::Type => self.select_type_starting_with(ch),
+            CaptureField::Tags => self.tags.push(ch),
+            CaptureField::Status => self.status.push(ch),
+            CaptureField::Due => self.due.push(ch),
+            CaptureField::Priority => self.priority.push(ch),
+            CaptureField::Assignee => self.assignee.push(ch),
+        }
+    }
+
+    pub(crate) fn backspace(&mut self) {
+        match self.focus {
+            CaptureField::Text => {
+                self.text.pop();
+            }
+            CaptureField::Type => {}
+            CaptureField::Tags => {
+                self.tags.pop();
+            }
+            CaptureField::Status => {
+                self.status.pop();
+            }
+            CaptureField::Due => {
+                self.due.pop();
+            }
+            CaptureField::Priority => {
+                self.priority.pop();
+            }
+            CaptureField::Assignee => {
+                self.assignee.pop();
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CaptureField {
+    Text,
+    Type,
+    Tags,
+    Status,
+    Due,
+    Priority,
+    Assignee,
+}
+
+impl CaptureField {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            CaptureField::Text => "Text",
+            CaptureField::Type => "Type",
+            CaptureField::Tags => "Tags",
+            CaptureField::Status => "Status",
+            CaptureField::Due => "Due",
+            CaptureField::Priority => "Priority",
+            CaptureField::Assignee => "Assignee",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            CaptureField::Text => CaptureField::Type,
+            CaptureField::Type => CaptureField::Tags,
+            CaptureField::Tags => CaptureField::Status,
+            CaptureField::Status => CaptureField::Due,
+            CaptureField::Due => CaptureField::Priority,
+            CaptureField::Priority => CaptureField::Assignee,
+            CaptureField::Assignee => CaptureField::Text,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            CaptureField::Text => CaptureField::Assignee,
+            CaptureField::Type => CaptureField::Text,
+            CaptureField::Tags => CaptureField::Type,
+            CaptureField::Status => CaptureField::Tags,
+            CaptureField::Due => CaptureField::Status,
+            CaptureField::Priority => CaptureField::Due,
+            CaptureField::Assignee => CaptureField::Priority,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
