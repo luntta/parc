@@ -22,7 +22,10 @@ Requires Rust 1.70+. SQLite is bundled — no system dependencies. WASM plugins 
 # Create a vault
 parc init
 
-# Capture a thought
+# Quick capture — first line becomes the title, rest becomes the body
+parc + "Look into connection pooling for the read replicas"
+
+# Or a full new note via the alias
 parc n "Look into connection pooling for the read replicas"
 
 # Create a todo with metadata
@@ -30,6 +33,12 @@ parc t "Upgrade auth library" --priority high --due friday --tag security
 
 # Log a decision
 parc d "Use Postgres for the event store" --tag infrastructure
+
+# Promote that quick capture into a structured todo
+parc promote 01JQ7V todo --priority high --due friday
+
+# Today's resurfacing digest
+parc today
 
 # List open todos
 parc list todo --status open
@@ -51,7 +60,7 @@ parc show 01JQ7V
 
 **Tags** — merged from the frontmatter `tags:` list and inline `#hashtags` in the body. Case-insensitive, searchable.
 
-**Links** — `[[id-prefix]]` wiki-links between fragments. Bidirectional at query time — link A→B and parc knows B←A.
+**Links** — `[[id-prefix]]` or `[[Fragment title]]` wiki-links between fragments. Bidirectional at query time — link A→B and parc knows B←A.
 
 ## Built-in types
 
@@ -139,14 +148,19 @@ parc search 'type:todo status:open #backend priority:>=medium due:this-week API'
 ### Fragments
 
 ```bash
+parc + "<text>"                  # quick capture into a note
+parc capture "<text>" [--tag t] [--link id]
 parc new <type> [--title "..."] [--tag t] [--link id] [--due date]
                 [--priority p] [--status s] [--assignee name]
+parc promote <id> <new-type> [--priority p] [--due date] [--status s] ...
 parc list [type] [--status s] [--tag t] [--limit N]
 parc show <id>
 parc edit <id>
 parc set <id> <field> <value>
 parc delete <id>
 ```
+
+`parc +` (alias for `parc capture`) is the shortest possible path from a thought to a saved note: a single line becomes the title, multi-line input puts the first line in the title and the rest in the body. `parc promote` rewrites a fragment as a different type (note → todo, idea → decision) while preserving its content, links, and timestamps.
 
 Type aliases work everywhere — `parc n` is `parc new note`, `parc t` is `parc new todo`.
 
@@ -182,6 +196,20 @@ parc history <id> --show <timestamp>     # View a version
 parc history <id> --diff [timestamp]     # Diff against previous
 parc history <id> --restore <timestamp>  # Restore a version
 ```
+
+### Resurfacing
+
+Surface what matters today, what's slipping, and what you've been working on lately. These commands compose existing search filters, so the output mirrors `parc search` semantics.
+
+```bash
+parc today                         # touched today + due / overdue + open & high priority
+parc due [bucket]                  # bucket: today | overdue | this-week (default: this-week)
+parc stale [--days N] [--types t,t]# open work with no updates in the window
+parc random [--type t]             # one (or --limit N) random fragments — for serendipity
+parc review [--since window]       # multi-section weekly digest
+```
+
+Defaults for `stale_days`, the `review` window, and the `today` section limit live under `resurfacing:` in `<vault>/config.yml`.
 
 ### Organization
 
@@ -228,6 +256,8 @@ Or use the standalone binary:
 parc-server --vault /path/to/.parc
 parc-server --vault /path/to/.parc --socket
 ```
+
+The Unix socket is bound `0600` (owner-only) — the server has no auth, so the file mode is the access boundary. Keep the socket inside a directory only your user can traverse.
 
 Send newline-delimited JSON-RPC requests, receive responses:
 
@@ -327,6 +357,10 @@ aliases:
 server:
   transport: stdio      # stdio | socket
   # socket_path: null   # defaults to <vault>/server.sock
+resurfacing:
+  stale_days: 30        # `parc stale` cutoff
+  review_window: this-week  # default `parc review --since` window
+  today_section_limit: 10   # max rows per section in `parc today`
 plugins:                 # Per-plugin configuration (passed to plugin init)
   my-plugin:
     setting: value
