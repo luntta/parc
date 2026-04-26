@@ -17,6 +17,7 @@ anyhow = "1"
 termimad = "0.30"
 comrak = "0.28"
 crossterm = "0.29"
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 ratatui = { version = "0.29", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 serde_json = "1"
 chrono = "0.4"

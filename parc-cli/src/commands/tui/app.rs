@@ -238,7 +238,10 @@ fn handle_normal(
         }
         (KeyCode::Char('y'), _) if plain && app.tab != Tab::Search => {
             if let Some(id) = app.selected_id() {
-                app.set_status(format!("yanked id: {}", id));
+                match actions::yank(&id) {
+                    Ok(msg) => app.set_status(msg),
+                    Err(e) => app.set_status(format!("{} (id: {})", e, id)),
+                }
             }
         }
         (KeyCode::Char('d'), _) if plain && app.tab != Tab::Search => {

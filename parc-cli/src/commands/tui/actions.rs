@@ -149,6 +149,15 @@ pub(super) fn delete(vault: &Path, id: &str) -> Result<String> {
     Ok(format!("deleted {} (trash)", short(&full_id)))
 }
 
+pub(super) fn yank(id: &str) -> Result<String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| anyhow!("clipboard unavailable: {}", e))?;
+    clipboard
+        .set_text(id.to_string())
+        .map_err(|e| anyhow!("clipboard write failed: {}", e))?;
+    Ok(format!("copied {} to clipboard", short(id)))
+}
+
 pub(super) fn promote(vault: &Path, id: &str, new_type: &str) -> Result<String> {
     let promoted = fragment::promote_fragment(vault, id, new_type, BTreeMap::new())?;
     let conn = index::open_index(vault)?;
