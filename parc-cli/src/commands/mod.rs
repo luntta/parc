@@ -30,6 +30,7 @@ pub mod stale;
 pub mod tags;
 pub mod today;
 pub mod trash;
+pub mod tui;
 pub mod types;
 pub mod unlink;
 pub mod vault;

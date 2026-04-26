@@ -114,6 +114,33 @@ fn test_list_empty() {
 }
 
 #[test]
+fn test_bare_parc_runs_today_when_not_tty() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    parc()
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Touched today"))
+        .stdout(predicate::str::contains("Due today / overdue"));
+}
+
+#[test]
+fn test_no_tui_runs_today_plain() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    parc()
+        .args(["--no-tui"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Touched today"))
+        .stdout(predicate::str::contains("Open & high priority"));
+}
+
+#[test]
 fn test_full_lifecycle() {
     let tmp = TempDir::new().unwrap();
     init_vault(&tmp);

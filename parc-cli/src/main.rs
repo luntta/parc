@@ -2,6 +2,7 @@ mod commands;
 pub mod hooks;
 mod render;
 
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -16,8 +17,12 @@ struct Cli {
     #[arg(global = true, long)]
     vault: Option<PathBuf>,
 
+    /// Disable the TUI for bare `parc`
+    #[arg(global = true, long)]
+    no_tui: bool,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(clap::Subcommand)]
@@ -171,6 +176,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Open the terminal UI
+    Tui,
     /// Show due and overdue todos
     Due {
         /// Bucket: today, this-week, or overdue
@@ -476,25 +483,34 @@ enum PluginCommands {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let command = cli.command;
 
-    match cli.command {
-        Commands::Init { global } => {
+    match command {
+        None => {
+            let vault = resolve_vault(cli.vault.as_deref())?;
+            if !cli.no_tui && io::stdout().is_terminal() {
+                commands::tui::run(&vault)
+            } else {
+                commands::today::run(&vault, false)
+            }
+        }
+        Some(Commands::Init { global }) => {
             if global && cli.vault.is_some() {
                 anyhow::bail!("--vault and --global are mutually exclusive");
             }
             commands::init::run(global, cli.vault.as_deref())
         }
-        Commands::Completions { shell } => commands::completions::run(&shell),
-        Commands::Vault { subcommand, json } => {
+        Some(Commands::Completions { shell }) => commands::completions::run(&shell),
+        Some(Commands::Vault { subcommand, json }) => {
             let vault = resolve_vault(cli.vault.as_deref())?;
             commands::vault::run(&vault, subcommand.map(|s| match s {
                 VaultCommands::List { json } => commands::vault::VaultSubcommand::List { json },
             }), json)
         }
-        _ => {
+        Some(command) => {
             // All other commands: resolve vault once, pass to command
             let vault = resolve_vault(cli.vault.as_deref())?;
-            match cli.command {
+            match command {
                 Commands::Capture {
                     text,
                     tag,
@@ -565,6 +581,7 @@ fn main() -> anyhow::Result<()> {
                     limit,
                 } => commands::search::run(&vault, query, json, sort, limit),
                 Commands::Today { json } => commands::today::run(&vault, json),
+                Commands::Tui => commands::tui::run(&vault),
                 Commands::Due { bucket, json } => commands::due::run(&vault, bucket, json),
                 Commands::Stale {
                     days,

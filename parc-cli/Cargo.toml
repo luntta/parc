@@ -15,6 +15,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 anyhow = "1"
 termimad = "0.30"
+crossterm = "0.29"
 serde_json = "1"
 chrono = "0.4"
 
