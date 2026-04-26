@@ -56,7 +56,7 @@ pub enum IsCondition {
     All,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SortOrder {
     #[default]
     UpdatedDesc,
@@ -64,9 +64,12 @@ pub enum SortOrder {
     CreatedDesc,
     CreatedAsc,
     Random,
+    /// Order by fuzzy match score (highest first). Falls back to UpdatedDesc
+    /// for SQL pre-fetch — the actual scoring is applied after nucleo runs.
+    Score,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SearchQuery {
     pub text_terms: Vec<TextTerm>,
     pub filters: Vec<Filter>,
@@ -336,6 +339,177 @@ struct CompiledQuery {
     params: Vec<Box<dyn rusqlite::types::ToSql>>,
 }
 
+struct FilterClauses {
+    conditions: Vec<String>,
+    params: Vec<Box<dyn rusqlite::types::ToSql>>,
+    joins: String,
+    needs_tag_group_by: bool,
+    has_is_filter: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_filters(
+    filters: &[Filter],
+    conditions: &mut Vec<String>,
+    params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    joins: &mut String,
+    param_idx: &mut usize,
+    needs_tag_group_by: &mut bool,
+    tag_count: &mut usize,
+    has_is_filter: &mut bool,
+) -> Result<(), ParcError> {
+    for filter in filters {
+        match filter {
+            Filter::Type { value, negated } => {
+                let op = if *negated { "!=" } else { "=" };
+                conditions.push(format!("f.type {} ?{}", op, *param_idx));
+                params.push(Box::new(value.clone()));
+                *param_idx += 1;
+            }
+            Filter::Status { value, negated } => {
+                let op = if *negated { "!=" } else { "=" };
+                conditions.push(format!("f.status {} ?{}", op, *param_idx));
+                params.push(Box::new(value.clone()));
+                *param_idx += 1;
+            }
+            Filter::Priority { op, value, negated } => {
+                let priorities = priorities_for_op(*op, value).ok_or_else(|| {
+                    ParcError::ParseError(format!("unknown priority '{}'", value))
+                })?;
+                if priorities.is_empty() {
+                    conditions.push("1=0".to_string());
+                } else {
+                    let placeholders: Vec<String> = priorities
+                        .iter()
+                        .map(|p| {
+                            let ph = format!("?{}", *param_idx);
+                            params.push(Box::new(p.clone()));
+                            *param_idx += 1;
+                            ph
+                        })
+                        .collect();
+                    let not = if *negated { "NOT " } else { "" };
+                    conditions.push(format!(
+                        "f.priority {}IN ({})",
+                        not,
+                        placeholders.join(", ")
+                    ));
+                }
+            }
+            Filter::Tag { value, negated } => {
+                if *negated {
+                    conditions.push(format!(
+                        "NOT EXISTS (SELECT 1 FROM fragment_tags WHERE fragment_id = f.id AND tag = ?{})",
+                        *param_idx
+                    ));
+                    params.push(Box::new(value.clone()));
+                    *param_idx += 1;
+                } else {
+                    *tag_count += 1;
+                    joins.push_str(&format!(
+                        " JOIN fragment_tags ft{tag_n} ON ft{tag_n}.fragment_id = f.id AND ft{tag_n}.tag = ?{pi}",
+                        tag_n = *tag_count,
+                        pi = *param_idx,
+                    ));
+                    params.push(Box::new(value.clone()));
+                    *param_idx += 1;
+                    *needs_tag_group_by = true;
+                }
+            }
+            Filter::Due(df) => {
+                apply_date_condition("f.due", df, conditions, params, param_idx);
+            }
+            Filter::Created(df) => {
+                apply_date_condition(
+                    "substr(f.created_at, 1, 10)",
+                    df,
+                    conditions,
+                    params,
+                    param_idx,
+                );
+            }
+            Filter::Updated(df) => {
+                apply_date_condition(
+                    "substr(f.updated_at, 1, 10)",
+                    df,
+                    conditions,
+                    params,
+                    param_idx,
+                );
+            }
+            Filter::CreatedBy { value, negated } => {
+                let op = if *negated { "!=" } else { "=" };
+                conditions.push(format!("f.created_by {} ?{}", op, *param_idx));
+                params.push(Box::new(value.clone()));
+                *param_idx += 1;
+            }
+            Filter::Has(HasCondition::Links) => {
+                conditions.push(
+                    "EXISTS (SELECT 1 FROM fragment_links WHERE source_id = f.id)".to_string(),
+                );
+            }
+            Filter::Has(HasCondition::Due) => {
+                conditions.push("f.due IS NOT NULL".to_string());
+            }
+            Filter::Has(HasCondition::Attachments) => {
+                conditions.push("f.attachment_count > 0".to_string());
+            }
+            Filter::Is(IsCondition::Archived) => {
+                *has_is_filter = true;
+                conditions.push("f.archived = 1".to_string());
+            }
+            Filter::Is(IsCondition::All) => {
+                *has_is_filter = true;
+            }
+            Filter::Linked(id_prefix) => {
+                let prefix = id_prefix.to_uppercase();
+                conditions.push(format!(
+                    "EXISTS (SELECT 1 FROM fragment_links WHERE \
+                     (source_id = f.id AND target_id LIKE ?{pi}) OR \
+                     (target_id = f.id AND source_id LIKE ?{pi}))",
+                    pi = *param_idx
+                ));
+                params.push(Box::new(format!("{}%", prefix)));
+                *param_idx += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn build_filter_clauses(
+    filters: &[Filter],
+    start_param_idx: usize,
+) -> Result<FilterClauses, ParcError> {
+    let mut conditions: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut joins = String::new();
+    let mut param_idx: usize = start_param_idx;
+    let mut needs_tag_group_by = false;
+    let mut tag_count: usize = 0;
+    let mut has_is_filter = false;
+
+    apply_filters(
+        filters,
+        &mut conditions,
+        &mut params,
+        &mut joins,
+        &mut param_idx,
+        &mut needs_tag_group_by,
+        &mut tag_count,
+        &mut has_is_filter,
+    )?;
+
+    let _ = param_idx;
+    Ok(FilterClauses {
+        conditions,
+        params,
+        joins,
+        needs_tag_group_by,
+        has_is_filter,
+    })
+}
+
 fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
     let mut conditions: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -372,127 +546,16 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
          FROM fragments f".to_string()
     };
 
-    // Process filters
-    for filter in &query.filters {
-        match filter {
-            Filter::Type { value, negated } => {
-                let op = if *negated { "!=" } else { "=" };
-                conditions.push(format!("f.type {} ?{}", op, param_idx));
-                params.push(Box::new(value.clone()));
-                param_idx += 1;
-            }
-            Filter::Status { value, negated } => {
-                let op = if *negated { "!=" } else { "=" };
-                conditions.push(format!("f.status {} ?{}", op, param_idx));
-                params.push(Box::new(value.clone()));
-                param_idx += 1;
-            }
-            Filter::Priority { op, value, negated } => {
-                let priorities = priorities_for_op(*op, value).ok_or_else(|| {
-                    ParcError::ParseError(format!("unknown priority '{}'", value))
-                })?;
-                if priorities.is_empty() {
-                    // Impossible condition
-                    conditions.push("1=0".to_string());
-                } else {
-                    let placeholders: Vec<String> = priorities
-                        .iter()
-                        .map(|p| {
-                            let ph = format!("?{}", param_idx);
-                            params.push(Box::new(p.clone()));
-                            param_idx += 1;
-                            ph
-                        })
-                        .collect();
-                    let not = if *negated { "NOT " } else { "" };
-                    conditions.push(format!(
-                        "f.priority {}IN ({})",
-                        not,
-                        placeholders.join(", ")
-                    ));
-                }
-            }
-            Filter::Tag { value, negated } => {
-                if *negated {
-                    // Exclude fragments that have this tag
-                    conditions.push(format!(
-                        "NOT EXISTS (SELECT 1 FROM fragment_tags WHERE fragment_id = f.id AND tag = ?{})",
-                        param_idx
-                    ));
-                    params.push(Box::new(value.clone()));
-                    param_idx += 1;
-                } else {
-                    // AND semantics: each positive tag adds to the join
-                    tag_count += 1;
-                    joins += &format!(
-                        " JOIN fragment_tags ft{tag_n} ON ft{tag_n}.fragment_id = f.id AND ft{tag_n}.tag = ?{pi}",
-                        tag_n = tag_count,
-                        pi = param_idx,
-                    );
-                    params.push(Box::new(value.clone()));
-                    param_idx += 1;
-                    needs_tag_group_by = true;
-                }
-            }
-            Filter::Due(df) => {
-                apply_date_condition("f.due", df, &mut conditions, &mut params, &mut param_idx);
-            }
-            Filter::Created(df) => {
-                apply_date_condition(
-                    "substr(f.created_at, 1, 10)",
-                    df,
-                    &mut conditions,
-                    &mut params,
-                    &mut param_idx,
-                );
-            }
-            Filter::Updated(df) => {
-                apply_date_condition(
-                    "substr(f.updated_at, 1, 10)",
-                    df,
-                    &mut conditions,
-                    &mut params,
-                    &mut param_idx,
-                );
-            }
-            Filter::CreatedBy { value, negated } => {
-                let op = if *negated { "!=" } else { "=" };
-                conditions.push(format!("f.created_by {} ?{}", op, param_idx));
-                params.push(Box::new(value.clone()));
-                param_idx += 1;
-            }
-            Filter::Has(HasCondition::Links) => {
-                conditions.push(
-                    "EXISTS (SELECT 1 FROM fragment_links WHERE source_id = f.id)".to_string(),
-                );
-            }
-            Filter::Has(HasCondition::Due) => {
-                conditions.push("f.due IS NOT NULL".to_string());
-            }
-            Filter::Has(HasCondition::Attachments) => {
-                conditions.push("f.attachment_count > 0".to_string());
-            }
-            Filter::Is(IsCondition::Archived) => {
-                has_is_filter = true;
-                conditions.push("f.archived = 1".to_string());
-            }
-            Filter::Is(IsCondition::All) => {
-                has_is_filter = true;
-                // No filter — show everything including archived
-            }
-            Filter::Linked(id_prefix) => {
-                let prefix = id_prefix.to_uppercase();
-                conditions.push(format!(
-                    "EXISTS (SELECT 1 FROM fragment_links WHERE \
-                     (source_id = f.id AND target_id LIKE ?{pi}) OR \
-                     (target_id = f.id AND source_id LIKE ?{pi}))",
-                    pi = param_idx
-                ));
-                params.push(Box::new(format!("{}%", prefix)));
-                param_idx += 1;
-            }
-        }
-    }
+    apply_filters(
+        &query.filters,
+        &mut conditions,
+        &mut params,
+        &mut joins,
+        &mut param_idx,
+        &mut needs_tag_group_by,
+        &mut tag_count,
+        &mut has_is_filter,
+    )?;
 
     // By default, exclude archived fragments unless is:archived or is:all is specified
     if !has_is_filter {
@@ -512,21 +575,25 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
         sql += " GROUP BY f.id";
     }
 
-    // Sort
-    let order = match query.sort {
-        SortOrder::UpdatedDesc => "f.updated_at DESC",
-        SortOrder::UpdatedAsc => "f.updated_at ASC",
-        SortOrder::CreatedDesc => "f.created_at DESC",
-        SortOrder::CreatedAsc => "f.created_at ASC",
-        SortOrder::Random => "RANDOM()",
-    };
-    sql += &format!(" ORDER BY {}", order);
+    sql += &format!(" ORDER BY {}", sql_order_clause(query.sort));
 
     if let Some(limit) = query.limit {
         sql += &format!(" LIMIT {}", limit);
     }
 
     Ok(CompiledQuery { sql, params })
+}
+
+fn sql_order_clause(sort: SortOrder) -> &'static str {
+    match sort {
+        // Score is applied post-fetch by the fuzzy matcher; pre-sort by
+        // updated_at so empty-pattern fuzzy queries land in a sensible order.
+        SortOrder::UpdatedDesc | SortOrder::Score => "f.updated_at DESC",
+        SortOrder::UpdatedAsc => "f.updated_at ASC",
+        SortOrder::CreatedDesc => "f.created_at DESC",
+        SortOrder::CreatedAsc => "f.created_at ASC",
+        SortOrder::Random => "RANDOM()",
+    }
 }
 
 fn build_fts_expression(terms: &[TextTerm]) -> String {
@@ -637,6 +704,143 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchResult
     }
 
     Ok(results)
+}
+
+// ── Fuzzy search ───────────────────────────────────────────────────────
+
+/// Execute a fuzzy search. Structured filters are applied via SQL; bare
+/// text terms are joined into a fuzzy pattern run by [`crate::fuzzy`]; quoted
+/// phrases survive as required substrings (case-insensitive) over title or
+/// body.
+pub fn fuzzy_search(
+    conn: &Connection,
+    query: &SearchQuery,
+) -> Result<Vec<crate::fuzzy::FuzzyHit>, ParcError> {
+    let candidates = load_fuzzy_candidates(conn, query)?;
+
+    let pattern: String = query
+        .text_terms
+        .iter()
+        .filter_map(|t| match t {
+            TextTerm::Word(w) => Some(w.as_str()),
+            TextTerm::Phrase(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let phrases: Vec<String> = query
+        .text_terms
+        .iter()
+        .filter_map(|t| match t {
+            TextTerm::Phrase(p) => Some(p.to_lowercase()),
+            TextTerm::Word(_) => None,
+        })
+        .collect();
+
+    let mut engine = crate::fuzzy::FuzzyEngine::new();
+    engine.set_candidates(candidates);
+    engine.set_pattern(&pattern);
+    engine.poll_until_done();
+
+    let mut hits = engine.hits(usize::MAX);
+
+    if !phrases.is_empty() {
+        hits.retain(|h| {
+            let title_lc = h.item.title.to_lowercase();
+            let body_lc = h.item.body.to_lowercase();
+            phrases
+                .iter()
+                .all(|p| title_lc.contains(p) || body_lc.contains(p))
+        });
+    }
+
+    // For non-empty patterns the snapshot is in score order. If the user
+    // requested an explicit non-Score sort, re-sort the surviving hits.
+    if !pattern.is_empty() {
+        match query.sort {
+            SortOrder::Score | SortOrder::UpdatedDesc => {
+                if matches!(query.sort, SortOrder::UpdatedDesc) {
+                    hits.sort_by(|a, b| b.item.updated_at.cmp(&a.item.updated_at));
+                }
+            }
+            SortOrder::UpdatedAsc => hits.sort_by(|a, b| a.item.updated_at.cmp(&b.item.updated_at)),
+            SortOrder::CreatedDesc => hits.sort_by(|a, b| b.item.created_at.cmp(&a.item.created_at)),
+            SortOrder::CreatedAsc => hits.sort_by(|a, b| a.item.created_at.cmp(&b.item.created_at)),
+            SortOrder::Random => {
+                // Deterministic-enough shuffle without pulling in `rand`:
+                // rotate by a value derived from the pattern length.
+                let n = hits.len();
+                if n > 1 {
+                    let shift = pattern.len() % n;
+                    hits.rotate_left(shift);
+                }
+            }
+        }
+    }
+    // For empty pattern, the snapshot preserves SQL insertion order, which
+    // already matches the requested sort (see `sql_order_clause`). Nothing to do.
+
+    if let Some(limit) = query.limit {
+        hits.truncate(limit);
+    }
+
+    Ok(hits)
+}
+
+fn load_fuzzy_candidates(
+    conn: &Connection,
+    query: &SearchQuery,
+) -> Result<Vec<crate::fuzzy::FuzzyItem>, ParcError> {
+    // Filter-only: ignore text_terms here; nucleo handles those.
+    let clauses = build_filter_clauses(&query.filters, 1)?;
+
+    let mut sql = String::from(
+        "SELECT f.id, f.type, f.title, f.status, f.body, f.created_at, f.updated_at \
+         FROM fragments f",
+    );
+    sql.push_str(&clauses.joins);
+
+    let mut all_conditions = clauses.conditions;
+    if !clauses.has_is_filter {
+        all_conditions.push("f.archived = 0".to_string());
+    }
+    if !all_conditions.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&all_conditions.join(" AND "));
+    }
+    if clauses.needs_tag_group_by {
+        sql.push_str(" GROUP BY f.id");
+    }
+    sql.push_str(&format!(" ORDER BY {}", sql_order_clause(query.sort)));
+
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        clauses.params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        Ok(crate::fuzzy::FuzzyItem {
+            id: row.get(0)?,
+            fragment_type: row.get(1)?,
+            title: row.get(2)?,
+            status: row.get(3)?,
+            body: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+            tags: Vec::new(),
+        })
+    })?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        let mut item = row.map_err(ParcError::Sqlite)?;
+        let mut tag_stmt = conn
+            .prepare("SELECT tag FROM fragment_tags WHERE fragment_id = ?1 ORDER BY tag")?;
+        item.tags = tag_stmt
+            .query_map([&item.id], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        items.push(item);
+    }
+    Ok(items)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -1132,5 +1336,125 @@ mod tests {
         let results = search(&conn, &q).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Important API task");
+    }
+
+    // ── Fuzzy integration tests ────────────────────────────────────────
+
+    fn index_simple(conn: &Connection, title: &str, ftype: &str, body: &str, tags: Vec<String>) -> String {
+        let frag = make_fragment_with(title, ftype, None, None, None, tags.clone(), body);
+        let id = frag.id.clone();
+        index::index_fragment(&conn, &frag, &tags, &[]).unwrap();
+        id
+    }
+
+    #[test]
+    fn fuzzy_search_subsequence_in_title() {
+        let (_tmp, conn) = setup_test_vault();
+        index_simple(&conn, "fileserver", "note", "", vec![]);
+        index_simple(&conn, "filesharer", "note", "", vec![]);
+        index_simple(&conn, "unrelated", "note", "", vec![]);
+
+        let q = parse_query("flsr").unwrap();
+        let hits = fuzzy_search(&conn, &q).unwrap();
+        let titles: Vec<&str> = hits.iter().map(|h| h.item.title.as_str()).collect();
+        assert!(titles.contains(&"fileserver"));
+        assert!(titles.contains(&"filesharer"));
+        assert!(!titles.contains(&"unrelated"));
+    }
+
+    #[test]
+    fn fuzzy_search_matches_body() {
+        let (_tmp, conn) = setup_test_vault();
+        index_simple(&conn, "alpha", "note", "this body mentions xyzzy somewhere", vec![]);
+        index_simple(&conn, "beta", "note", "no match here", vec![]);
+
+        let q = parse_query("xyzzy").unwrap();
+        let hits = fuzzy_search(&conn, &q).unwrap();
+        let titles: Vec<&str> = hits.iter().map(|h| h.item.title.as_str()).collect();
+        assert_eq!(titles, vec!["alpha"]);
+    }
+
+    #[test]
+    fn fuzzy_search_combines_with_filters() {
+        let (_tmp, conn) = setup_test_vault();
+        index_simple(&conn, "fileserver", "todo", "", vec!["backend".to_string()]);
+        index_simple(&conn, "fileshare", "note", "", vec![]);
+
+        let q = parse_query("type:todo flsr").unwrap();
+        let hits = fuzzy_search(&conn, &q).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item.title, "fileserver");
+        assert_eq!(hits[0].item.fragment_type, "todo");
+    }
+
+    #[test]
+    fn fuzzy_search_empty_pattern_returns_filtered_set_in_sql_order() {
+        let (_tmp, conn) = setup_test_vault();
+        index_simple(&conn, "first", "todo", "", vec![]);
+        index_simple(&conn, "second", "note", "", vec![]);
+        index_simple(&conn, "third", "todo", "", vec![]);
+
+        let q = parse_query("type:todo").unwrap();
+        let hits = fuzzy_search(&conn, &q).unwrap();
+        assert_eq!(hits.len(), 2);
+        let titles: Vec<&str> = hits.iter().map(|h| h.item.title.as_str()).collect();
+        // Both todos present; order is updated_at DESC (which is last inserted first when timestamps tie).
+        assert!(titles.contains(&"first"));
+        assert!(titles.contains(&"third"));
+    }
+
+    #[test]
+    fn fuzzy_search_phrase_post_filter() {
+        let (_tmp, conn) = setup_test_vault();
+        index_simple(&conn, "alpha doc", "note", "talks about exact thing", vec![]);
+        index_simple(&conn, "alpha note", "note", "talks about something else", vec![]);
+
+        let q = parse_query("alpha \"exact thing\"").unwrap();
+        let hits = fuzzy_search(&conn, &q).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item.title, "alpha doc");
+    }
+
+    #[test]
+    fn fuzzy_search_respects_limit() {
+        let (_tmp, conn) = setup_test_vault();
+        for i in 0..10 {
+            index_simple(&conn, &format!("alpha {}", i), "note", "", vec![]);
+        }
+        let mut q = parse_query("alpha").unwrap();
+        q.limit = Some(3);
+        let hits = fuzzy_search(&conn, &q).unwrap();
+        assert_eq!(hits.len(), 3);
+    }
+
+    #[test]
+    fn fuzzy_search_title_match_indices_present() {
+        let (_tmp, conn) = setup_test_vault();
+        index_simple(&conn, "fileserver", "note", "", vec![]);
+        let q = parse_query("flsr").unwrap();
+        let hits = fuzzy_search(&conn, &q).unwrap();
+        assert_eq!(hits.len(), 1);
+        let indices = &hits[0].title_match_indices;
+        assert!(!indices.is_empty());
+        for &i in indices {
+            assert!(i < hits[0].item.title.chars().count() as u32);
+        }
+    }
+
+    #[test]
+    fn fuzzy_search_excludes_archived_by_default() {
+        let (_tmp, conn) = setup_test_vault();
+        // Insert an archived fragment manually
+        let mut frag = make_fragment_with("findme", "note", None, None, None, vec![], "");
+        frag.extra_fields.insert("archived".to_string(), serde_json::Value::Bool(true));
+        index::index_fragment(&conn, &frag, &[], &[]).unwrap();
+
+        let q = parse_query("findme").unwrap();
+        let hits = fuzzy_search(&conn, &q).unwrap();
+        assert!(hits.is_empty());
+
+        let q = parse_query("findme is:all").unwrap();
+        let hits = fuzzy_search(&conn, &q).unwrap();
+        assert_eq!(hits.len(), 1);
     }
 }
