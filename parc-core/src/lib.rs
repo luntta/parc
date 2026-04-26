@@ -5,6 +5,7 @@ pub mod doctor;
 pub mod error;
 pub mod export;
 pub mod fragment;
+pub mod fuzzy;
 pub mod history;
 pub mod hook;
 pub mod import;

@@ -15,6 +15,7 @@ comrak = "0.28"
 regex = "1"
 similar = "2"
 toml = "0.8"
+nucleo = "0.5"
 wasmtime = { version = "28", optional = true, default-features = false, features = ["cranelift", "runtime"] }
 
 [features]
