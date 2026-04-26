@@ -12,6 +12,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use super::app::App;
+use super::markdown;
 use super::{Focus, Mode, Row, Tab};
 
 const MENU_BORDER: Color = Color::DarkGray;
@@ -171,23 +172,33 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
 
     let lines = match fragment::read_fragment(vault, &row.id) {
         Ok(fragment) => {
+            let muted = Style::default().fg(MUTED_TEXT);
             let mut lines: Vec<Line> = Vec::new();
             lines.push(Line::from(Span::styled(
                 fragment.title.clone(),
                 Style::default().add_modifier(Modifier::BOLD),
             )));
-            lines.push(Line::from(format!("ID: {}", fragment.id)));
-            lines.push(Line::from(format!("Type: {}", fragment.fragment_type)));
+            lines.push(Line::from(Span::styled(
+                format!("ID: {}", fragment.id),
+                muted,
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("Type: {}", fragment.fragment_type),
+                muted,
+            )));
             if !fragment.tags.is_empty() {
-                lines.push(Line::from(format!("Tags: {}", fragment.tags.join(", "))));
+                lines.push(Line::from(Span::styled(
+                    format!("Tags: {}", fragment.tags.join(", ")),
+                    muted,
+                )));
             }
             for (key, value) in &fragment.extra_fields {
                 if let Some(s) = value.as_str() {
-                    lines.push(Line::from(format!("{}: {}", key, s)));
+                    lines.push(Line::from(Span::styled(format!("{}: {}", key, s), muted)));
                 }
             }
             lines.push(Line::from(""));
-            lines.extend(fragment.body.lines().map(|l| Line::from(l.to_string())));
+            lines.extend(markdown::render_body(&fragment.body));
             lines
         }
         Err(err) => vec![Line::from(Span::styled(

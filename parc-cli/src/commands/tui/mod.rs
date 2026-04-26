@@ -13,6 +13,7 @@ use ratatui::Terminal;
 mod actions;
 mod app;
 mod data;
+mod markdown;
 mod ui;
 
 #[derive(Clone)]
