@@ -9,7 +9,5 @@ parc-gui/ui/dist/
 # Docs site
 docs/_site/
 
-# Vault artifacts
-index.db
-trash/
-server.sock
+# Parc vault (personal scratchpad, not shared)
+.parc/
