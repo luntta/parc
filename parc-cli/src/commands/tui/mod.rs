@@ -10,9 +10,35 @@ use parc_core::search::SearchResult;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+mod actions;
 mod app;
 mod data;
 mod ui;
+
+#[derive(Clone)]
+pub(crate) enum Mode {
+    Normal,
+    Confirm {
+        prompt: String,
+        action: ConfirmAction,
+    },
+    Input {
+        prompt: String,
+        value: String,
+        action: InputAction,
+    },
+    Help,
+}
+
+#[derive(Clone)]
+pub(crate) enum ConfirmAction {
+    Delete { id: String },
+}
+
+#[derive(Clone)]
+pub(crate) enum InputAction {
+    Promote { id: String },
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tab {

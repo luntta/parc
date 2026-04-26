@@ -6,13 +6,13 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Tabs, Wrap,
+    Block, BorderType, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Tabs, Wrap,
 };
 use ratatui::Frame;
 
 use super::app::App;
-use super::{Focus, Row, Tab};
+use super::{Focus, Mode, Row, Tab};
 
 const MENU_BORDER: Color = Color::DarkGray;
 const LIST_BORDER: Color = Color::Blue;
@@ -55,6 +55,13 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
     draw_detail(frame, body_chunks[1], vault, app);
 
     draw_footer(frame, outer[3], &app.status, app.focus);
+
+    match &app.mode {
+        Mode::Normal => {}
+        Mode::Help => draw_help(frame, area),
+        Mode::Confirm { prompt, .. } => draw_confirm(frame, area, prompt),
+        Mode::Input { prompt, value, .. } => draw_input(frame, area, prompt, value),
+    }
 }
 
 fn draw_menu(frame: &mut Frame, area: Rect, tab: Tab) {
@@ -224,7 +231,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, status: &str, focus: Focus) {
         Focus::Detail => "[detail]",
     };
     let base = format!(
-        "{} 1-4 tabs  tab next  S-tab focus  j/k move  g/G top/end  /search  r reload  q quit",
+        "{} 1-4 tabs  S-tab focus  j/k  e edit  t toggle  p promote  a archive  d delete  y yank  ? help  q quit",
         focus_label
     );
     let text = if status.is_empty() {
@@ -236,6 +243,118 @@ fn draw_footer(frame: &mut Frame, area: Rect, status: &str, focus: Focus) {
         .style(Style::default().fg(MUTED_TEXT))
         .block(block);
     frame.render_widget(paragraph, area);
+}
+
+fn draw_help(frame: &mut Frame, area: Rect) {
+    let lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "Keybindings",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("Navigation"),
+        Line::from("  1-4         switch tab (Today/List/Stale/Search)"),
+        Line::from("  Tab         cycle tabs"),
+        Line::from("  Shift-Tab   toggle pane focus (list / detail)"),
+        Line::from("  /           jump to search"),
+        Line::from("  j/k  ↓/↑    move within focused pane"),
+        Line::from("  g / G       top / bottom of focused pane"),
+        Line::from("  Ctrl-d/u    half-page scroll"),
+        Line::from("  PgDn/PgUp   full-page scroll"),
+        Line::from(""),
+        Line::from("Actions on selected fragment"),
+        Line::from("  e           edit in $EDITOR"),
+        Line::from("  t           toggle todo status (open ↔ done)"),
+        Line::from("  p           promote to another type"),
+        Line::from("  a           archive (toggle)"),
+        Line::from("  d           delete (with confirm)"),
+        Line::from("  y           show full id in status bar"),
+        Line::from("  r           reload current view"),
+        Line::from(""),
+        Line::from("General"),
+        Line::from("  ?           toggle this help"),
+        Line::from("  q           quit"),
+        Line::from("  Esc         cancel modal / clear search"),
+    ];
+
+    let popup = centered_rect(64, 80, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(ACTIVE_TAB))
+        .title(" help (Esc to close) ");
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup);
+}
+
+fn draw_confirm(frame: &mut Frame, area: Rect, prompt: &str) {
+    let popup = centered_rect_lines(56, 5, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(Color::Red))
+        .title(" confirm ");
+    let body = vec![
+        Line::from(""),
+        Line::from(prompt.to_string()),
+        Line::from(""),
+        Line::from(Span::styled(
+            "y to confirm  -  n / Esc to cancel",
+            Style::default().fg(MUTED_TEXT),
+        )),
+    ];
+    let paragraph = Paragraph::new(body).block(block);
+    frame.render_widget(paragraph, popup);
+}
+
+fn draw_input(frame: &mut Frame, area: Rect, prompt: &str, value: &str) {
+    let popup = centered_rect_lines(60, 5, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(ACTIVE_TAB))
+        .title(format!(" {} ", prompt));
+    let body = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(ACTIVE_TAB)),
+            Span::raw(value.to_string()),
+            Span::styled("_", Style::default().fg(ACTIVE_TAB)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter to submit  -  Esc to cancel",
+            Style::default().fg(MUTED_TEXT),
+        )),
+    ];
+    let paragraph = Paragraph::new(body).block(block);
+    frame.render_widget(paragraph, popup);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let popup_w = area.width * percent_x / 100;
+    let popup_h = area.height * percent_y / 100;
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h,
+    }
+}
+
+fn centered_rect_lines(percent_x: u16, lines: u16, area: Rect) -> Rect {
+    let popup_w = (area.width * percent_x / 100).min(area.width);
+    let popup_h = lines.min(area.height);
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h,
+    }
 }
 
 fn short_id(id: &str, len: usize) -> &str {
