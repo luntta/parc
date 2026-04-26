@@ -33,6 +33,8 @@ parc-server --vault /path/to/.parc --socket-path /tmp/parc.sock
 
 Default socket path: `<vault>/server.sock`. Same newline-delimited protocol per connection.
 
+The socket is bound `0600` (owner-only) — the server itself has no auth, so the file mode is the access boundary. Anyone able to `connect()` to the socket can perform any operation the server can. Place the socket inside a directory only your user can traverse, and prefer the default `<vault>/server.sock` location over shared paths like `/tmp`.
+
 ### Server config
 
 The vault's `config.yml` can set server defaults:

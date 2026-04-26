@@ -27,6 +27,11 @@ server:
   transport: stdio       # stdio | socket
   # socket_path: null    # defaults to <vault>/server.sock
 
+resurfacing:
+  stale_days: 30           # cutoff for `parc stale` (and the stale section in `parc review`)
+  review_window: this-week # default --since window for `parc review`
+  today_section_limit: 10  # max rows per section in `parc today`
+
 plugins:                 # per-plugin configuration, passed at init
   # my-plugin:
   #   setting: value
@@ -87,6 +92,23 @@ JSON-RPC server defaults. See [JSON-RPC server]({{ '/json-rpc/' | url }}).
 server:
   transport: socket
   socket_path: /tmp/parc.sock
+```
+
+### `resurfacing`
+
+Defaults for the resurfacing commands ([CLI reference]({{ '/cli/resurfacing/' | url }})).
+
+| Field | Type | Default | Effect |
+|-------|------|---------|--------|
+| `stale_days` | integer | `30` | Cutoff used by `parc stale` and the *stale todos* section of `parc review` |
+| `review_window` | string | `this-week` | Default `--since` window for `parc review`. Any [date shorthand]({{ '/search-dsl/' | url }}#date-shorthands) or absolute date works |
+| `today_section_limit` | integer | `10` | Maximum rows per section in `parc today` |
+
+```yaml
+resurfacing:
+  stale_days: 14
+  review_window: 14-days-ago
+  today_section_limit: 5
 ```
 
 ### `plugins`

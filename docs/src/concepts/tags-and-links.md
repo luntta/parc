@@ -44,14 +44,22 @@ parc tags        # show every tag and its usage count
 
 ## Links
 
-Links are wiki-style references between fragments using ID prefixes.
+Links are wiki-style references between fragments. The target inside `[[ ]]` can be either an **ID prefix** or a **fragment title** — parc resolves whichever matches.
 
 ```markdown
 Related: [[01JQ7V4Y]]
 See also: [[01JQ7V4Y|the auth service refactor]]
+By title: [[Auth refactor]]
+Title prefix is fine too: [[Auth refac]]
 ```
 
-The first form renders the linked fragment's title at display time. The second uses your label.
+Resolution order:
+
+1. ULID prefix (4+ characters of `0-9A-Z`) — e.g. `[[01JQ7V4Y]]`
+2. Exact title match, case-insensitive — e.g. `[[auth refactor]]`
+3. Unique title prefix — e.g. `[[Auth ref]]`
+
+If a target is ambiguous (matches more than one fragment), parc records the link as unresolved and surfaces it in `parc doctor`. The first form renders the target's title at display time; the `[[target|label]]` form uses your label.
 
 ### Bidirectional at query time
 

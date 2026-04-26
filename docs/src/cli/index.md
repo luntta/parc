@@ -10,8 +10,9 @@ The `parc` command is the primary way to interact with a vault. It speaks JSON w
 
 | Group | Commands |
 |-------|----------|
-| [Fragments]({{ '/cli/fragments/' | url }}) | `new`, `list`, `show`, `edit`, `set`, `delete` |
+| [Fragments]({{ '/cli/fragments/' | url }}) | `+` / `capture`, `new`, `promote`, `list`, `show`, `edit`, `set`, `delete` |
 | [Search]({{ '/cli/search/' | url }}) | `search` |
+| [Resurfacing]({{ '/cli/resurfacing/' | url }}) | `today`, `due`, `stale`, `random`, `review` |
 | [Links]({{ '/cli/links/' | url }}) | `link`, `unlink`, `backlinks` |
 | [Attachments]({{ '/cli/attachments/' | url }}) | `attach`, `detach`, `attachments` |
 | [History]({{ '/cli/history/' | url }}) | `history` |
@@ -19,6 +20,7 @@ The `parc` command is the primary way to interact with a vault. It speaks JSON w
 | [Export & import]({{ '/cli/export-import/' | url }}) | `export`, `import` |
 | [Vault management]({{ '/cli/vault/' | url }}) | `init`, `vault` |
 | [Maintenance]({{ '/cli/maintenance/' | url }}) | `reindex`, `doctor`, `git-hooks`, `types`, `schema`, `completions` |
+| [Terminal UI]({{ '/cli/tui/' | url }}) | `tui` (also: bare `parc` in a TTY) |
 
 A few commands are also dispatched through this CLI but live in their own pages:
 

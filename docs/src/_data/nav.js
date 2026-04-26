@@ -18,6 +18,7 @@ export default [
   { url: "/cli/", title: "Overview" },
   { url: "/cli/fragments/", title: "Fragments" },
   { url: "/cli/search/", title: "Search" },
+  { url: "/cli/resurfacing/", title: "Resurfacing" },
   { url: "/cli/links/", title: "Links" },
   { url: "/cli/attachments/", title: "Attachments" },
   { url: "/cli/history/", title: "History" },
@@ -25,6 +26,7 @@ export default [
   { url: "/cli/export-import/", title: "Export & import" },
   { url: "/cli/vault/", title: "Vault management" },
   { url: "/cli/maintenance/", title: "Maintenance" },
+  { url: "/cli/tui/", title: "Terminal UI" },
 
   // Reference
   { section: "Reference" },
