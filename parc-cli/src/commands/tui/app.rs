@@ -262,15 +262,14 @@ fn handle_normal(
             }
         }
 
-        (KeyCode::Down, _) | (KeyCode::Char('j'), _) if !ctrl => match app.focus {
+        (KeyCode::Down, _) => match app.focus {
             Focus::List => app.move_list(1),
             Focus::Detail => app.scroll_detail(1),
         },
-        (KeyCode::Up, _) | (KeyCode::Char('k'), _) if !ctrl => match app.focus {
+        (KeyCode::Up, _) => match app.focus {
             Focus::List => app.move_list(-1),
             Focus::Detail => app.scroll_detail(-1),
         },
-
         (KeyCode::PageDown, _) => match app.focus {
             Focus::List => app.move_list(PAGE_LINES as i32),
             Focus::Detail => app.scroll_detail(PAGE_LINES as i32),
@@ -286,23 +285,6 @@ fn handle_normal(
         (KeyCode::Char('u'), _) if ctrl => match app.focus {
             Focus::List => app.move_list(-(HALF_PAGE_LINES as i32)),
             Focus::Detail => app.scroll_detail(-(HALF_PAGE_LINES as i32)),
-        },
-        (KeyCode::Char('g'), _) if plain && app.tab != Tab::Search => match app.focus {
-            Focus::List => app.select(if app.rows.is_empty() { None } else { Some(0) }),
-            Focus::Detail => {
-                app.detail_scroll = 0;
-                app.dirty = true;
-            }
-        },
-        (KeyCode::Char('G'), _) if app.tab != Tab::Search => match app.focus {
-            Focus::List => {
-                let last = app.rows.len().saturating_sub(1);
-                app.select(if app.rows.is_empty() { None } else { Some(last) });
-            }
-            Focus::Detail => {
-                app.detail_scroll = app.detail_max_scroll;
-                app.dirty = true;
-            }
         },
         (KeyCode::Home, _) => match app.focus {
             Focus::List => app.select(if app.rows.is_empty() { None } else { Some(0) }),

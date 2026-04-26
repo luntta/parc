@@ -245,7 +245,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, status: &str, focus: Focus) {
         Focus::Detail => "[detail]",
     };
     let base = format!(
-        "{} 1-4 tabs  S-tab focus  j/k  e edit  t toggle  p promote  a archive  d delete  y yank  ? help  q quit",
+        "{} 1-4 tabs  S-tab focus  arrows move  e edit  t toggle  p promote  a archive  d delete  y yank  ? help  q quit",
         focus_label
     );
     let text = if status.is_empty() {
@@ -271,10 +271,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  Tab         cycle tabs"),
         Line::from("  Shift-Tab   toggle pane focus (list / detail)"),
         Line::from("  /           jump to search"),
-        Line::from("  j/k  ↓/↑    move within focused pane"),
-        Line::from("  g / G       top / bottom of focused pane"),
+        Line::from("  ↓ / ↑       move within focused pane"),
+        Line::from("  PgDn/PgUp   page within focused pane"),
+        Line::from("  Home / End  top / bottom of focused pane"),
         Line::from("  Ctrl-d/u    half-page scroll"),
-        Line::from("  PgDn/PgUp   full-page scroll"),
         Line::from(""),
         Line::from("Actions on selected fragment"),
         Line::from("  e           edit in $EDITOR"),
