@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use parc_core::config::Config;
+use parc_core::search::{parse_query, TextTerm};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -11,6 +12,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use super::app::App;
+use super::highlight;
 use super::markdown;
 use super::{Focus, Mode, Row, Tab};
 
@@ -142,40 +144,13 @@ fn format_row(row: &Row, id_len: usize) -> Line<'static> {
     };
 
     let mut spans = vec![Span::raw(prefix)];
-    spans.extend(highlighted_title(&row.title, &row.title_match_indices));
+    spans.extend(highlight::spans_for_text(
+        &row.title,
+        Style::default(),
+        &row.title_match_indices,
+        &[],
+    ));
     Line::from(spans)
-}
-
-fn highlighted_title(title: &str, indices: &[u32]) -> Vec<Span<'static>> {
-    if indices.is_empty() {
-        return vec![Span::raw(title.to_string())];
-    }
-
-    let highlight_style = Style::default().fg(ACTIVE_TAB).add_modifier(Modifier::BOLD);
-    let mut spans = Vec::new();
-    let mut plain = String::new();
-    let mut idx_iter = indices.iter().copied().peekable();
-
-    for (i, ch) in title.chars().enumerate() {
-        while idx_iter.peek().map_or(false, |&idx| (idx as usize) < i) {
-            idx_iter.next();
-        }
-        let is_match = idx_iter.peek() == Some(&(i as u32));
-        if is_match {
-            if !plain.is_empty() {
-                spans.push(Span::raw(std::mem::take(&mut plain)));
-            }
-            spans.push(Span::styled(ch.to_string(), highlight_style));
-            idx_iter.next();
-        } else {
-            plain.push(ch);
-        }
-    }
-
-    if !plain.is_empty() {
-        spans.push(Span::raw(plain));
-    }
-    spans
 }
 
 fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
@@ -189,12 +164,12 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         .border_style(Style::default().fg(border_color))
         .title(" detail ");
 
-    let row_id = app
+    let selected_row = app
         .list_state
         .selected()
         .and_then(|i| app.rows.get(i))
-        .map(|r| r.id.clone());
-    let Some(id) = row_id else {
+        .cloned();
+    let Some(row) = selected_row else {
         let paragraph = Paragraph::new(Line::from(Span::styled(
             "No selection",
             Style::default().fg(MUTED_TEXT),
@@ -204,14 +179,27 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         app.detail_max_scroll = 0;
         return;
     };
+    let id = row.id.clone();
+    let search_terms = if app.tab == Tab::Search {
+        parsed_search_terms(&app.search_input)
+    } else {
+        Vec::new()
+    };
+    let title_match_indices = if app.tab == Tab::Search {
+        row.title_match_indices.as_slice()
+    } else {
+        &[]
+    };
 
     let lines = match app.cache.get_or_load(vault, &id) {
         Ok(fragment) => {
             let muted = Style::default().fg(MUTED_TEXT);
             let mut lines: Vec<Line> = Vec::new();
-            lines.push(Line::from(Span::styled(
-                fragment.title.clone(),
+            lines.push(Line::from(highlight::spans_for_text(
+                &fragment.title,
                 Style::default().add_modifier(Modifier::BOLD),
+                title_match_indices,
+                &search_terms,
             )));
             lines.push(Line::from(Span::styled(
                 format!("ID: {}", fragment.id),
@@ -233,7 +221,14 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
                 }
             }
             lines.push(Line::from(""));
-            lines.extend(markdown::render_body(&fragment.body));
+            if app.tab == Tab::Search {
+                lines.extend(markdown::render_body_highlighted(
+                    &fragment.body,
+                    &search_terms,
+                ));
+            } else {
+                lines.extend(markdown::render_body(&fragment.body));
+            }
             lines
         }
         Err(err) => vec![Line::from(Span::styled(
@@ -264,6 +259,20 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
             .position(app.detail_scroll as usize);
         frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
     }
+}
+
+fn parsed_search_terms(search_input: &str) -> Vec<String> {
+    parse_query(search_input)
+        .map(|query| {
+            query
+                .text_terms
+                .into_iter()
+                .filter_map(|term| match term {
+                    TextTerm::Word(word) | TextTerm::Phrase(word) => Some(word),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, status: &str, focus: Focus) {

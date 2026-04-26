@@ -15,6 +15,7 @@ mod actions;
 mod app;
 mod cache;
 mod data;
+mod highlight;
 mod markdown;
 mod ui;
 

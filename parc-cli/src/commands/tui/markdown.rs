@@ -3,6 +3,8 @@ use comrak::{parse_document, Arena, Options};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use super::highlight;
+
 const HEADING_COLOR: Color = Color::Cyan;
 const CODE_COLOR: Color = Color::Yellow;
 const INLINE_CODE_COLOR: Color = Color::Magenta;
@@ -11,11 +13,19 @@ const QUOTE_COLOR: Color = Color::DarkGray;
 const RULE_COLOR: Color = Color::DarkGray;
 
 pub(super) fn render_body(body: &str) -> Vec<Line<'static>> {
+    render_body_inner(body, &[])
+}
+
+pub(super) fn render_body_highlighted(body: &str, search_terms: &[String]) -> Vec<Line<'static>> {
+    render_body_inner(body, search_terms)
+}
+
+fn render_body_inner(body: &str, search_terms: &[String]) -> Vec<Line<'static>> {
     let arena = Arena::new();
     let root = parse_document(&arena, body, &Options::default());
     let mut lines: Vec<Line<'static>> = Vec::new();
     for child in root.children() {
-        render_block(child, &mut lines, 0);
+        render_block(child, &mut lines, 0, search_terms);
     }
     while matches!(lines.last(), Some(line) if line_is_empty(line)) {
         lines.pop();
@@ -27,16 +37,21 @@ fn line_is_empty(line: &Line<'_>) -> bool {
     line.spans.iter().all(|s| s.content.trim().is_empty())
 }
 
-fn render_block<'a>(node: &'a AstNode<'a>, out: &mut Vec<Line<'static>>, indent: usize) {
+fn render_block<'a>(
+    node: &'a AstNode<'a>,
+    out: &mut Vec<Line<'static>>,
+    indent: usize,
+    search_terms: &[String],
+) {
     let data = node.data.borrow();
     match &data.value {
         NodeValue::Document => {
             for child in node.children() {
-                render_block(child, out, indent);
+                render_block(child, out, indent, search_terms);
             }
         }
         NodeValue::Paragraph => {
-            let spans = inline_spans(node, Style::default());
+            let spans = inline_spans(node, Style::default(), search_terms);
             push_with_indent(out, spans, indent);
             out.push(Line::raw(""));
         }
@@ -48,20 +63,20 @@ fn render_block<'a>(node: &'a AstNode<'a>, out: &mut Vec<Line<'static>>, indent:
                 format!("{} ", "#".repeat(h.level as usize)),
                 style,
             )];
-            spans.extend(inline_spans(node, style));
+            spans.extend(inline_spans(node, style, search_terms));
             push_with_indent(out, spans, indent);
             out.push(Line::raw(""));
         }
         NodeValue::List(_) => {
             for item in node.children() {
-                render_list_item(item, out, indent);
+                render_list_item(item, out, indent, search_terms);
             }
             if indent == 0 {
                 out.push(Line::raw(""));
             }
         }
         NodeValue::Item(_) => {
-            render_list_item(node, out, indent);
+            render_list_item(node, out, indent, search_terms);
         }
         NodeValue::CodeBlock(b) => {
             let style = Style::default().fg(CODE_COLOR);
@@ -78,7 +93,7 @@ fn render_block<'a>(node: &'a AstNode<'a>, out: &mut Vec<Line<'static>>, indent:
         NodeValue::BlockQuote => {
             let mut nested: Vec<Line<'static>> = Vec::new();
             for child in node.children() {
-                render_block(child, &mut nested, 0);
+                render_block(child, &mut nested, 0, search_terms);
             }
             for line in nested {
                 let mut spans = vec![Span::styled("│ ", Style::default().fg(QUOTE_COLOR))];
@@ -101,19 +116,24 @@ fn render_block<'a>(node: &'a AstNode<'a>, out: &mut Vec<Line<'static>>, indent:
         }
         _ => {
             for child in node.children() {
-                render_block(child, out, indent);
+                render_block(child, out, indent, search_terms);
             }
         }
     }
 }
 
-fn render_list_item<'a>(node: &'a AstNode<'a>, out: &mut Vec<Line<'static>>, indent: usize) {
+fn render_list_item<'a>(
+    node: &'a AstNode<'a>,
+    out: &mut Vec<Line<'static>>,
+    indent: usize,
+    search_terms: &[String],
+) {
     let mut first = true;
     for child in node.children() {
         let data = child.data.borrow();
         match &data.value {
             NodeValue::Paragraph => {
-                let spans = inline_spans(child, Style::default());
+                let spans = inline_spans(child, Style::default(), search_terms);
                 let mut line_spans: Vec<Span<'static>> = Vec::new();
                 if indent > 0 {
                     line_spans.push(Span::raw(" ".repeat(indent)));
@@ -129,46 +149,55 @@ fn render_list_item<'a>(node: &'a AstNode<'a>, out: &mut Vec<Line<'static>>, ind
             }
             NodeValue::List(_) => {
                 for nested in child.children() {
-                    render_list_item(nested, out, indent + 2);
+                    render_list_item(nested, out, indent + 2, search_terms);
                 }
             }
             _ => {
-                render_block(child, out, indent + 2);
+                render_block(child, out, indent + 2, search_terms);
             }
         }
     }
 }
 
-fn inline_spans<'a>(node: &'a AstNode<'a>, base: Style) -> Vec<Span<'static>> {
+fn inline_spans<'a>(
+    node: &'a AstNode<'a>,
+    base: Style,
+    search_terms: &[String],
+) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     for child in node.children() {
-        collect_inline(child, base, &mut out);
+        collect_inline(child, base, search_terms, &mut out);
     }
     out
 }
 
-fn collect_inline<'a>(node: &'a AstNode<'a>, style: Style, out: &mut Vec<Span<'static>>) {
+fn collect_inline<'a>(
+    node: &'a AstNode<'a>,
+    style: Style,
+    search_terms: &[String],
+    out: &mut Vec<Span<'static>>,
+) {
     let data = node.data.borrow();
     match &data.value {
         NodeValue::Text(text) => {
-            push_text_with_wikilinks(text, style, out);
+            push_text_with_wikilinks(text, style, search_terms, out);
         }
         NodeValue::Strong => {
             let s = style.add_modifier(Modifier::BOLD);
             for child in node.children() {
-                collect_inline(child, s, out);
+                collect_inline(child, s, search_terms, out);
             }
         }
         NodeValue::Emph => {
             let s = style.add_modifier(Modifier::ITALIC);
             for child in node.children() {
-                collect_inline(child, s, out);
+                collect_inline(child, s, search_terms, out);
             }
         }
         NodeValue::Strikethrough => {
             let s = style.add_modifier(Modifier::CROSSED_OUT);
             for child in node.children() {
-                collect_inline(child, s, out);
+                collect_inline(child, s, search_terms, out);
             }
         }
         NodeValue::Code(c) => {
@@ -182,7 +211,7 @@ fn collect_inline<'a>(node: &'a AstNode<'a>, style: Style, out: &mut Vec<Span<'s
                 .fg(LINK_COLOR)
                 .add_modifier(Modifier::UNDERLINED);
             for child in node.children() {
-                collect_inline(child, s, out);
+                collect_inline(child, s, search_terms, out);
             }
         }
         NodeValue::SoftBreak | NodeValue::LineBreak => {
@@ -190,14 +219,19 @@ fn collect_inline<'a>(node: &'a AstNode<'a>, style: Style, out: &mut Vec<Span<'s
         }
         _ => {
             for child in node.children() {
-                collect_inline(child, style, out);
+                collect_inline(child, style, search_terms, out);
             }
         }
     }
 }
 
 /// Splits a Text node by `[[...]]` wiki-link occurrences and emits styled spans.
-fn push_text_with_wikilinks(text: &str, style: Style, out: &mut Vec<Span<'static>>) {
+fn push_text_with_wikilinks(
+    text: &str,
+    style: Style,
+    search_terms: &[String],
+    out: &mut Vec<Span<'static>>,
+) {
     let link_style = Style::default()
         .fg(LINK_COLOR)
         .add_modifier(Modifier::UNDERLINED);
@@ -211,9 +245,19 @@ fn push_text_with_wikilinks(text: &str, style: Style, out: &mut Vec<Span<'static
             while j + 1 < bytes.len() {
                 if bytes[j] == b']' && bytes[j + 1] == b']' {
                     if i > last {
-                        out.push(Span::styled(text[last..i].to_string(), style));
+                        out.extend(highlight::spans_for_text(
+                            &text[last..i],
+                            style,
+                            &[],
+                            search_terms,
+                        ));
                     }
-                    out.push(Span::styled(text[i..j + 2].to_string(), link_style));
+                    out.extend(highlight::spans_for_text(
+                        &text[i..j + 2],
+                        link_style,
+                        &[],
+                        search_terms,
+                    ));
                     last = j + 2;
                     i = last;
                     found = true;
@@ -229,7 +273,12 @@ fn push_text_with_wikilinks(text: &str, style: Style, out: &mut Vec<Span<'static
         i += 1;
     }
     if last < text.len() {
-        out.push(Span::styled(text[last..].to_string(), style));
+        out.extend(highlight::spans_for_text(
+            &text[last..],
+            style,
+            &[],
+            search_terms,
+        ));
     }
 }
 
@@ -245,7 +294,7 @@ fn push_with_indent(out: &mut Vec<Line<'static>>, spans: Vec<Span<'static>>, ind
 
 #[cfg(test)]
 mod tests {
-    use super::render_body;
+    use super::{render_body, render_body_highlighted};
 
     #[test]
     fn renders_heading_and_paragraph() {
@@ -280,5 +329,16 @@ mod tests {
             .join("");
         assert!(joined.contains("• one"));
         assert!(joined.contains("• two"));
+    }
+
+    #[test]
+    fn highlights_search_terms_in_body_text() {
+        let lines = render_body_highlighted("hello world", &[String::from("world")]);
+        let spans: Vec<&str> = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(spans.iter().any(|span| *span == "world"));
     }
 }
