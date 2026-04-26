@@ -51,6 +51,21 @@ impl Tab {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Focus {
+    List,
+    Detail,
+}
+
+impl Focus {
+    pub(crate) fn toggle(self) -> Self {
+        match self {
+            Focus::List => Focus::Detail,
+            Focus::Detail => Focus::List,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Row {
     pub id: String,
