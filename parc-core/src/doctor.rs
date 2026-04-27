@@ -288,27 +288,57 @@ fn dir_size(path: &Path) -> u64 {
 /// Check plugin manifests for issues.
 pub fn check_plugins(vault: &Path) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
+    let plugins_dir = vault.join("plugins");
 
-    let discovered = match crate::plugin::discover_plugins(vault) {
-        Ok(d) => d,
+    let entries = match std::fs::read_dir(&plugins_dir) {
+        Ok(entries) => entries,
         Err(_) => return findings,
     };
 
-    for disc in &discovered {
-        // Check manifest validity
-        if let Err(e) = crate::plugin::validate_manifest(&disc.manifest, vault) {
-            findings.push(DoctorFinding::PluginIssue {
-                plugin_name: disc.manifest.plugin.name.clone(),
-                detail: e.to_string(),
-            });
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
             continue;
         }
+        let fallback_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
 
-        // Check wasm file exists
-        if !disc.wasm_path.exists() {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                findings.push(DoctorFinding::PluginIssue {
+                    plugin_name: fallback_name,
+                    detail: "manifest is a symlink".to_string(),
+                });
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                findings.push(DoctorFinding::PluginIssue {
+                    plugin_name: fallback_name,
+                    detail: format!("failed to inspect manifest: {}", e),
+                });
+                continue;
+            }
+        }
+
+        let manifest = match crate::plugin::load_manifest(&path) {
+            Ok(manifest) => manifest,
+            Err(e) => {
+                findings.push(DoctorFinding::PluginIssue {
+                    plugin_name: fallback_name,
+                    detail: e.to_string(),
+                });
+                continue;
+            }
+        };
+
+        if let Err(e) = crate::plugin::validate_manifest(&manifest, vault) {
             findings.push(DoctorFinding::PluginIssue {
-                plugin_name: disc.manifest.plugin.name.clone(),
-                detail: format!("wasm file not found: {}", disc.wasm_path.display()),
+                plugin_name: manifest.plugin.name,
+                detail: e.to_string(),
             });
         }
     }

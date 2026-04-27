@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use parc_core::plugin;
+use parc_core::secure_fs;
 
 pub fn run_list(vault: &Path, json: bool) -> Result<()> {
     let discovered = plugin::discover_plugins(vault)?;
@@ -130,16 +131,21 @@ pub fn run_install(vault: &Path, wasm_path: &str, manifest_path: Option<&str>) -
 
     // Parse and validate manifest
     let manifest = plugin::load_manifest(&manifest_src)?;
+    plugin::validate_manifest_metadata(&manifest)?;
 
     let plugins_dir = vault.join("plugins");
-    std::fs::create_dir_all(&plugins_dir)?;
+    secure_fs::create_private_dir_all(&plugins_dir)?;
 
     // Copy files
-    let dest_wasm = plugins_dir.join(&manifest.plugin.wasm);
-    let dest_manifest = plugins_dir.join(format!("{}.toml", manifest.plugin.name));
+    let dest_wasm = plugin::resolve_plugin_wasm_path(&manifest, &plugins_dir)?;
+    let dest_manifest = plugins_dir.join(plugin::plugin_manifest_filename(&manifest.plugin.name)?);
 
-    std::fs::copy(wasm_src, &dest_wasm)?;
-    std::fs::copy(&manifest_src, &dest_manifest)?;
+    if dest_wasm.exists() || dest_manifest.exists() {
+        anyhow::bail!("plugin '{}' is already installed", manifest.plugin.name);
+    }
+
+    secure_fs::copy_private_new(wasm_src, &dest_wasm)?;
+    secure_fs::copy_private_new(&manifest_src, &dest_manifest)?;
 
     // Validate the installed plugin
     if let Err(e) = plugin::validate_manifest(&manifest, vault) {

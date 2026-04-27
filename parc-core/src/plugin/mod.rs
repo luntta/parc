@@ -11,6 +11,9 @@ use serde::Deserialize;
 
 use crate::error::ParcError;
 
+const MAX_PLUGIN_NAME_LEN: usize = 64;
+const MAX_PLUGIN_CAPABILITY_NAME_LEN: usize = 64;
+
 /// Plugin manifest parsed from a TOML file alongside the .wasm binary.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PluginManifest {
@@ -99,16 +102,31 @@ pub fn discover_plugins(vault: &Path) -> Result<Vec<DiscoveredPlugin>, ParcError
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            if is_symlink(&path)? {
+                eprintln!(
+                    "Warning: skipping symlinked plugin manifest {}",
+                    path.display()
+                );
+                continue;
+            }
             match load_manifest(&path) {
-                Ok(manifest) => {
-                    let dir = path.parent().unwrap_or(&plugins_dir);
-                    let wasm_path = dir.join(&manifest.plugin.wasm);
-                    discovered.push(DiscoveredPlugin {
-                        manifest,
-                        manifest_path: path,
-                        wasm_path,
-                    });
-                }
+                Ok(manifest) => match validate_manifest(&manifest, vault) {
+                    Ok(()) => {
+                        let wasm_path = resolve_plugin_wasm_path(&manifest, &plugins_dir)?;
+                        discovered.push(DiscoveredPlugin {
+                            manifest,
+                            manifest_path: path,
+                            wasm_path,
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: skipping invalid plugin manifest {}: {}",
+                            path.display(),
+                            e
+                        );
+                    }
+                },
                 Err(e) => {
                     eprintln!(
                         "Warning: skipping plugin manifest {}: {}",
@@ -123,20 +141,32 @@ pub fn discover_plugins(vault: &Path) -> Result<Vec<DiscoveredPlugin>, ParcError
     Ok(discovered)
 }
 
-/// Validate a manifest: name non-empty, wasm file exists, hook names valid.
+/// Validate a manifest: safe identifiers, wasm file exists, hook names valid.
 pub fn validate_manifest(manifest: &PluginManifest, vault: &Path) -> Result<(), ParcError> {
-    if manifest.plugin.name.is_empty() {
-        return Err(ParcError::PluginError("plugin name cannot be empty".into()));
-    }
+    validate_manifest_metadata(manifest)?;
 
     let plugins_dir = vault.join("plugins");
-    let wasm_path = plugins_dir.join(&manifest.plugin.wasm);
-    if !wasm_path.exists() {
+    let wasm_path = resolve_plugin_wasm_path(manifest, &plugins_dir)?;
+    let metadata = std::fs::symlink_metadata(&wasm_path).map_err(|e| {
+        ParcError::PluginError(format!(
+            "failed to read plugin wasm metadata {}: {}",
+            wasm_path.display(),
+            e
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(ParcError::PluginError(format!(
-            "wasm file not found: {}",
+            "wasm file is not a regular file: {}",
             wasm_path.display()
         )));
     }
+
+    Ok(())
+}
+
+pub fn validate_manifest_metadata(manifest: &PluginManifest) -> Result<(), ParcError> {
+    validate_plugin_name(&manifest.plugin.name)?;
+    validate_wasm_filename(&manifest.plugin.wasm)?;
 
     let valid_hooks = [
         "pre-create",
@@ -156,7 +186,112 @@ pub fn validate_manifest(manifest: &PluginManifest, vault: &Path) -> Result<(), 
         }
     }
 
+    for cmd in &manifest.capabilities.extend_cli {
+        validate_capability_name(cmd, "CLI command")?;
+    }
+    for type_name in &manifest.capabilities.render {
+        validate_capability_filter(type_name, "render")?;
+    }
+    for type_name in &manifest.capabilities.validate {
+        validate_capability_filter(type_name, "validate")?;
+    }
+
     Ok(())
+}
+
+pub fn plugin_manifest_filename(name: &str) -> Result<String, ParcError> {
+    validate_plugin_name(name)?;
+    Ok(format!("{}.toml", name))
+}
+
+pub fn resolve_plugin_wasm_path(
+    manifest: &PluginManifest,
+    plugins_dir: &Path,
+) -> Result<PathBuf, ParcError> {
+    validate_wasm_filename(&manifest.plugin.wasm)?;
+    Ok(plugins_dir.join(&manifest.plugin.wasm))
+}
+
+fn validate_plugin_name(name: &str) -> Result<(), ParcError> {
+    validate_identifier(name, "plugin name", MAX_PLUGIN_NAME_LEN)
+}
+
+fn validate_capability_filter(value: &str, label: &str) -> Result<(), ParcError> {
+    if value == "*" {
+        return Ok(());
+    }
+    validate_capability_name(value, label)
+}
+
+fn validate_capability_name(value: &str, label: &str) -> Result<(), ParcError> {
+    validate_identifier(value, label, MAX_PLUGIN_CAPABILITY_NAME_LEN)
+}
+
+fn validate_identifier(value: &str, label: &str, max_len: usize) -> Result<(), ParcError> {
+    if value.is_empty() || value.len() > max_len {
+        return Err(ParcError::PluginError(format!(
+            "{} must be 1-{} characters",
+            label, max_len
+        )));
+    }
+    let first = value.as_bytes()[0];
+    if !first.is_ascii_alphanumeric() {
+        return Err(ParcError::PluginError(format!(
+            "{} '{}' must start with a letter or digit",
+            label, value
+        )));
+    }
+    if !value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(ParcError::PluginError(format!(
+            "{} '{}' must contain only letters, digits, '_' or '-'",
+            label, value
+        )));
+    }
+    Ok(())
+}
+
+fn validate_wasm_filename(wasm: &str) -> Result<(), ParcError> {
+    if wasm.is_empty() {
+        return Err(ParcError::PluginError(
+            "plugin wasm path cannot be empty".into(),
+        ));
+    }
+    if wasm.contains('/') || wasm.contains('\\') || wasm.contains('\0') {
+        return Err(ParcError::PluginError(format!(
+            "plugin wasm '{}' must be a file name, not a path",
+            wasm
+        )));
+    }
+    let path = Path::new(wasm);
+    if path.file_name().and_then(|n| n.to_str()) != Some(wasm) {
+        return Err(ParcError::PluginError(format!(
+            "invalid plugin wasm file name '{}'",
+            wasm
+        )));
+    }
+    if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
+        return Err(ParcError::PluginError(format!(
+            "plugin wasm '{}' must end with .wasm",
+            wasm
+        )));
+    }
+    Ok(())
+}
+
+fn is_symlink(path: &Path) -> Result<bool, ParcError> {
+    Ok(std::fs::symlink_metadata(path)
+        .map_err(|e| {
+            ParcError::PluginError(format!(
+                "failed to read plugin path metadata {}: {}",
+                path.display(),
+                e
+            ))
+        })?
+        .file_type()
+        .is_symlink())
 }
 
 #[cfg(test)]
@@ -216,10 +351,48 @@ wasm = "test.wasm"
 "#,
         )
         .unwrap();
+        std::fs::write(plugins_dir.join("test.wasm"), b"fake").unwrap();
 
         let plugins = discover_plugins(&vault).unwrap();
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0].manifest.plugin.name, "test");
+    }
+
+    #[test]
+    fn test_validate_manifest_rejects_path_traversal() {
+        let manifest = PluginManifest {
+            plugin: PluginMeta {
+                name: "../evil".into(),
+                version: "0.1.0".into(),
+                description: "".into(),
+                wasm: "../evil.wasm".into(),
+            },
+            capabilities: PluginCapabilities::default(),
+        };
+
+        assert!(validate_manifest_metadata(&manifest).is_err());
+    }
+
+    #[test]
+    fn test_discover_skips_manifest_with_external_wasm_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+
+        let plugins_dir = vault.join("plugins");
+        std::fs::write(
+            plugins_dir.join("bad.toml"),
+            r#"
+[plugin]
+name = "bad"
+version = "0.1.0"
+wasm = "../outside.wasm"
+"#,
+        )
+        .unwrap();
+
+        let plugins = discover_plugins(&vault).unwrap();
+        assert!(plugins.is_empty());
     }
 
     #[test]

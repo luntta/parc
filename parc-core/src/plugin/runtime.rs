@@ -20,6 +20,9 @@ const MAX_PLUGIN_MEMORY_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 /// Hard cap on table size per plugin instance.
 const MAX_PLUGIN_TABLE_ELEMENTS: usize = 100_000;
 
+/// Hard cap on bytes a plugin can return through host output buffers.
+pub const MAX_PLUGIN_OUTPUT_BYTES: usize = 1024 * 1024; // 1 MiB
+
 /// Each guest call gets this many epoch ticks before it is interrupted. The
 /// ticker thread (see `WasmRuntime::new`) increments the epoch every 100ms,
 /// so a deadline of 50 ≈ 5 seconds wall clock.
@@ -52,9 +55,47 @@ impl ResourceLimiter for PluginLimits {
 pub struct PluginState {
     pub manifest: PluginManifest,
     pub output_buffer: Vec<u8>,
+    pub output_truncated: bool,
     pub vault_path: PathBuf,
     pub config_json: String,
     pub limits: PluginLimits,
+}
+
+impl PluginState {
+    pub fn clear_output(&mut self) {
+        self.output_buffer.clear();
+        self.output_truncated = false;
+    }
+
+    pub fn append_output(&mut self, bytes: &[u8]) -> bool {
+        let remaining = MAX_PLUGIN_OUTPUT_BYTES.saturating_sub(self.output_buffer.len());
+        if bytes.len() > remaining {
+            self.output_buffer.extend_from_slice(&bytes[..remaining]);
+            self.output_truncated = true;
+            false
+        } else {
+            self.output_buffer.extend_from_slice(bytes);
+            true
+        }
+    }
+
+    pub fn replace_output(&mut self, bytes: &[u8]) -> Option<i32> {
+        self.clear_output();
+        if !self.append_output(bytes) {
+            return None;
+        }
+        i32::try_from(bytes.len()).ok()
+    }
+
+    pub fn output_string(&self) -> Result<String, ParcError> {
+        if self.output_truncated {
+            return Err(ParcError::PluginError(format!(
+                "plugin output exceeded {} bytes",
+                MAX_PLUGIN_OUTPUT_BYTES
+            )));
+        }
+        Ok(String::from_utf8_lossy(&self.output_buffer).to_string())
+    }
 }
 
 /// Wraps a wasmtime Engine for compiling and loading plugins.
@@ -130,6 +171,7 @@ impl WasmRuntime {
         let state = PluginState {
             manifest: manifest.clone(),
             output_buffer: Vec::new(),
+            output_truncated: false,
             vault_path: vault_path.to_path_buf(),
             config_json: config_json.to_string(),
             limits: PluginLimits,
@@ -187,7 +229,7 @@ impl PluginInstance {
             Err(_) => return Ok(None),
         };
 
-        self.store.data_mut().output_buffer.clear();
+        self.store.data_mut().clear_output();
 
         let (event_ptr, event_len) =
             write_to_guest(&mut self.store, &self.instance, event.as_bytes())?;
@@ -210,7 +252,7 @@ impl PluginInstance {
         if result == 0 {
             Ok(None)
         } else {
-            let output = String::from_utf8_lossy(&self.store.data().output_buffer).to_string();
+            let output = self.store.data().output_string()?;
             if output.is_empty() {
                 Ok(None)
             } else {
@@ -234,7 +276,7 @@ impl PluginInstance {
             }
         };
 
-        self.store.data_mut().output_buffer.clear();
+        self.store.data_mut().clear_output();
 
         let (ptr, len) = write_to_guest(&mut self.store, &self.instance, fragment_json.as_bytes())?;
 
@@ -254,7 +296,7 @@ impl PluginInstance {
                 errors: vec![],
             })
         } else {
-            let output = String::from_utf8_lossy(&self.store.data().output_buffer).to_string();
+            let output = self.store.data().output_string()?;
             let errors: Vec<String> = if output.is_empty() {
                 vec!["validation failed".into()]
             } else {
@@ -277,7 +319,7 @@ impl PluginInstance {
             Err(_) => return Ok(None),
         };
 
-        self.store.data_mut().output_buffer.clear();
+        self.store.data_mut().clear_output();
 
         let (ptr, len) = write_to_guest(&mut self.store, &self.instance, fragment_json.as_bytes())?;
 
@@ -291,7 +333,7 @@ impl PluginInstance {
 
         let _ = free_from_guest(&mut self.store, &self.instance, ptr, len);
 
-        let output = String::from_utf8_lossy(&self.store.data().output_buffer).to_string();
+        let output = self.store.data().output_string()?;
         if output.is_empty() {
             Ok(None)
         } else {
@@ -311,7 +353,7 @@ impl PluginInstance {
                 ))
             })?;
 
-        self.store.data_mut().output_buffer.clear();
+        self.store.data_mut().clear_output();
 
         let (cmd_ptr, cmd_len) = write_to_guest(&mut self.store, &self.instance, cmd.as_bytes())?;
         let (args_ptr, args_len) =
@@ -329,7 +371,7 @@ impl PluginInstance {
         let _ = free_from_guest(&mut self.store, &self.instance, cmd_ptr, cmd_len);
         let _ = free_from_guest(&mut self.store, &self.instance, args_ptr, args_len);
 
-        let output = String::from_utf8_lossy(&self.store.data().output_buffer).to_string();
+        let output = self.store.data().output_string()?;
         Ok(output)
     }
 }

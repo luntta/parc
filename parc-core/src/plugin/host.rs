@@ -38,7 +38,7 @@ pub fn register_host_functions(linker: &mut Linker<PluginState>) -> Result<(), P
                     None => return,
                 };
                 let bytes = data[range].to_vec();
-                caller.data_mut().output_buffer.extend_from_slice(&bytes);
+                caller.data_mut().append_output(&bytes);
             },
         )
         .map_err(|e| ParcError::PluginError(format!("failed to link parc_host_output: {}", e)))?;
@@ -98,10 +98,7 @@ pub fn register_host_functions(linker: &mut Linker<PluginState>) -> Result<(), P
                     Ok(frag) => match serde_json::to_string(&frag) {
                         Ok(json) => {
                             let bytes = json.as_bytes();
-                            let len = bytes.len() as i32;
-                            caller.data_mut().output_buffer.clear();
-                            caller.data_mut().output_buffer.extend_from_slice(bytes);
-                            len
+                            caller.data_mut().replace_output(bytes).unwrap_or(-1)
                         }
                         Err(_) => -1,
                     },
@@ -145,10 +142,7 @@ pub fn register_host_functions(linker: &mut Linker<PluginState>) -> Result<(), P
                         Ok(results) => match serde_json::to_string(&results) {
                             Ok(json) => {
                                 let bytes = json.as_bytes();
-                                let len = bytes.len() as i32;
-                                caller.data_mut().output_buffer.clear();
-                                caller.data_mut().output_buffer.extend_from_slice(bytes);
-                                len
+                                caller.data_mut().replace_output(bytes).unwrap_or(-1)
                             }
                             Err(_) => -1,
                         },
@@ -177,10 +171,7 @@ pub fn register_host_functions(linker: &mut Linker<PluginState>) -> Result<(), P
                     Ok(ids) => match serde_json::to_string(&ids) {
                         Ok(json) => {
                             let bytes = json.as_bytes();
-                            let len = bytes.len() as i32;
-                            caller.data_mut().output_buffer.clear();
-                            caller.data_mut().output_buffer.extend_from_slice(bytes);
-                            len
+                            caller.data_mut().replace_output(bytes).unwrap_or(-1)
                         }
                         Err(_) => -1,
                     },
@@ -218,10 +209,7 @@ pub fn register_host_functions(linker: &mut Linker<PluginState>) -> Result<(), P
                     Ok(frag) => match crate::fragment::create_fragment(&vault_path, &frag) {
                         Ok(id) => {
                             let id_bytes = id.as_bytes();
-                            let len = id_bytes.len() as i32;
-                            caller.data_mut().output_buffer.clear();
-                            caller.data_mut().output_buffer.extend_from_slice(id_bytes);
-                            len
+                            caller.data_mut().replace_output(id_bytes).unwrap_or(-1)
                         }
                         Err(_) => -1,
                     },
@@ -259,10 +247,7 @@ pub fn register_host_functions(linker: &mut Linker<PluginState>) -> Result<(), P
                     Ok(frag) => match crate::fragment::write_fragment(&vault_path, &frag) {
                         Ok(()) => {
                             let id_bytes = frag.id.as_bytes();
-                            let len = id_bytes.len() as i32;
-                            caller.data_mut().output_buffer.clear();
-                            caller.data_mut().output_buffer.extend_from_slice(id_bytes);
-                            len
+                            caller.data_mut().replace_output(id_bytes).unwrap_or(-1)
                         }
                         Err(_) => -1,
                     },
