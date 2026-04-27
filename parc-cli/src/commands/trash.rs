@@ -191,3 +191,24 @@ fn run_restore(vault: &Path, id: &str, json: bool) -> Result<()> {
 
     anyhow::bail!("fragment '{}' not found in trash", id);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_skips_invalid_trash_stems() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        parc_core::vault::init_vault(&vault).unwrap();
+
+        let invalid = vault.join("trash").join("01BAD.md");
+        parc_core::secure_fs::write_private(&invalid, "---\nid: 01BAD\ntype: note\n---\n").unwrap();
+
+        let result = run_restore(&vault, "01", false);
+
+        assert!(result.is_err());
+        assert!(invalid.exists());
+        assert!(!vault.join("fragments").join("01BAD.md").exists());
+    }
+}
