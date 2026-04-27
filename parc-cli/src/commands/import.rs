@@ -4,6 +4,8 @@ use anyhow::Result;
 use parc_core::import::{self, ImportStatus};
 use parc_core::index;
 
+use crate::render::sanitize_terminal_text;
+
 pub fn run(vault: &Path, file: &str, dry_run: bool, json: bool) -> Result<()> {
     let content = std::fs::read_to_string(file)?;
     let results = import::import_json(vault, &content, dry_run)?;
@@ -63,14 +65,24 @@ pub fn run(vault: &Path, file: &str, dry_run: bool, json: bool) -> Result<()> {
                         "{}Created {} \"{}\"",
                         prefix,
                         &r.id[..8.min(r.id.len())],
-                        r.title
+                        sanitize_terminal_text(&r.title)
                     );
                 }
                 ImportStatus::Skipped(reason) => {
-                    println!("{}Skipped \"{}\": {}", prefix, r.title, reason);
+                    println!(
+                        "{}Skipped \"{}\": {}",
+                        prefix,
+                        sanitize_terminal_text(&r.title),
+                        sanitize_terminal_text(reason)
+                    );
                 }
                 ImportStatus::Error(err) => {
-                    println!("{}Error \"{}\": {}", prefix, r.title, err);
+                    println!(
+                        "{}Error \"{}\": {}",
+                        prefix,
+                        sanitize_terminal_text(&r.title),
+                        sanitize_terminal_text(err)
+                    );
                 }
             }
         }

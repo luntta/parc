@@ -5,6 +5,8 @@ use parc_core::attachment;
 use parc_core::fragment;
 use parc_core::index;
 
+use crate::render::sanitize_terminal_text;
+
 pub fn run_attach(vault: &Path, id: &str, file: &Path, mv: bool, json: bool) -> Result<()> {
     let full_id = fragment::resolve_id(vault, id)?;
     let filename = attachment::attach_file(vault, &full_id, file, mv)?;
@@ -24,7 +26,7 @@ pub fn run_attach(vault: &Path, id: &str, file: &Path, mv: bool, json: bool) -> 
     } else {
         println!(
             "Attached '{}' to {}",
-            filename,
+            sanitize_terminal_text(&filename),
             &full_id[..8.min(full_id.len())]
         );
     }
@@ -50,7 +52,7 @@ pub fn run_detach(vault: &Path, id: &str, filename: &str, json: bool) -> Result<
     } else {
         println!(
             "Detached '{}' from {}",
-            filename,
+            sanitize_terminal_text(filename),
             &full_id[..8.min(full_id.len())]
         );
     }
@@ -81,7 +83,7 @@ pub fn run_attachments(vault: &Path, id: &str, json: bool) -> Result<()> {
         println!("{:<30}  {:>8}", "FILENAME", "SIZE");
         for a in &attachments {
             let size = format_size(a.size);
-            println!("{:<30}  {:>8}", a.filename, size);
+            println!("{:<30}  {:>8}", sanitize_terminal_text(&a.filename), size);
         }
     }
 

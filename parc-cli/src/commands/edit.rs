@@ -12,6 +12,7 @@ use parc_core::schema::load_schemas;
 use parc_core::secure_fs;
 
 use crate::hooks::CliHookRunner;
+use crate::render::sanitize_terminal_text;
 
 pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     let config = load_config(vault)?;
@@ -34,7 +35,7 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
 
     loop {
         if let Some(ref err) = last_error {
-            eprintln!("Validation error: {}", err);
+            eprintln!("Validation error: {}", sanitize_terminal_text(err));
             eprintln!("Re-opening editor. Save empty file to abort.");
         }
 

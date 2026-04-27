@@ -5,6 +5,8 @@ use parc_core::fragment;
 use parc_core::history;
 use parc_core::index;
 
+use crate::render::sanitize_terminal_text;
+
 pub fn run(
     vault: &Path,
     id: &str,
@@ -52,11 +54,11 @@ pub fn run(
             println!("{}", serde_json::to_string_pretty(&json_val)?);
         } else {
             let skin = termimad::MadSkin::default();
-            println!("--- Version {} ---", timestamp);
-            println!("Title: {}", version.title);
+            println!("--- Version {} ---", sanitize_terminal_text(&timestamp));
+            println!("Title: {}", sanitize_terminal_text(&version.title));
             println!();
             if !version.body.is_empty() {
-                skin.print_text(&version.body);
+                skin.print_text(&sanitize_terminal_text(&version.body));
             }
         }
         return Ok(());
@@ -76,14 +78,15 @@ pub fn run(
         } else {
             // Print with color
             for line in diff_output.lines() {
-                if line.starts_with('+') && !line.starts_with("+++") {
-                    println!("\x1b[32m{}\x1b[0m", line);
-                } else if line.starts_with('-') && !line.starts_with("---") {
-                    println!("\x1b[31m{}\x1b[0m", line);
-                } else if line.starts_with("@@") {
-                    println!("\x1b[36m{}\x1b[0m", line);
+                let safe_line = sanitize_terminal_text(line);
+                if safe_line.starts_with('+') && !safe_line.starts_with("+++") {
+                    println!("\x1b[32m{}\x1b[0m", safe_line);
+                } else if safe_line.starts_with('-') && !safe_line.starts_with("---") {
+                    println!("\x1b[31m{}\x1b[0m", safe_line);
+                } else if safe_line.starts_with("@@") {
+                    println!("\x1b[36m{}\x1b[0m", safe_line);
                 } else {
-                    println!("{}", line);
+                    println!("{}", safe_line);
                 }
             }
         }

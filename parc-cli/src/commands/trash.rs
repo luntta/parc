@@ -3,6 +3,9 @@ use std::path::Path;
 use anyhow::Result;
 use parc_core::fragment;
 use parc_core::index;
+use parc_core::secure_fs;
+
+use crate::render::sanitize_terminal_text;
 
 pub fn run(
     vault: &Path,
@@ -71,15 +74,16 @@ fn run_list(vault: &Path, json: bool) -> Result<()> {
         );
         for f in &entries {
             let short_id = &f.id[..8.min(f.id.len())];
-            let title = if f.title.len() > 40 {
-                format!("{}...", &f.title[..37])
+            let safe_title = sanitize_terminal_text(&f.title);
+            let title = if safe_title.chars().count() > 40 {
+                format!("{}...", safe_title.chars().take(37).collect::<String>())
             } else {
-                f.title.clone()
+                safe_title
             };
             println!(
                 "{:<10}  {:<10}  {:<40}  {}",
                 short_id,
-                f.fragment_type,
+                sanitize_terminal_text(&f.fragment_type),
                 title,
                 f.updated_at.format("%Y-%m-%d %H:%M")
             );
@@ -161,8 +165,11 @@ fn run_restore(vault: &Path, id: &str, json: bool) -> Result<()> {
         let path = entry.path();
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
             if stem.starts_with(&upper) {
+                if fragment::validate_id(stem).is_err() {
+                    continue;
+                }
                 let dest = fragments_dir.join(format!("{}.md", stem));
-                std::fs::rename(&path, &dest)?;
+                secure_fs::rename_private_file(&path, &dest)?;
 
                 // Re-index
                 let frag = fragment::read_fragment(vault, stem)?;

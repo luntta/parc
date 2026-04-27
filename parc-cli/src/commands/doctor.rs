@@ -3,6 +3,8 @@ use std::path::Path;
 use anyhow::Result;
 use parc_core::doctor::{self, DoctorFinding};
 
+use crate::render::sanitize_terminal_text;
+
 pub fn run(vault: &Path, json: bool) -> Result<()> {
     if !json {
         println!("Checking vault health...");
@@ -90,15 +92,15 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                         println!(
                             "\u{2717} Unresolved wiki-link: {} \"{}\" \u{2192} {} (no unique ID or title match)",
                             &source_id[..8.min(source_id.len())],
-                            source_title,
-                            target_ref
+                            sanitize_terminal_text(source_title),
+                            sanitize_terminal_text(target_ref)
                         );
                     } else {
                         println!(
                             "\u{2717} Broken link: {} \"{}\" \u{2192} {} (not found)",
                             &source_id[..8.min(source_id.len())],
-                            source_title,
-                            target_ref
+                            sanitize_terminal_text(source_title),
+                            sanitize_terminal_text(target_ref)
                         );
                     }
                 }
@@ -111,8 +113,8 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     println!(
                         "\u{2717} Ambiguous wiki-link: {} \"{}\" \u{2192} {} (matches: {})",
                         &source_id[..8.min(source_id.len())],
-                        source_title,
-                        target_ref,
+                        sanitize_terminal_text(source_title),
+                        sanitize_terminal_text(target_ref),
                         matches
                             .iter()
                             .map(|id| &id[..8.min(id.len())])
@@ -124,15 +126,15 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     println!(
                         "\u{2717} Schema violation: {} \"{}\" \u{2014} {}",
                         &id[..8.min(id.len())],
-                        title,
-                        message
+                        sanitize_terminal_text(title),
+                        sanitize_terminal_text(message)
                     );
                 }
                 DoctorFinding::OrphanFragment { id, title } => {
                     println!(
                         "! Orphan: {} \"{}\" (no links in or out)",
                         &id[..8.min(id.len())],
-                        title
+                        sanitize_terminal_text(title)
                     );
                 }
                 DoctorFinding::AttachmentMismatch {
@@ -142,7 +144,7 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     println!(
                         "\u{2717} Attachment: {} \u{2014} {}",
                         &fragment_id[..8.min(fragment_id.len())],
-                        detail
+                        sanitize_terminal_text(detail)
                     );
                 }
                 DoctorFinding::VaultSizeWarning { total_bytes } => {
@@ -156,7 +158,11 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     plugin_name,
                     detail,
                 } => {
-                    println!("\u{2717} Plugin '{}': {}", plugin_name, detail);
+                    println!(
+                        "\u{2717} Plugin '{}': {}",
+                        sanitize_terminal_text(plugin_name),
+                        sanitize_terminal_text(detail)
+                    );
                 }
             }
         }

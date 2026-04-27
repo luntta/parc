@@ -4,6 +4,8 @@ use anyhow::Result;
 use parc_core::index::open_index;
 use parc_core::tag;
 
+use crate::render::sanitize_terminal_text;
+
 pub fn run(vault: &Path, json: bool) -> Result<()> {
     let conn = open_index(vault)?;
     let tags = tag::aggregate_tags(&conn)?;
@@ -24,7 +26,7 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
     } else {
         println!("{:<30}  {:>5}", "TAG", "COUNT");
         for t in &tags {
-            println!("{:<30}  {:>5}", t.tag, t.count);
+            println!("{:<30}  {:>5}", sanitize_terminal_text(&t.tag), t.count);
         }
     }
 

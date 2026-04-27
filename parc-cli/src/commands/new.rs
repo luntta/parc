@@ -10,6 +10,7 @@ use parc_core::secure_fs;
 use serde_json::Value;
 
 use crate::hooks::CliHookRunner;
+use crate::render::sanitize_terminal_text;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -214,7 +215,7 @@ fn run_editor_loop(
 
     loop {
         if let Some(ref err) = last_error {
-            eprintln!("Validation error: {}", err);
+            eprintln!("Validation error: {}", sanitize_terminal_text(err));
             eprintln!("Re-opening editor. Save empty file to abort.");
         }
 
