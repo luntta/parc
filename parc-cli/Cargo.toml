@@ -15,7 +15,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 anyhow = "1"
 termimad = "0.30"
-comrak = "0.28"
+comrak = "0.52.0"
 crossterm = "0.29"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 ratatui = { version = "0.29", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
