@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::signal;
+use tokio::sync::Semaphore;
 
 #[cfg(unix)]
 fn bind_owner_only(path: &Path) -> anyhow::Result<UnixListener> {
@@ -92,6 +93,14 @@ fn bind_owner_only(path: &Path) -> anyhow::Result<UnixListener> {
 use crate::jsonrpc::{self, Response, RpcError};
 use crate::router::Router;
 
+const MAX_RPC_LINE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SOCKET_CONNECTIONS: usize = 64;
+
+enum LimitedLine {
+    Line(String),
+    TooLarge,
+}
+
 /// Process a single line of JSON-RPC input and return response line(s).
 fn handle_line(router: &Router, line: &str) -> Option<String> {
     let line = line.trim();
@@ -144,27 +153,93 @@ fn handle_line(router: &Router, line: &str) -> Option<String> {
     }
 }
 
+async fn read_limited_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<LimitedLine>> {
+    let mut line = Vec::new();
+
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if line.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(LimitedLine::Line(
+                String::from_utf8_lossy(&line).to_string(),
+            )));
+        }
+
+        let take = available
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map(|pos| pos + 1)
+            .unwrap_or(available.len());
+
+        if line.len().saturating_add(take) > MAX_RPC_LINE_BYTES {
+            reader.consume(take);
+            return Ok(Some(LimitedLine::TooLarge));
+        }
+
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+
+        if line.ends_with(b"\n") {
+            return Ok(Some(LimitedLine::Line(
+                String::from_utf8_lossy(&line).to_string(),
+            )));
+        }
+    }
+}
+
+async fn write_response<W: AsyncWrite + Unpin>(writer: &mut W, response: &str) -> bool {
+    writer.write_all(response.as_bytes()).await.is_ok()
+        && writer.write_all(b"\n").await.is_ok()
+        && writer.flush().await.is_ok()
+}
+
+async fn write_error<W: AsyncWrite + Unpin>(writer: &mut W, error: RpcError) -> bool {
+    let response =
+        serde_json::to_string(&Response::error(serde_json::Value::Null, error)).unwrap_or_default();
+    write_response(writer, &response).await
+}
+
+async fn serve_lines<R, W>(router: Arc<Router>, reader: R, mut writer: W)
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut reader = BufReader::new(reader);
+
+    loop {
+        match read_limited_line(&mut reader).await {
+            Ok(Some(LimitedLine::Line(line))) => {
+                if let Some(response) = handle_line(&router, &line) {
+                    if !write_response(&mut writer, &response).await {
+                        break;
+                    }
+                }
+            }
+            Ok(Some(LimitedLine::TooLarge)) => {
+                let _ = write_error(
+                    &mut writer,
+                    RpcError::invalid_params(&format!(
+                        "request line exceeds {} bytes",
+                        MAX_RPC_LINE_BYTES
+                    )),
+                )
+                .await;
+                break;
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+}
+
 /// Run the server on stdio (newline-delimited JSON over stdin/stdout).
 pub async fn run_stdio(router: Arc<Router>) -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let reader = BufReader::new(stdin);
-    let mut lines = reader.lines();
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(response) = handle_line(&router, &line) {
-            if stdout.write_all(response.as_bytes()).await.is_err() {
-                break; // broken pipe
-            }
-            if stdout.write_all(b"\n").await.is_err() {
-                break;
-            }
-            if stdout.flush().await.is_err() {
-                break;
-            }
-        }
-    }
-
+    let stdout = tokio::io::stdout();
+    serve_lines(router, stdin, stdout).await;
     Ok(())
 }
 
@@ -193,33 +268,61 @@ pub async fn run_socket(router: Arc<Router>, socket_path: PathBuf) -> anyhow::Re
         std::process::exit(0);
     });
 
+    let connection_limit = Arc::new(Semaphore::new(MAX_SOCKET_CONNECTIONS));
+
     loop {
         match listener.accept().await {
-            Ok((stream, _addr)) => {
+            Ok((mut stream, _addr)) => {
+                let permit = match Arc::clone(&connection_limit).try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        let _ = write_error(
+                            &mut stream,
+                            RpcError::internal_error("too many concurrent socket connections"),
+                        )
+                        .await;
+                        continue;
+                    }
+                };
                 let router = Arc::clone(&router);
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let (reader, mut writer) = stream.into_split();
-                    let reader = BufReader::new(reader);
-                    let mut lines = reader.lines();
-
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        if let Some(response) = handle_line(&router, &line) {
-                            if writer.write_all(response.as_bytes()).await.is_err() {
-                                break;
-                            }
-                            if writer.write_all(b"\n").await.is_err() {
-                                break;
-                            }
-                            if writer.flush().await.is_err() {
-                                break;
-                            }
-                        }
-                    }
+                    serve_lines(router, reader, &mut writer).await;
                 });
             }
             Err(e) => {
                 eprintln!("parc-server: connection error: {}", e);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn limited_line_rejects_oversized_input() {
+        let input = vec![b'a'; MAX_RPC_LINE_BYTES + 1];
+        let mut reader = BufReader::new(input.as_slice());
+
+        let result = read_limited_line(&mut reader).await.unwrap();
+
+        assert!(matches!(result, Some(LimitedLine::TooLarge)));
+    }
+
+    #[tokio::test]
+    async fn limited_line_accepts_normal_input() {
+        let input = br#"{"jsonrpc":"2.0","id":1,"method":"vault.info","params":{}}
+"#;
+        let mut reader = BufReader::new(input.as_slice());
+
+        let result = read_limited_line(&mut reader).await.unwrap();
+
+        match result {
+            Some(LimitedLine::Line(line)) => assert!(line.contains("vault.info")),
+            _ => panic!("expected a line"),
         }
     }
 }
