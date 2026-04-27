@@ -30,6 +30,7 @@ pub struct Config {
     pub aliases: BTreeMap<String, String>,
     pub history_enabled: bool,
     pub server: ServerConfig,
+    pub hooks: ScriptHooksConfig,
     pub resurfacing: ResurfacingConfig,
     pub plugins: HashMap<String, serde_yaml_ng::Value>,
 }
@@ -47,6 +48,11 @@ impl Default for ServerConfig {
             socket_path: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ScriptHooksConfig {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +91,7 @@ impl Default for Config {
             aliases,
             history_enabled: true,
             server: ServerConfig::default(),
+            hooks: ScriptHooksConfig::default(),
             resurfacing: ResurfacingConfig::default(),
             plugins: HashMap::new(),
         }
@@ -102,6 +109,12 @@ struct ServerConfigFile {
     #[serde(default = "default_transport")]
     transport: String,
     socket_path: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct ScriptHooksConfigFile {
+    #[serde(default)]
+    enabled: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -146,6 +159,8 @@ struct ConfigFile {
     history: Option<HistoryConfig>,
     #[serde(default)]
     server: Option<ServerConfigFile>,
+    #[serde(default)]
+    hooks: Option<ScriptHooksConfigFile>,
     #[serde(default)]
     resurfacing: Option<ResurfacingConfigFile>,
     #[serde(default)]
@@ -206,6 +221,9 @@ pub fn load_config(vault: &Path) -> Result<Config, ParcError> {
             socket_path: server.socket_path,
         };
     }
+    if let Some(hooks) = raw.hooks {
+        config.hooks.enabled = hooks.enabled;
+    }
     if let Some(resurfacing) = raw.resurfacing {
         if let Some(stale_days) = resurfacing.stale_days {
             config.resurfacing.stale_days = stale_days;
@@ -241,6 +259,7 @@ mod tests {
         assert_eq!(config.id_display_length, 8);
         assert_eq!(config.date_format, DateFormat::Relative);
         assert_eq!(config.aliases.get("t").unwrap(), "todo");
+        assert!(!config.hooks.enabled);
         assert_eq!(config.resurfacing.stale_days, 30);
         assert_eq!(config.resurfacing.today_section_limit, 10);
     }
@@ -260,5 +279,15 @@ mod tests {
         let config = load_config(&vault).unwrap();
         assert_eq!(config.id_display_length, 8);
         assert_eq!(config.aliases.get("n").unwrap(), "note");
+    }
+
+    #[test]
+    fn test_load_config_hooks_enabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("config.yml"), "hooks:\n  enabled: true\n").unwrap();
+
+        let config = load_config(tmp.path()).unwrap();
+
+        assert!(config.hooks.enabled);
     }
 }

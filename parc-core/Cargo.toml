@@ -11,6 +11,7 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 ulid = "1"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
+libc = "0.2"
 comrak = "0.28"
 regex = "1"
 similar = "2"

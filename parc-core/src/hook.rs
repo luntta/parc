@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::config;
 use crate::error::ParcError;
 use crate::fragment::Fragment;
 
@@ -56,16 +57,92 @@ pub fn discover_hooks(vault: &Path, event: HookEvent, fragment_type: &str) -> Ve
     }
 
     // Type-specific hook: event.type
-    let typed_path = hooks_dir.join(format!("{}.{}", prefix, fragment_type));
-    if typed_path.exists() {
-        hooks.push(HookScript {
-            path: typed_path,
-            event,
-            type_filter: Some(fragment_type.to_string()),
-        });
+    if is_safe_type_filter(fragment_type) {
+        let typed_path = hooks_dir.join(format!("{}.{}", prefix, fragment_type));
+        if typed_path.exists() {
+            hooks.push(HookScript {
+                path: typed_path,
+                event,
+                type_filter: Some(fragment_type.to_string()),
+            });
+        }
     }
 
     hooks
+}
+
+/// Validate a hook before execution. Hooks are arbitrary programs, so Parc only
+/// runs owner-controlled regular files from an explicitly trusted vault.
+pub fn validate_hook_script(path: &Path) -> Result<(), ParcError> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(ParcError::ValidationError(format!(
+            "refusing to run symlinked hook '{}'",
+            path.display()
+        )));
+    }
+    if !metadata.is_file() {
+        return Err(ParcError::ValidationError(format!(
+            "refusing to run non-file hook '{}'",
+            path.display()
+        )));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let owner = metadata.uid();
+        // SAFETY: geteuid has no preconditions and does not mutate memory.
+        let current_user = unsafe { libc::geteuid() };
+        if owner != current_user {
+            return Err(ParcError::ValidationError(format!(
+                "refusing to run hook '{}' owned by uid {}",
+                path.display(),
+                owner
+            )));
+        }
+
+        let mode = metadata.permissions().mode();
+        if mode & 0o022 != 0 {
+            return Err(ParcError::ValidationError(format!(
+                "refusing to run group/world-writable hook '{}'",
+                path.display()
+            )));
+        }
+        if mode & 0o100 == 0 {
+            return Err(ParcError::ValidationError(format!(
+                "refusing to run hook '{}' without owner execute permission",
+                path.display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn trusted_hooks(
+    vault: &Path,
+    event: HookEvent,
+    fragment_type: &str,
+) -> Result<Vec<HookScript>, ParcError> {
+    let config = config::load_config(vault)?;
+    if !config.hooks.enabled {
+        return Ok(Vec::new());
+    }
+
+    let hooks = discover_hooks(vault, event, fragment_type);
+    for hook in &hooks {
+        validate_hook_script(&hook.path)?;
+    }
+    Ok(hooks)
+}
+
+fn is_safe_type_filter(fragment_type: &str) -> bool {
+    !fragment_type.is_empty()
+        && fragment_type
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Trait for executing hook scripts. Core defines the interface; CLI provides implementation.
@@ -91,7 +168,7 @@ pub fn run_pre_hooks(
     event: HookEvent,
     fragment: &Fragment,
 ) -> Result<Fragment, ParcError> {
-    let hooks = discover_hooks(vault, event, &fragment.fragment_type);
+    let hooks = trusted_hooks(vault, event, &fragment.fragment_type)?;
     let mut current = fragment.clone();
 
     for hook in &hooks {
@@ -111,7 +188,13 @@ pub fn run_post_hooks(
     event: HookEvent,
     fragment: &Fragment,
 ) {
-    let hooks = discover_hooks(vault, event, &fragment.fragment_type);
+    let hooks = match trusted_hooks(vault, event, &fragment.fragment_type) {
+        Ok(hooks) => hooks,
+        Err(e) => {
+            eprintln!("warning: skipping hooks for {}: {}", event.prefix(), e);
+            return;
+        }
+    };
     for hook in &hooks {
         let _ = runner.run_post_hook(hook, fragment);
     }
@@ -152,6 +235,63 @@ pub fn run_post_hooks_with_plugins(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    struct CountingRunner {
+        pre_calls: Cell<usize>,
+    }
+
+    impl CountingRunner {
+        fn new() -> Self {
+            Self {
+                pre_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl HookRunner for CountingRunner {
+        fn run_pre_hook(
+            &self,
+            _script: &HookScript,
+            _fragment: &Fragment,
+        ) -> Result<Option<Fragment>, ParcError> {
+            self.pre_calls.set(self.pre_calls.get() + 1);
+            Ok(None)
+        }
+
+        fn run_post_hook(
+            &self,
+            _script: &HookScript,
+            _fragment: &Fragment,
+        ) -> Result<(), ParcError> {
+            Ok(())
+        }
+    }
+
+    fn make_fragment(fragment_type: &str) -> Fragment {
+        Fragment {
+            id: "01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string(),
+            fragment_type: fragment_type.to_string(),
+            title: "Test".to_string(),
+            tags: Vec::new(),
+            links: Vec::new(),
+            attachments: Vec::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            created_by: None,
+            extra_fields: std::collections::BTreeMap::new(),
+            body: String::new(),
+        }
+    }
+
+    fn write_hook(path: &Path) {
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
 
     #[test]
     fn test_discover_hooks_empty() {
@@ -196,6 +336,67 @@ mod tests {
         // For "note" type: only generic
         let hooks = discover_hooks(&vault, HookEvent::PostCreate, "note");
         assert_eq!(hooks.len(), 1);
+    }
+
+    #[test]
+    fn test_run_hooks_disabled_by_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+
+        let hook_path = vault.join("hooks").join("pre-create");
+        write_hook(&hook_path);
+
+        let runner = CountingRunner::new();
+        let fragment = make_fragment("note");
+        let result = run_pre_hooks(&runner, &vault, HookEvent::PreCreate, &fragment).unwrap();
+
+        assert_eq!(result.id, fragment.id);
+        assert_eq!(runner.pre_calls.get(), 0);
+    }
+
+    #[test]
+    fn test_run_hooks_when_explicitly_enabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+        std::fs::write(vault.join("config.yml"), "hooks:\n  enabled: true\n").unwrap();
+
+        let hook_path = vault.join("hooks").join("pre-create");
+        write_hook(&hook_path);
+
+        let runner = CountingRunner::new();
+        let fragment = make_fragment("note");
+        run_pre_hooks(&runner, &vault, HookEvent::PreCreate, &fragment).unwrap();
+
+        assert_eq!(runner.pre_calls.get(), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_validate_hook_rejects_group_writable_script() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hook_path = tmp.path().join("pre-create");
+        std::fs::write(&hook_path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o720)).unwrap();
+
+        assert!(validate_hook_script(&hook_path).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_validate_hook_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("target");
+        write_hook(&target);
+        let link = tmp.path().join("pre-create");
+        symlink(&target, &link).unwrap();
+
+        assert!(validate_hook_script(&link).is_err());
     }
 
     #[test]

@@ -11,6 +11,8 @@ aliases:
   d: decision
   r: risk
   i: idea
+hooks:
+  enabled: false
 resurfacing:
   stale_days: 30
   review_window: this-week
