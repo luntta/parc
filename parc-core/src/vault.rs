@@ -14,6 +14,7 @@ pub fn discover_vault_from(start_dir: &Path) -> Result<PathBuf, ParcError> {
     loop {
         let candidate = current.join(".parc");
         if is_vault(&candidate) {
+            validate_safe_vault(&candidate)?;
             return Ok(candidate);
         }
         if !current.pop() {
@@ -24,6 +25,7 @@ pub fn discover_vault_from(start_dir: &Path) -> Result<PathBuf, ParcError> {
     // Fall back to global vault
     let global = global_vault_path()?;
     if is_vault(&global) {
+        validate_safe_vault(&global)?;
         return Ok(global);
     }
 
@@ -64,11 +66,70 @@ fn resolve_vault_path(path: &Path) -> Result<PathBuf, ParcError> {
         path.join(".parc")
     };
 
-    if is_vault(&vault_path) {
-        Ok(vault_path)
-    } else {
-        Err(ParcError::VaultNotFound(vault_path))
+    if !is_vault(&vault_path) {
+        return Err(ParcError::VaultNotFound(vault_path));
     }
+    validate_safe_vault(&vault_path)?;
+    Ok(vault_path)
+}
+
+/// Reject auto-discovered vaults that live under directories controlled by
+/// another non-root user or writable by a group/world without sticky-bit
+/// protection. Set PARC_SAFE_VAULTS to an OS path-list to explicitly trust a
+/// shared vault path.
+pub fn validate_safe_vault(path: &Path) -> Result<(), ParcError> {
+    validate_safe_vault_impl(path)
+}
+
+#[cfg(unix)]
+fn validate_safe_vault_impl(path: &Path) -> Result<(), ParcError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let direct_metadata = std::fs::symlink_metadata(path)?;
+    if direct_metadata.file_type().is_symlink() {
+        return Err(ParcError::ValidationError(format!(
+            "refusing unsafe vault symlink '{}'",
+            path.display()
+        )));
+    }
+
+    let canonical = std::fs::canonicalize(path)?;
+    if is_explicitly_safe_vault(&canonical) {
+        return Ok(());
+    }
+
+    // SAFETY: geteuid has no preconditions and does not mutate memory.
+    let current_uid = unsafe { libc::geteuid() };
+    for ancestor in canonical.ancestors() {
+        let metadata = std::fs::metadata(ancestor)?;
+        let owner = metadata.uid();
+        let mode = metadata.permissions().mode();
+        let owner_ok = owner == current_uid || owner == 0;
+        let writable_without_sticky = mode & 0o022 != 0 && mode & 0o1000 == 0;
+
+        if !owner_ok || writable_without_sticky {
+            return Err(ParcError::ValidationError(format!(
+                "refusing unsafe vault '{}': ancestor '{}' is not owner-controlled",
+                canonical.display(),
+                ancestor.display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_safe_vault_impl(_path: &Path) -> Result<(), ParcError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_explicitly_safe_vault(canonical: &Path) -> bool {
+    std::env::var_os("PARC_SAFE_VAULTS")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .any(|path| std::fs::canonicalize(path).is_ok_and(|safe| safe == canonical))
 }
 
 /// Returns the default global vault path (~/.parc).
@@ -362,6 +423,21 @@ mod tests {
 
         let discovered = discover_vault_from(&subdir).unwrap();
         assert_eq!(discovered, vault_path);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_discover_rejects_symlinked_vault() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let real_vault = tmp.path().join(".parc-real");
+        init_vault(&real_vault).unwrap();
+        symlink(&real_vault, tmp.path().join(".parc")).unwrap();
+
+        let result = discover_vault_from(tmp.path());
+
+        assert!(matches!(result, Err(ParcError::ValidationError(_))));
     }
 
     #[test]
