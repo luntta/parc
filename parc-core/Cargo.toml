@@ -16,7 +16,7 @@ regex = "1"
 similar = "2"
 toml = "0.8"
 nucleo = "0.5"
-wasmtime = { version = "28", optional = true, default-features = false, features = ["cranelift", "runtime"] }
+wasmtime = { version = "43.0.1", optional = true, default-features = false, features = ["cranelift", "runtime"] }
 
 [features]
 default = []
