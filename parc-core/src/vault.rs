@@ -100,23 +100,52 @@ fn validate_safe_vault_impl(path: &Path) -> Result<(), ParcError> {
 
     // SAFETY: geteuid has no preconditions and does not mutate memory.
     let current_uid = unsafe { libc::geteuid() };
+    let home_dir = global_vault_path()
+        .ok()
+        .and_then(|global| global.parent().map(Path::to_path_buf))
+        .and_then(|home| std::fs::canonicalize(home).ok())
+        .filter(|home| canonical.starts_with(home));
+
     for ancestor in canonical.ancestors() {
         let metadata = std::fs::metadata(ancestor)?;
         let owner = metadata.uid();
         let mode = metadata.permissions().mode();
-        let owner_ok = owner == current_uid || owner == 0;
         let writable_without_sticky = mode & 0o022 != 0 && mode & 0o1000 == 0;
 
-        if !owner_ok || writable_without_sticky {
+        if owner == current_uid {
+            if writable_without_sticky {
+                return Err(unsafe_vault_error(&canonical, ancestor));
+            }
+        } else if writable_without_sticky {
+            return Err(unsafe_vault_error(&canonical, ancestor));
+        } else if let Some(home) = &home_dir {
+            if ancestor == home {
+                break;
+            }
+            return Err(unsafe_vault_error(&canonical, ancestor));
+        } else if owner != 0 && owner != 65_534 && mode & 0o1000 == 0 {
             return Err(ParcError::ValidationError(format!(
                 "refusing unsafe vault '{}': ancestor '{}' is not owner-controlled",
                 canonical.display(),
                 ancestor.display()
             )));
         }
+
+        if home_dir.as_deref() == Some(ancestor) {
+            break;
+        }
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn unsafe_vault_error(canonical: &Path, ancestor: &Path) -> ParcError {
+    ParcError::ValidationError(format!(
+        "refusing unsafe vault '{}': ancestor '{}' is not owner-controlled",
+        canonical.display(),
+        ancestor.display()
+    ))
 }
 
 #[cfg(not(unix))]
