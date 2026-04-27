@@ -11,6 +11,7 @@ use parc_core::schema::load_schemas;
 use parc_core::search::{self, Filter, SearchQuery, SortOrder};
 
 use crate::jsonrpc::RpcError;
+use crate::methods::validation::validate_fragment_for_write;
 use crate::router::{extract_params, map_parc_error};
 
 fn fragment_to_json(f: &Fragment) -> Value {
@@ -99,7 +100,8 @@ pub fn create(vault: &Path, params: Value) -> Result<Value, RpcError> {
             .insert("assignee".to_string(), Value::String(assignee));
     }
 
-    fragment::validate_fragment(&frag, schema).map_err(map_parc_error)?;
+    fragment::validate_fragment(&frag, schema)
+        .map_err(|e| RpcError::invalid_params(&e.to_string()))?;
     fragment::create_fragment(vault, &frag).map_err(map_parc_error)?;
 
     let conn = index::open_index(vault).map_err(map_parc_error)?;
@@ -168,6 +170,7 @@ pub fn update(vault: &Path, params: Value) -> Result<Value, RpcError> {
     }
 
     frag.updated_at = Utc::now();
+    validate_fragment_for_write(vault, &frag)?;
     fragment::write_fragment(vault, &frag).map_err(map_parc_error)?;
 
     let conn = index::open_index(vault).map_err(map_parc_error)?;

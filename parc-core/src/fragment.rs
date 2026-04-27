@@ -479,6 +479,16 @@ pub fn validate_fragment(fragment: &Fragment, schema: &Schema) -> Result<(), Par
     Ok(())
 }
 
+/// Validate a fragment against its vault schema when the schema exists.
+/// Unknown custom types are accepted, matching the editor path's behavior.
+pub fn validate_fragment_in_vault(vault: &Path, fragment: &Fragment) -> Result<(), ParcError> {
+    let schemas = crate::schema::load_schemas(vault)?;
+    if let Some(schema) = schemas.resolve(&fragment.fragment_type) {
+        validate_fragment(fragment, schema)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

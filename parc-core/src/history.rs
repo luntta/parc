@@ -124,12 +124,13 @@ pub fn restore_version(
     fragment::validate_id(fragment_id)?;
     validate_snapshot_timestamp(timestamp)?;
 
-    // Save current version as a snapshot first
-    save_snapshot(vault, fragment_id)?;
-
-    // Read the old version
+    // Read and validate the old version before touching the current file.
     let mut old = read_version(vault, fragment_id, timestamp)?;
     old.updated_at = Utc::now();
+    fragment::validate_fragment_in_vault(vault, &old)?;
+
+    // Save current version as a snapshot first
+    save_snapshot(vault, fragment_id)?;
 
     // Write it as the current version (this will also save a snapshot,
     // but write_fragment checks config — we already saved above manually,

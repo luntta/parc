@@ -4,4 +4,5 @@ pub mod history;
 pub mod link;
 pub mod schema;
 pub mod tags;
+pub mod validation;
 pub mod vault;

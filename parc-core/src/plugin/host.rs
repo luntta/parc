@@ -206,13 +206,17 @@ pub fn register_host_functions(linker: &mut Linker<PluginState>) -> Result<(), P
                 let vault_path = caller.data().vault_path.clone();
 
                 match serde_json::from_str::<crate::fragment::Fragment>(&json_str) {
-                    Ok(frag) => match crate::fragment::create_fragment(&vault_path, &frag) {
-                        Ok(id) => {
-                            let id_bytes = id.as_bytes();
-                            caller.data_mut().replace_output(id_bytes).unwrap_or(-1)
+                    Ok(frag) => {
+                        match crate::fragment::validate_fragment_in_vault(&vault_path, &frag)
+                            .and_then(|()| crate::fragment::create_fragment(&vault_path, &frag))
+                        {
+                            Ok(id) => {
+                                let id_bytes = id.as_bytes();
+                                caller.data_mut().replace_output(id_bytes).unwrap_or(-1)
+                            }
+                            Err(_) => -1,
                         }
-                        Err(_) => -1,
-                    },
+                    }
                     Err(_) => -1,
                 }
             },
@@ -244,13 +248,17 @@ pub fn register_host_functions(linker: &mut Linker<PluginState>) -> Result<(), P
                 let vault_path = caller.data().vault_path.clone();
 
                 match serde_json::from_str::<crate::fragment::Fragment>(&json_str) {
-                    Ok(frag) => match crate::fragment::write_fragment(&vault_path, &frag) {
-                        Ok(()) => {
-                            let id_bytes = frag.id.as_bytes();
-                            caller.data_mut().replace_output(id_bytes).unwrap_or(-1)
+                    Ok(frag) => {
+                        match crate::fragment::validate_fragment_in_vault(&vault_path, &frag)
+                            .and_then(|()| crate::fragment::write_fragment(&vault_path, &frag))
+                        {
+                            Ok(()) => {
+                                let id_bytes = frag.id.as_bytes();
+                                caller.data_mut().replace_output(id_bytes).unwrap_or(-1)
+                            }
+                            Err(_) => -1,
                         }
-                        Err(_) => -1,
-                    },
+                    }
                     Err(_) => -1,
                 }
             },

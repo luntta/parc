@@ -536,9 +536,22 @@ fn test_todo_with_fields() {
     let result = result_of(&resp);
     assert_eq!(result["status"], "done");
 
-    // Search by status
+    // Invalid enum values are rejected and must not be persisted
     let resp = h.send_rpc(rpc(
         3,
+        "fragment.update",
+        serde_json::json!({ "id": &id, "status": "blocked" }),
+    ));
+    let err = error_of(&resp);
+    assert_eq!(err["code"], -32602);
+
+    let resp = h.send_rpc(rpc(4, "fragment.get", serde_json::json!({ "id": &id })));
+    let result = result_of(&resp);
+    assert_eq!(result["status"], "done");
+
+    // Search by status
+    let resp = h.send_rpc(rpc(
+        5,
         "fragment.search",
         serde_json::json!({ "query": "type:todo status:done" }),
     ));
