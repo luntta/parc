@@ -4,6 +4,7 @@ use regex::Regex;
 
 use crate::error::ParcError;
 use crate::fragment;
+use crate::secure_fs;
 
 /// Reject filenames that could escape the per-fragment attachment directory.
 /// Filenames must be a single path component with no separators or `..`.
@@ -74,7 +75,7 @@ pub fn attach_file(
     validate_attachment_filename(&filename)?;
 
     let attach_dir = vault.join("attachments").join(&full_id);
-    std::fs::create_dir_all(&attach_dir)?;
+    secure_fs::create_private_dir_all(&attach_dir)?;
 
     let dest = attach_dir.join(&filename);
     if dest.exists() {
@@ -87,12 +88,16 @@ pub fn attach_file(
 
     if move_file {
         // Try rename first, fall back to copy+delete for cross-device moves
-        if std::fs::rename(source_path, &dest).is_err() {
-            std::fs::copy(source_path, &dest)?;
-            std::fs::remove_file(source_path)?;
+        match secure_fs::rename_private_file(source_path, &dest) {
+            Ok(()) => {}
+            Err(ParcError::Io(err)) if err.kind() == std::io::ErrorKind::CrossesDevices => {
+                secure_fs::copy_private_new(source_path, &dest)?;
+                std::fs::remove_file(source_path)?;
+            }
+            Err(err) => return Err(err),
         }
     } else {
-        std::fs::copy(source_path, &dest)?;
+        secure_fs::copy_private_new(source_path, &dest)?;
     }
 
     // Update fragment frontmatter

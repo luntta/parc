@@ -9,6 +9,7 @@ use parc_core::fragment::{
 use parc_core::hook::{self, HookEvent};
 use parc_core::index;
 use parc_core::schema::load_schemas;
+use parc_core::secure_fs;
 
 use crate::hooks::CliHookRunner;
 
@@ -16,7 +17,6 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     let config = load_config(vault)?;
     let schemas = load_schemas(vault)?;
     let original = read_fragment(vault, id)?;
-    let full_id = original.id.clone();
     let runner = CliHookRunner;
 
     #[cfg(feature = "wasm-plugins")]
@@ -28,8 +28,7 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
 
     let content = serialize_fragment(&original);
     let editor = get_editor(&config);
-    let tmp_path = std::env::temp_dir().join(format!("parc-edit-{}.md", &full_id[..8]));
-    std::fs::write(&tmp_path, &content)?;
+    let tmp_path = secure_fs::write_private_temp("parc-edit", ".md", content.as_bytes())?;
 
     let mut last_error: Option<String> = None;
 

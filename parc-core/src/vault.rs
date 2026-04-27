@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::ParcError;
+use crate::secure_fs;
 
 /// Returns true if a valid vault exists at the given path.
 pub fn is_vault(path: &Path) -> bool {
@@ -126,26 +127,22 @@ pub fn init_vault(path: &Path) -> Result<(), ParcError> {
     }
 
     // Create directory structure
-    std::fs::create_dir_all(path.join("schemas"))?;
-    std::fs::create_dir_all(path.join("templates"))?;
-    std::fs::create_dir_all(path.join("fragments"))?;
-    std::fs::create_dir_all(path.join("attachments"))?;
-    std::fs::create_dir_all(path.join("history"))?;
-    std::fs::create_dir_all(path.join("trash"))?;
-    std::fs::create_dir_all(path.join("plugins"))?;
-    std::fs::create_dir_all(path.join("hooks"))?;
+    secure_fs::create_private_dir_all(path)?;
+    for dir in VAULT_DIRS {
+        secure_fs::create_private_dir_all(&path.join(dir))?;
+    }
 
     // Write default config
-    std::fs::write(path.join("config.yml"), DEFAULT_CONFIG)?;
+    secure_fs::write_private(&path.join("config.yml"), DEFAULT_CONFIG)?;
 
     // Write built-in schemas
     for (name, content) in BUILTIN_SCHEMAS {
-        std::fs::write(path.join("schemas").join(name), content)?;
+        secure_fs::write_private(&path.join("schemas").join(name), content)?;
     }
 
     // Write built-in templates
     for (name, content) in BUILTIN_TEMPLATES {
-        std::fs::write(path.join("templates").join(name), content)?;
+        secure_fs::write_private(&path.join("templates").join(name), content)?;
     }
 
     // If the vault's parent directory is inside a git repository,
@@ -165,6 +162,17 @@ pub fn init_vault(path: &Path) -> Result<(), ParcError> {
 
     Ok(())
 }
+
+const VAULT_DIRS: &[&str] = &[
+    "schemas",
+    "templates",
+    "fragments",
+    "attachments",
+    "history",
+    "trash",
+    "plugins",
+    "hooks",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]

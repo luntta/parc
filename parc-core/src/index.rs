@@ -5,6 +5,7 @@ use rusqlite::Connection;
 use crate::error::ParcError;
 use crate::fragment::{self, Fragment};
 use crate::link;
+use crate::secure_fs;
 use crate::tag;
 
 const SCHEMA_SQL: &str = "
@@ -54,8 +55,10 @@ CREATE INDEX IF NOT EXISTS idx_fragment_links_target ON fragment_links(target_id
 /// Initialize the database schema (create tables if not exist).
 pub fn init_index(vault: &Path) -> Result<Connection, ParcError> {
     let db_path = vault.join("index.db");
+    secure_fs::prepare_private_file(&db_path)?;
     let conn = Connection::open(&db_path)?;
     conn.execute_batch(SCHEMA_SQL)?;
+    secure_fs::set_private_file_permissions(&db_path)?;
     Ok(conn)
 }
 

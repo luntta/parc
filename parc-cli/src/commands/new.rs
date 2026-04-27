@@ -6,6 +6,7 @@ use parc_core::fragment::{self, parse_fragment, serialize_fragment, validate_fra
 use parc_core::hook::{self, HookEvent};
 use parc_core::index;
 use parc_core::schema::{load_schemas, load_template};
+use parc_core::secure_fs;
 use serde_json::Value;
 
 use crate::hooks::CliHookRunner;
@@ -207,9 +208,7 @@ fn run_editor_loop(
     config: &parc_core::config::Config,
 ) -> Result<fragment::Fragment> {
     let editor = get_editor(config);
-    let tmp_dir = std::env::temp_dir();
-    let tmp_path = tmp_dir.join(format!("parc-{}.md", fragment::new_id()));
-    std::fs::write(&tmp_path, initial_content)?;
+    let tmp_path = secure_fs::write_private_temp("parc", ".md", initial_content.as_bytes())?;
 
     let mut last_error: Option<String> = None;
 

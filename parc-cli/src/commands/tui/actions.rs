@@ -17,6 +17,7 @@ use parc_core::fragment::{
 use parc_core::hook::{self, HookEvent};
 use parc_core::index;
 use parc_core::schema::load_schemas;
+use parc_core::secure_fs;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use serde_json::Value;
@@ -62,8 +63,7 @@ fn run_editor(vault: &Path, id: &str) -> Result<String> {
     let original = read_fragment(vault, id)?;
     let content = serialize_fragment(&original);
     let editor = get_editor(&config);
-    let tmp_path = std::env::temp_dir().join(format!("parc-edit-{}.md", short(&original.id)));
-    std::fs::write(&tmp_path, &content)?;
+    let tmp_path = secure_fs::write_private_temp("parc-edit", ".md", content.as_bytes())?;
 
     let status = Command::new(&editor).arg(&tmp_path).status()?;
 

@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::config::Config;
 use crate::error::ParcError;
 use crate::schema::{FieldType, Schema};
+use crate::secure_fs;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Fragment {
@@ -322,7 +323,7 @@ pub fn create_fragment(vault: &Path, fragment: &Fragment) -> Result<String, Parc
     validate_id(&fragment.id)?;
     let content = serialize_fragment(fragment);
     let path = vault.join("fragments").join(format!("{}.md", fragment.id));
-    std::fs::write(&path, content)?;
+    secure_fs::write_private_new(&path, content)?;
     Ok(fragment.id.clone())
 }
 
@@ -347,7 +348,7 @@ pub fn write_fragment(vault: &Path, fragment: &Fragment) -> Result<(), ParcError
 
     let content = serialize_fragment(fragment);
     let path = vault.join("fragments").join(format!("{}.md", fragment.id));
-    std::fs::write(&path, content)?;
+    secure_fs::write_private(&path, content)?;
     Ok(())
 }
 
@@ -392,7 +393,7 @@ pub fn delete_fragment(vault: &Path, id_or_prefix: &str) -> Result<String, ParcE
     let full_id = resolve_id(vault, id_or_prefix)?;
     let src = vault.join("fragments").join(format!("{}.md", full_id));
     let dst = vault.join("trash").join(format!("{}.md", full_id));
-    std::fs::rename(&src, &dst)?;
+    secure_fs::rename_private_file(&src, &dst)?;
     Ok(full_id)
 }
 

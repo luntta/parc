@@ -14,6 +14,7 @@ pub mod link;
 pub mod plugin;
 pub mod schema;
 pub mod search;
+pub mod secure_fs;
 pub mod tag;
 pub mod vault;
 

@@ -5,6 +5,7 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::error::ParcError;
 use crate::fragment::{self, Fragment};
+use crate::secure_fs;
 
 /// Snapshot timestamps must round-trip through chrono RFC3339 parsing,
 /// matching the format `save_snapshot` writes. Anything else (notably `..`
@@ -45,13 +46,13 @@ pub fn save_snapshot(vault: &Path, fragment_id: &str) -> Result<(), ParcError> {
     let timestamp = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
 
     let history_dir = vault.join("history").join(fragment_id);
-    std::fs::create_dir_all(&history_dir)?;
+    secure_fs::create_private_dir_all(&history_dir)?;
 
     let snapshot_path = history_dir.join(format!("{}.md", timestamp));
 
     // Don't overwrite if this exact snapshot already exists
     if !snapshot_path.exists() {
-        std::fs::write(&snapshot_path, &content)?;
+        secure_fs::write_private_new(&snapshot_path, &content)?;
     }
 
     Ok(())
@@ -135,7 +136,7 @@ pub fn restore_version(
     // so just write directly to avoid double-snapshot)
     let content = fragment::serialize_fragment(&old);
     let path = vault.join("fragments").join(format!("{}.md", fragment_id));
-    std::fs::write(&path, content)?;
+    secure_fs::write_private(&path, content)?;
 
     Ok(old)
 }

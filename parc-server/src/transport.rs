@@ -8,12 +8,80 @@ use tokio::signal;
 #[cfg(unix)]
 fn bind_owner_only(path: &Path) -> anyhow::Result<UnixListener> {
     use std::os::unix::fs::PermissionsExt;
+    let _guard = UmaskGuard::set(0o177);
     let listener = UnixListener::bind(path)?;
-    // Force 0600. UnixListener::bind respects the process umask, which is
-    // typically 0022 -> world-readable. The server has no auth, so a permissive
-    // socket means anyone on the host can read/write the entire vault.
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
+}
+
+#[cfg(unix)]
+struct UmaskGuard(libc::mode_t);
+
+#[cfg(unix)]
+impl UmaskGuard {
+    fn set(mask: libc::mode_t) -> Self {
+        // SAFETY: umask is process-global but this server binds the socket
+        // during single-threaded startup, before accept-loop tasks are spawned.
+        let previous = unsafe { libc::umask(mask) };
+        Self(previous)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for UmaskGuard {
+    fn drop(&mut self) {
+        // SAFETY: restores the previous process umask captured above.
+        unsafe {
+            libc::umask(self.0);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            std::fs::remove_file(path)?;
+            Ok(())
+        }
+        Ok(_) => anyhow::bail!(
+            "refusing to remove non-socket path '{}'",
+            path.to_string_lossy()
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+#[cfg(unix)]
+fn validate_socket_parent(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let metadata = std::fs::symlink_metadata(parent)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        anyhow::bail!(
+            "socket parent '{}' must be a real directory",
+            parent.to_string_lossy()
+        );
+    }
+
+    let mode = metadata.permissions().mode();
+    let group_or_world_writable = mode & 0o022 != 0;
+    let sticky = mode & 0o1000 != 0;
+    if group_or_world_writable && !sticky {
+        anyhow::bail!(
+            "socket parent '{}' is group/world-writable without the sticky bit",
+            parent.to_string_lossy()
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -102,14 +170,15 @@ pub async fn run_stdio(router: Arc<Router>) -> anyhow::Result<()> {
 
 /// Run the server on a Unix domain socket.
 pub async fn run_socket(router: Arc<Router>, socket_path: PathBuf) -> anyhow::Result<()> {
-    // Remove stale socket file
+    #[cfg(unix)]
+    validate_socket_parent(&socket_path)?;
+    #[cfg(unix)]
+    remove_stale_socket(&socket_path)?;
+    #[cfg(not(unix))]
     if socket_path.exists() {
         let _ = std::fs::remove_file(&socket_path);
     }
 
-    // Bind with a strict umask so the socket is owner-only from the moment
-    // it appears, then chmod 0600 as belt-and-suspenders. The server has no
-    // auth: anyone who can connect() can read/write the entire vault.
     let listener = bind_owner_only(&socket_path)?;
     eprintln!(
         "parc-server listening on {} (mode 0600)",

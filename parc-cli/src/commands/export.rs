@@ -5,6 +5,7 @@ use parc_core::export;
 use parc_core::fragment;
 use parc_core::index::open_index;
 use parc_core::search::{self, parse_query, SortOrder};
+use parc_core::secure_fs;
 
 pub fn run(
     vault: &Path,
@@ -51,10 +52,10 @@ pub fn run(
         "html" => {
             let files = export::export_html(&fragments)?;
             let dir = output.unwrap_or("parc-export");
-            std::fs::create_dir_all(dir)?;
+            secure_fs::create_private_dir_all(Path::new(dir))?;
             for (filename, content) in &files {
                 let path = Path::new(dir).join(filename);
-                std::fs::write(&path, content)?;
+                secure_fs::write_private(&path, content)?;
             }
             println!("Exported {} files to {}/", files.len(), dir);
             return Ok(());
@@ -67,7 +68,7 @@ pub fn run(
 
 fn write_output(output: Option<&str>, content: &str) -> Result<()> {
     if let Some(path) = output {
-        std::fs::write(path, content)?;
+        secure_fs::write_private(Path::new(path), content)?;
         println!("Exported to {}", path);
     } else {
         print!("{}", content);

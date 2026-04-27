@@ -3,6 +3,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::error::ParcError;
+use crate::secure_fs;
 
 #[derive(Debug, Clone)]
 pub struct Schema {
@@ -208,7 +209,7 @@ pub fn add_schema(vault_path: &Path, source_path: &Path) -> Result<String, ParcE
     let dest = vault_path
         .join("schemas")
         .join(format!("{}.yml", schema.name));
-    std::fs::copy(source_path, &dest)?;
+    secure_fs::copy_private_new(source_path, &dest)?;
 
     // Create empty template if none exists
     let template_path = vault_path
@@ -217,9 +218,9 @@ pub fn add_schema(vault_path: &Path, source_path: &Path) -> Result<String, ParcE
     if !template_path.exists() {
         let template_dir = vault_path.join("templates");
         if !template_dir.exists() {
-            std::fs::create_dir_all(&template_dir)?;
+            secure_fs::create_private_dir_all(&template_dir)?;
         }
-        std::fs::write(
+        secure_fs::write_private_new(
             &template_path,
             format!("---\ntype: {}\ntitle: \"\"\n---\n\n", schema.name),
         )?;
