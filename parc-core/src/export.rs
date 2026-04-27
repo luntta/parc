@@ -113,11 +113,26 @@ pub fn export_html(fragments: &[Fragment]) -> Result<Vec<(String, String)>, Parc
 }
 
 fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
+    let guarded;
+    let s = if is_spreadsheet_formula(s) {
+        guarded = format!("'{}", s);
+        guarded.as_str()
+    } else {
+        s
+    };
+
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
     }
+}
+
+fn is_spreadsheet_formula(s: &str) -> bool {
+    matches!(
+        s.as_bytes().first(),
+        Some(b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r')
+    )
 }
 
 fn html_escape(s: &str) -> String {
@@ -125,4 +140,52 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fragment::Fragment;
+    use chrono::Utc;
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+
+    fn fragment_with_title(title: &str) -> Fragment {
+        Fragment {
+            id: "01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string(),
+            fragment_type: "note".to_string(),
+            title: title.to_string(),
+            tags: Vec::new(),
+            links: Vec::new(),
+            attachments: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            created_by: None,
+            extra_fields: BTreeMap::new(),
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn csv_escape_prefixes_formula_starters() {
+        assert_eq!(csv_escape("=cmd"), "'=cmd");
+        assert_eq!(csv_escape("+cmd"), "'+cmd");
+        assert_eq!(csv_escape("-cmd"), "'-cmd");
+        assert_eq!(csv_escape("@cmd"), "'@cmd");
+        assert_eq!(csv_escape("\tcmd"), "'\tcmd");
+        assert_eq!(csv_escape("\rcmd"), "\"'\rcmd\"");
+    }
+
+    #[test]
+    fn export_csv_guards_formula_titles_and_fields() {
+        let mut fragment = fragment_with_title("=HYPERLINK(\"http://example.test\")");
+        fragment
+            .extra_fields
+            .insert("status".to_string(), Value::String("@open".to_string()));
+
+        let csv = export_csv(&[fragment]).unwrap();
+
+        assert!(csv.contains("'=HYPERLINK"));
+        assert!(csv.contains("'@open"));
+    }
 }
