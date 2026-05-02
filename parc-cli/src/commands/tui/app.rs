@@ -13,7 +13,7 @@ use ratatui::Terminal;
 use super::cache::FragmentCache;
 use super::{
     actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, Mode,
-    SearchPopup, Tab,
+    QuickField, Row, SearchPopup, Tab,
 };
 
 const PAGE_LINES: u16 = 10;
@@ -153,6 +153,11 @@ impl App {
     fn selected_id(&self) -> Option<String> {
         let idx = self.list_state.selected()?;
         self.rows.get(idx).map(|r| r.id.clone())
+    }
+
+    fn selected_row(&self) -> Option<&Row> {
+        let idx = self.list_state.selected()?;
+        self.rows.get(idx)
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
@@ -315,6 +320,11 @@ fn handle_normal(
                 app.dirty = true;
             }
         }
+        (KeyCode::Char('s'), _) if plain => start_field_input(app, QuickField::Status),
+        (KeyCode::Char('D'), _) => start_field_input(app, QuickField::Due),
+        (KeyCode::Char('P'), _) => start_field_input(app, QuickField::Priority),
+        (KeyCode::Char('@'), _) => start_field_input(app, QuickField::Assignee),
+        (KeyCode::Char('#'), _) => start_field_input(app, QuickField::Tags),
 
         (KeyCode::Down, _) => match app.focus {
             Focus::List => app.move_list(1),
@@ -506,24 +516,38 @@ fn handle_input(
         }
         KeyCode::Enter => {
             let trimmed = value.trim().to_string();
-            if trimmed.is_empty() {
-                app.mode = Mode::Normal;
-                app.set_status("cancelled");
-            } else {
-                match action {
-                    InputAction::Promote { id } => match actions::promote(vault, &id, &trimmed) {
+            match action {
+                InputAction::Promote { id } => {
+                    if trimmed.is_empty() {
+                        app.mode = Mode::Normal;
+                        app.set_status("cancelled");
+                    } else {
+                        match actions::promote(vault, &id, &trimmed) {
+                            Ok(msg) => {
+                                app.cache.invalidate(&id);
+                                app.search.mark_stale();
+                                reload_rows(app, vault, config)?;
+                                app.set_status(msg);
+                            }
+                            Err(e) => app.set_status(format!("promote failed: {}", e)),
+                        }
+                    }
+                }
+                InputAction::SetField { id, field } => {
+                    match actions::set_field(vault, &id, field, &trimmed) {
                         Ok(msg) => {
                             app.cache.invalidate(&id);
                             app.search.mark_stale();
                             reload_rows(app, vault, config)?;
+                            select_row_by_id(app, &id);
                             app.set_status(msg);
                         }
-                        Err(e) => app.set_status(format!("promote failed: {}", e)),
-                    },
+                        Err(e) => app.set_status(format!("{} update failed: {}", field.key(), e)),
+                    }
                 }
-                app.mode = Mode::Normal;
-                app.dirty = true;
             }
+            app.mode = Mode::Normal;
+            app.dirty = true;
         }
         KeyCode::Backspace => {
             let mut new_value = value;
@@ -632,6 +656,31 @@ fn open_search(app: &mut App, vault: &Path) {
     app.mode = Mode::Search(popup);
     app.clear_status();
     app.dirty = true;
+}
+
+fn start_field_input(app: &mut App, field: QuickField) {
+    let Some(row) = app.selected_row() else {
+        return;
+    };
+    app.mode = Mode::Input {
+        prompt: format!("{}:", field.label()),
+        value: quick_field_value(row, field),
+        action: InputAction::SetField {
+            id: row.id.clone(),
+            field,
+        },
+    };
+    app.dirty = true;
+}
+
+fn quick_field_value(row: &Row, field: QuickField) -> String {
+    match field {
+        QuickField::Status => row.status.clone().unwrap_or_default(),
+        QuickField::Due => row.due.clone().unwrap_or_default(),
+        QuickField::Priority => row.priority.clone().unwrap_or_default(),
+        QuickField::Assignee => row.assignee.clone().unwrap_or_default(),
+        QuickField::Tags => row.tags.join(" "),
+    }
 }
 
 fn reload_search_popup(

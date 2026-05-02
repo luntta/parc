@@ -45,6 +45,38 @@ pub(crate) enum ConfirmAction {
 #[derive(Clone)]
 pub(crate) enum InputAction {
     Promote { id: String },
+    SetField { id: String, field: QuickField },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum QuickField {
+    Status,
+    Due,
+    Priority,
+    Assignee,
+    Tags,
+}
+
+impl QuickField {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            QuickField::Status => "Status",
+            QuickField::Due => "Due",
+            QuickField::Priority => "Priority",
+            QuickField::Assignee => "Assignee",
+            QuickField::Tags => "Tags",
+        }
+    }
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            QuickField::Status => "status",
+            QuickField::Due => "due",
+            QuickField::Priority => "priority",
+            QuickField::Assignee => "assignee",
+            QuickField::Tags => "tags",
+        }
+    }
 }
 
 #[derive(Clone)]

@@ -52,6 +52,11 @@ The detail pane renders the selected fragment's body as styled Markdown — head
 |-----|--------|
 | `e` | Edit in `$EDITOR` (suspends the TUI, resumes on exit) |
 | `t` | Toggle todo status (open ↔ done) — no-op for non-todos |
+| `s` | Set status |
+| `D` | Set due date |
+| `P` | Set priority |
+| `@` | Set assignee |
+| `#` | Set tags |
 | `p` | Promote to another type — opens an input prompt |
 | `a` | Archive (toggle) |
 | `d` | Delete — opens a `y/n` confirm dialog |

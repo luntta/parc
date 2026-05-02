@@ -24,6 +24,8 @@ use serde_json::Value;
 
 use crate::hooks::CliHookRunner;
 
+use super::QuickField;
+
 pub(super) struct CaptureInput {
     pub text: String,
     pub fragment_type: String,
@@ -180,6 +182,43 @@ pub(super) fn promote(vault: &Path, id: &str, new_type: &str) -> Result<String> 
     ))
 }
 
+pub(super) fn set_field(vault: &Path, id: &str, field: QuickField, value: &str) -> Result<String> {
+    let schemas = load_schemas(vault)?;
+    let mut frag = read_fragment(vault, id)?;
+    let trimmed = value.trim();
+
+    match field {
+        QuickField::Tags => {
+            frag.tags = parse_tag_list(trimmed);
+        }
+        QuickField::Due => {
+            set_optional_string(&mut frag.extra_fields, field.key(), trimmed, |value| {
+                Ok(parc_core::date::resolve_due_date(value)?)
+            })?
+        }
+        QuickField::Status | QuickField::Priority | QuickField::Assignee => {
+            set_optional_string(&mut frag.extra_fields, field.key(), trimmed, |value| {
+                Ok(value.to_string())
+            })?
+        }
+    }
+
+    if let Some(schema) = schemas.resolve(&frag.fragment_type) {
+        validate_fragment(&frag, schema)?;
+    }
+
+    frag.updated_at = Utc::now();
+
+    let runner = CliHookRunner;
+    let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
+    write_fragment(vault, &frag)?;
+    let conn = index::open_index(vault)?;
+    index::index_fragment_auto(&conn, &frag, vault)?;
+    hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
+
+    Ok(format!("updated {} {}", short(&frag.id), field.key()))
+}
+
 pub(super) fn capture(vault: &Path, input: CaptureInput) -> Result<(String, String)> {
     let raw = input.text.trim_end_matches(['\r', '\n']);
     if raw.trim().is_empty() {
@@ -213,14 +252,24 @@ pub(super) fn capture(vault: &Path, input: CaptureInput) -> Result<(String, Stri
     ))
 }
 
-fn merge_tags(tags: &mut Vec<String>, config: &Config, input: &str) {
-    *tags = config.default_tags.clone();
+fn parse_tag_list(input: &str) -> Vec<String> {
+    let mut tags = Vec::new();
     for tag in input
         .split(|ch: char| ch == ',' || ch.is_whitespace())
         .map(|tag| tag.trim().trim_start_matches('#'))
         .filter(|tag| !tag.is_empty())
     {
         let tag = tag.to_string();
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
+fn merge_tags(tags: &mut Vec<String>, config: &Config, input: &str) {
+    *tags = config.default_tags.clone();
+    for tag in parse_tag_list(input) {
         if !tags.contains(&tag) {
             tags.push(tag);
         }
@@ -251,6 +300,20 @@ fn insert_string_field(fragment: &mut fragment::Fragment, key: &str, value: Stri
             .extra_fields
             .insert(key.to_string(), Value::String(value.to_string()));
     }
+}
+
+fn set_optional_string(
+    fields: &mut BTreeMap<String, Value>,
+    key: &str,
+    value: &str,
+    normalize: impl FnOnce(&str) -> Result<String>,
+) -> Result<()> {
+    if value.is_empty() {
+        fields.remove(key);
+    } else {
+        fields.insert(key.to_string(), Value::String(normalize(value)?));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -299,5 +362,56 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("raine")
         );
+    }
+
+    #[test]
+    fn set_field_updates_common_metadata() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        init_vault(&vault).unwrap();
+
+        let (id, _) = capture(
+            &vault,
+            CaptureInput {
+                text: "Review quick edits".to_string(),
+                fragment_type: "todo".to_string(),
+                tags: String::new(),
+                status: "open".to_string(),
+                due: String::new(),
+                priority: String::new(),
+                assignee: String::new(),
+            },
+        )
+        .unwrap();
+
+        set_field(&vault, &id, QuickField::Due, "2026-03-01").unwrap();
+        set_field(&vault, &id, QuickField::Priority, "medium").unwrap();
+        set_field(&vault, &id, QuickField::Assignee, "raine").unwrap();
+        set_field(&vault, &id, QuickField::Tags, "ui #quick ui").unwrap();
+
+        let fragment = read_fragment(&vault, &id).unwrap();
+        assert_eq!(
+            fragment.extra_fields.get("due").and_then(|v| v.as_str()),
+            Some("2026-03-01")
+        );
+        assert_eq!(
+            fragment
+                .extra_fields
+                .get("priority")
+                .and_then(|v| v.as_str()),
+            Some("medium")
+        );
+        assert_eq!(
+            fragment
+                .extra_fields
+                .get("assignee")
+                .and_then(|v| v.as_str()),
+            Some("raine")
+        );
+        assert_eq!(fragment.tags, vec!["ui".to_string(), "quick".to_string()]);
+
+        set_field(&vault, &id, QuickField::Due, "").unwrap();
+        let fragment = read_fragment(&vault, &id).unwrap();
+        assert!(!fragment.extra_fields.contains_key("due"));
     }
 }

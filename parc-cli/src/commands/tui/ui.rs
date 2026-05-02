@@ -589,10 +589,10 @@ fn footer_context(app: &App) -> String {
 fn footer_commands(focus: Focus) -> &'static str {
     match focus {
         Focus::List => {
-            "/ search  Tab tabs  S-tab detail  arrows move  c capture  e edit  t toggle  ? help  q quit"
+            "/ search  Tab tabs  S-tab detail  arrows move  c capture  e edit  s status  D due  ? help"
         }
         Focus::Detail => {
-            "/ search  Tab tabs  S-tab list  arrows scroll  PgUp/PgDn  e edit  ? help  q quit"
+            "/ search  Tab tabs  S-tab list  arrows scroll  e edit  s status  D due  ? help"
         }
     }
 }
@@ -618,6 +618,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  c           capture a new fragment"),
         Line::from("  e           edit in $EDITOR"),
         Line::from("  t           toggle todo status (open ↔ done)"),
+        Line::from("  s           set status"),
+        Line::from("  D / P       set due date / priority"),
+        Line::from("  @ / #       set assignee / tags"),
         Line::from("  p           promote to another type"),
         Line::from("  a           archive (toggle)"),
         Line::from("  d           delete (with confirm)"),
