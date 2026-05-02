@@ -38,7 +38,7 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
     let outer = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(1),
-        Constraint::Length(3),
+        Constraint::Length(4),
     ])
     .split(area);
 
@@ -53,7 +53,7 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
     draw_detail(frame, body_chunks[1], vault, app);
 
     let status = app.status.text().to_string();
-    draw_footer(frame, outer[2], &status, app.focus);
+    draw_footer(frame, outer[2], &status, app);
 
     match &mut app.mode {
         Mode::Normal => {}
@@ -465,28 +465,51 @@ fn parsed_search_terms(search_input: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect, status: &str, focus: Focus) {
+fn draw_footer(frame: &mut Frame, area: Rect, status: &str, app: &App) {
     let block = Block::bordered()
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(FOOTER_BORDER))
         .title(" keys ");
-    let focus_label = match focus {
+    let context = footer_context(app);
+    let context_style = Style::default().fg(Color::White);
+    let muted = Style::default().fg(MUTED_TEXT);
+    let status_line = if status.is_empty() {
+        Line::from(Span::styled(context, context_style))
+    } else {
+        Line::from(vec![
+            Span::styled(status.to_string(), Style::default().fg(ACTIVE_TAB)),
+            Span::styled("  ", muted),
+            Span::styled(context, muted),
+        ])
+    };
+    let command_line = Line::from(Span::styled(footer_commands(app.focus), muted));
+    let paragraph = Paragraph::new(vec![status_line, command_line]).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+fn footer_context(app: &App) -> String {
+    let focus_label = match app.focus {
         Focus::List => "[list]",
         Focus::Detail => "[detail]",
     };
-    let base = format!(
-        "{} 1-3 tabs  / search  S-tab focus  arrows move  c capture  e edit  t toggle  p promote  a archive  d delete  y yank  ? help  q quit",
-        focus_label
-    );
-    let text = if status.is_empty() {
-        base
-    } else {
-        format!("{}  -  {}", status, base)
-    };
-    let paragraph = Paragraph::new(text)
-        .style(Style::default().fg(MUTED_TEXT))
-        .block(block);
-    frame.render_widget(paragraph, area);
+    match app.rows.len() {
+        0 => format!("{}  0  {}", app.tab.title(), focus_label),
+        total => {
+            let cur = app.list_state.selected().map(|idx| idx + 1).unwrap_or(0);
+            format!("{}  {}/{}  {}", app.tab.title(), cur, total, focus_label)
+        }
+    }
+}
+
+fn footer_commands(focus: Focus) -> &'static str {
+    match focus {
+        Focus::List => {
+            "/ search  Tab tabs  S-tab detail  arrows move  c capture  e edit  t toggle  ? help  q quit"
+        }
+        Focus::Detail => {
+            "/ search  Tab tabs  S-tab list  arrows scroll  PgUp/PgDn  e edit  ? help  q quit"
+        }
+    }
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
