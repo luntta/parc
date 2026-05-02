@@ -263,8 +263,8 @@ mod tests {
             "tag_name": "v0.2.0",
             "html_url": "https://github.com/luntta/parc/releases/tag/v0.2.0",
             "assets": [
-                { "name": "parc-installer.sh" },
-                { "name": "parc-installer.ps1" }
+                { "name": "parc-cli-installer.sh" },
+                { "name": "parc-cli-installer.ps1" }
             ]
         }))
         .unwrap();

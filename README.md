@@ -7,14 +7,26 @@ No accounts. No network unless you explicitly check for updates. No sync service
 ## Install
 
 ```bash
+# Latest published CLI release
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/luntta/parc/releases/latest/download/parc-cli-installer.sh | sh
+
+# Optional: standalone JSON-RPC server binary
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/luntta/parc/releases/latest/download/parc-server-installer.sh | sh
+```
+
+Windows PowerShell installers are published as `parc-cli-installer.ps1` and `parc-server-installer.ps1` on each GitHub release. Release archives include `.sha256` checksums.
+
+From a local checkout:
+
+```bash
 cargo install --path parc-cli
 cargo install --path parc-server  # optional: standalone JSON-RPC server binary
-
-# With WASM plugin support
 cargo install --path parc-cli --features wasm-plugins
 ```
 
-Requires Rust 1.70+. SQLite is bundled — no system dependencies. WASM plugins require the `wasm-plugins` feature (adds wasmtime).
+Source builds require Rust 1.70+. SQLite is bundled — no system dependencies. WASM plugins require the `wasm-plugins` feature (adds wasmtime).
 
 ## Quick start
 
@@ -409,6 +421,20 @@ parc/
 Files are the source of truth. The SQLite index is derived and fully rebuildable from the Markdown files at any time with `parc reindex`.
 
 The WASM plugin system is gated behind the `wasm-plugins` cargo feature — default builds have zero wasmtime overhead. Plugin manifest types and `parc plugin list/info` work without the feature; only runtime loading and execution require it.
+
+## Releasing
+
+Releases are tag-driven. Update the crate versions, run the local verification, then push a SemVer tag:
+
+```bash
+cargo fmt --check
+cargo test --workspace --no-default-features
+dist plan
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The `Release` GitHub Actions workflow uses `dist` to build `parc` and `parc-server` archives, shell/PowerShell installers, and SHA-256 checksums for GitHub Releases. Pull requests run in plan-only mode; only tag pushes publish. `parc update check` reads the latest GitHub release for `luntta/parc`, so published tags are the source of truth for update availability.
 
 ## License
 

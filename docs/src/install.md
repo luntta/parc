@@ -4,19 +4,36 @@ title: Install
 eyebrow: Getting started · §01
 ---
 
-parc is written in Rust. Install with `cargo`.
+parc publishes prebuilt binaries on GitHub Releases. You can also install from a local checkout with `cargo`.
 
 ## Requirements
 
-- Rust 1.70 or newer
-- A C compiler (for building bundled SQLite)
 - Linux, macOS, or Windows
+- Rust 1.70 or newer for source builds
+- A C compiler for source builds
 
-SQLite is bundled — no system dependencies required for the CLI or server.
+SQLite is bundled — no system SQLite dependency is required for the CLI or server.
 
 ## CLI
 
 The core install. Gets you the `parc` command and everything you need to capture, search, and manage fragments.
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/luntta/parc/releases/latest/download/parc-cli-installer.sh | sh
+```
+
+On Windows, use the PowerShell installer published on the same release:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/luntta/parc/releases/latest/download/parc-cli-installer.ps1 | iex"
+```
+
+Release archives and installer scripts are published with `.sha256` checksums.
+
+## From source
+
+Use `cargo install` when working from a checkout:
 
 ```bash
 cargo install --path parc-cli
@@ -24,8 +41,16 @@ cargo install --path parc-cli
 
 ## Optional server
 
+The standalone JSON-RPC server is also released as `parc-server-installer.sh` and `parc-server-installer.ps1`.
+
 ```bash
-# Standalone JSON-RPC server (also available as `parc server`)
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/luntta/parc/releases/latest/download/parc-server-installer.sh | sh
+```
+
+From source:
+
+```bash
 cargo install --path parc-server
 ```
 

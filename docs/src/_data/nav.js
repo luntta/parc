@@ -36,6 +36,7 @@ export default [
   { url: "/custom-types/", title: "Custom types" },
   { url: "/json-rpc/", title: "JSON-RPC server" },
   { url: "/plugins/", title: "Plugins" },
+  { url: "/releasing/", title: "Releasing" },
   { url: "/collaboration/", title: "Collaboration" },
   { url: "/architecture/", title: "Architecture" },
 ];

@@ -2,6 +2,9 @@
 name = "parc-cli"
 version = "0.1.0"
 edition = "2021"
+description = "Command-line interface for parc, a local-first personal archive"
+license = "MIT"
+repository = "https://github.com/luntta/parc"
 
 [[bin]]
 name = "parc"

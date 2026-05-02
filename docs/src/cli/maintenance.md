@@ -95,7 +95,7 @@ parc update check [--json]
 parc update [--json]
 ```
 
-Checks the latest published GitHub release and compares it with the installed version. This command performs an explicit network request to GitHub. Automatic installation is intentionally not implemented yet; use the listed release asset or your package manager.
+Checks the latest published GitHub release and compares it with the installed version. This command performs an explicit network request to GitHub. Automatic installation is intentionally not implemented yet; use the listed `dist` release asset, installer, or your package manager.
 
 ## schema
 
