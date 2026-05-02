@@ -107,29 +107,65 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App, config: &Config) {
         .border_style(Style::default().fg(border_color))
         .title(title);
 
-    let items: Vec<ListItem> = app
-        .rows
-        .iter()
-        .map(|row| ListItem::new(format_row(row, config.id_display_length)))
-        .collect();
+    let (items, selected_visual_index) = list_items(
+        &app.rows,
+        config.id_display_length,
+        app.list_state.selected(),
+    );
 
     let list = List::new(items)
         .block(block)
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-    frame.render_stateful_widget(list, area, &mut app.list_state);
+    let mut render_state = ratatui::widgets::ListState::default();
+    render_state.select(selected_visual_index);
+    frame.render_stateful_widget(list, area, &mut render_state);
+}
+
+fn list_items(
+    rows: &[Row],
+    id_len: usize,
+    selected_index: Option<usize>,
+) -> (Vec<ListItem<'static>>, Option<usize>) {
+    let mut items = Vec::new();
+    let mut row_to_visual = Vec::with_capacity(rows.len());
+    let mut last_section: Option<&str> = None;
+
+    for row in rows {
+        if row.section.as_deref() != last_section {
+            if let Some(section) = row.section.as_deref() {
+                let count = rows
+                    .iter()
+                    .filter(|candidate| candidate.section.as_deref() == Some(section))
+                    .count();
+                items.push(ListItem::new(section_header(section, count)));
+            }
+            last_section = row.section.as_deref();
+        }
+
+        row_to_visual.push(items.len());
+        items.push(ListItem::new(format_row(row, id_len)));
+    }
+
+    let selected_visual_index = selected_index.and_then(|idx| row_to_visual.get(idx).copied());
+    (items, selected_visual_index)
+}
+
+fn section_header(section: &str, count: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("{} ({})", section, count),
+        Style::default().fg(ACTIVE_TAB).add_modifier(Modifier::BOLD),
+    ))
 }
 
 fn format_row(row: &Row, id_len: usize) -> Line<'static> {
     let short = short_id(&row.id, id_len).to_string();
     let status = row.status.as_deref().unwrap_or("-").to_string();
-    let prefix = match &row.section {
-        Some(section) => format!(
-            "{}  {:<8} {:<10} {} - ",
-            short, row.fragment_type, status, section
-        ),
-        None => format!("{}  {:<8} {:<10} ", short, row.fragment_type, status),
-    };
+    let indent = if row.section.is_some() { "  " } else { "" };
+    let prefix = format!(
+        "{}{}  {:<8} {:<10} ",
+        indent, short, row.fragment_type, status
+    );
 
     let mut spans = vec![Span::raw(prefix)];
     spans.extend(highlight::spans_for_text(
