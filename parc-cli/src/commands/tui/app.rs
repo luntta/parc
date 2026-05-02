@@ -21,6 +21,7 @@ const HALF_PAGE_LINES: u16 = 5;
 const FRAGMENT_CACHE_CAP: usize = 64;
 const IDLE_POLL_SECS: u64 = 60;
 const STATUS_LIFETIME_SECS: u64 = 4;
+const TAB_COUNT: usize = 3;
 
 pub(super) enum Status {
     Idle,
@@ -49,6 +50,13 @@ impl Status {
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
+#[derive(Clone, Default)]
+struct TabViewState {
+    selected_id: Option<String>,
+    selected_index: Option<usize>,
+    detail_scroll: u16,
+}
+
 pub(super) struct App {
     pub tab: Tab,
     pub focus: Focus,
@@ -62,6 +70,7 @@ pub(super) struct App {
     pub dirty: bool,
     pub search: data::SearchState,
     pub cache: FragmentCache,
+    tab_states: [TabViewState; TAB_COUNT],
 }
 
 impl App {
@@ -83,7 +92,30 @@ impl App {
             dirty: true,
             search: data::SearchState::new(),
             cache: FragmentCache::new(FRAGMENT_CACHE_CAP),
+            tab_states: std::array::from_fn(|_| TabViewState::default()),
         }
+    }
+
+    fn save_tab_state(&mut self) {
+        let selected_index = self.list_state.selected();
+        self.tab_states[self.tab.index()] = TabViewState {
+            selected_id: selected_index.and_then(|idx| self.rows.get(idx).map(|r| r.id.clone())),
+            selected_index,
+            detail_scroll: self.detail_scroll,
+        };
+    }
+
+    fn restore_tab_state(&mut self) {
+        let state = &self.tab_states[self.tab.index()];
+        let selected_by_id = state
+            .selected_id
+            .as_ref()
+            .and_then(|id| self.rows.iter().position(|row| &row.id == id));
+        let selected = selected_by_id
+            .or_else(|| state.selected_index.filter(|idx| *idx < self.rows.len()))
+            .or_else(|| if self.rows.is_empty() { None } else { Some(0) });
+        self.list_state.select(selected);
+        self.detail_scroll = state.detail_scroll;
     }
 
     fn select(&mut self, idx: Option<usize>) {
@@ -214,12 +246,8 @@ fn handle_normal(
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => return Ok(false),
 
         (KeyCode::Tab, _) => {
-            app.tab = app.tab.next();
-            app.list_state.select(Some(0));
-            app.detail_scroll = 0;
-            reload_rows(app, vault, config)?;
+            switch_tab(app, app.tab.next(), vault, config)?;
             app.clear_status();
-            app.dirty = true;
         }
         (KeyCode::BackTab, _) => {
             app.focus = app.focus.toggle();
@@ -704,10 +732,14 @@ fn handle_help(app: &mut App, key: KeyEvent) -> Result<bool> {
 }
 
 fn switch_tab(app: &mut App, tab: Tab, vault: &Path, config: &Config) -> Result<()> {
+    if app.tab == tab {
+        return Ok(());
+    }
+
+    app.save_tab_state();
     app.tab = tab;
-    app.list_state.select(Some(0));
-    app.detail_scroll = 0;
     reload_rows(app, vault, config)?;
+    app.restore_tab_state();
     app.dirty = true;
     Ok(())
 }
@@ -739,7 +771,9 @@ fn clamp_selection(app: &mut App) {
         return;
     }
     let cur = app.list_state.selected().unwrap_or(0);
-    if cur >= app.rows.len() {
+    if app.list_state.selected().is_none() {
+        app.list_state.select(Some(0));
+    } else if cur >= app.rows.len() {
         app.list_state.select(Some(app.rows.len() - 1));
     }
 }
