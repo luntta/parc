@@ -236,6 +236,7 @@ parc import fragments.json [--dry-run]
 ```bash
 parc init                # Local vault in .parc/
 parc init --global       # Global vault in ~/.parc/
+parc --global n "Personal note" # Use ~/.parc/ inside a local vault
 parc vault               # Show active vault
 parc vault list          # List known vaults
 ```
@@ -324,13 +325,14 @@ parc completions <shell> # bash, zsh, fish, elvish
 | Flag | Description |
 |------|-------------|
 | `--vault <path>` | Use a specific vault (also: `PARC_VAULT` env var) |
+| `-g`, `--global` | Use the global `~/.parc/` vault, ignoring local discovery and `PARC_VAULT` |
 | `--json` | Machine-readable JSON output |
 
 ## Vault discovery
 
 parc finds your vault by checking, in order:
 
-1. `--vault` flag
+1. `--vault` flag, or `-g` / `--global` for the global `~/.parc/` vault
 2. `PARC_VAULT` environment variable
 3. `.parc/` in the current directory, then each parent up to `/`
 4. `~/.parc/` (global vault)

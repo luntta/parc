@@ -53,11 +53,15 @@ The `*` marker is the currently active vault. The list is just a registry — re
 
 ## Selecting a vault
 
-You can override the discovery order three ways:
+You can override the discovery order four ways:
 
 ```bash
 # Per-command flag
 parc --vault ~/work/api/.parc list todo
+
+# Global vault shortcut
+parc -g list todo
+parc --global n "Personal note"
 
 # Environment variable (whole shell session)
 export PARC_VAULT=~/work/api/.parc
@@ -66,7 +70,7 @@ export PARC_VAULT=~/work/api/.parc
 cd ~/work/api/src && parc list todo
 ```
 
-The `--vault` flag wins, then `PARC_VAULT`, then walk-up discovery, then the global `~/.parc/`.
+The `--vault` flag selects an explicit vault. The `-g` / `--global` flag selects the global `~/.parc/` vault directly and is mutually exclusive with `--vault`. Without either flag, `PARC_VAULT` wins, then walk-up discovery, then the global `~/.parc/`.
 
 ## Project + global
 

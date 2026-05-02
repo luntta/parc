@@ -16,12 +16,13 @@ A **vault** is a `.parc/` directory that holds everything: fragments, schemas, t
 | Init | `parc init --global` | `parc init` |
 
 A local vault always shadows the global one when you're inside it. Step outside and parc falls back to `~/.parc/` (or whatever the closest ancestor vault is).
+Use `parc -g` or `parc --global` to target the global vault from inside a local vault.
 
 ## Discovery order
 
-When you run `parc` without `--vault`, it finds your vault by checking, in order:
+When you run `parc` without a vault-selection flag, it finds your vault by checking, in order:
 
-1. The `--vault <path>` flag
+1. The `--vault <path>` flag, or `-g` / `--global` for `~/.parc/`
 2. The `PARC_VAULT` environment variable
 3. `.parc/` in the current directory, then each parent up to `/`
 4. `~/.parc/` (the global vault)
@@ -62,6 +63,9 @@ parc vault list      # list known vaults
 
 # Use a specific vault for one command
 parc --vault ~/work/.parc list todo
+
+# Use the global vault for one command, even inside a local vault
+parc --global n "Personal note"
 
 # Or set an env var for the session
 export PARC_VAULT=~/work/.parc

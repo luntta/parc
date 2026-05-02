@@ -52,6 +52,7 @@ You can change or extend the alias map in `<vault>/config.yml#aliases`.
 | Flag | Description |
 |------|-------------|
 | `--vault <path>` | Use a specific vault. Also via the `PARC_VAULT` env var. |
+| `-g`, `--global` | Use the global `~/.parc/` vault, ignoring local discovery and `PARC_VAULT`. |
 | `--json` | Machine-readable JSON output. Use this when scripting. |
 | `--no-color` | Suppress ANSI colour. Implied when stdout is not a TTY. |
 | `--quiet` | Suppress non-error output. |

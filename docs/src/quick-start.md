@@ -18,7 +18,7 @@ parc init
 parc init --global
 ```
 
-parc finds your vault by walking up from the current directory, then falling back to `~/.parc/`.
+parc finds your vault by walking up from the current directory, then falling back to `~/.parc/`. Inside a project-local vault, use `parc -g` or `parc --global` to write to the global vault instead.
 
 ## 2. Capture a thought
 
@@ -34,6 +34,7 @@ For typed creation with editor + schema validation use the type aliases:
 
 ```bash
 parc n "Look into connection pooling"   # = parc new note
+parc --global n "Book personal tax appointment"
 ```
 
 `n` is a built-in alias for `new note`. The same shorthand works for the other types: `t` for todo, `d` for decision, `r` for risk, `i` for idea. Any captured note can be promoted later — `parc promote 01JQ7V todo --priority high` rewrites it as a todo while keeping its body, tags, and links.

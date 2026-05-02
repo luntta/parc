@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::path::Path;
 use tempfile::TempDir;
 
 fn parc() -> Command {
@@ -22,7 +23,10 @@ fn init_vault(dir: &TempDir) -> String {
 /// (Integration tests can't open $EDITOR, so we use a helper approach.)
 fn create_fragment_directly(dir: &TempDir, type_name: &str, title: &str, body: &str) -> String {
     let vault_path = dir.path().join(".parc");
+    create_fragment_in_vault(&vault_path, type_name, title, body)
+}
 
+fn create_fragment_in_vault(vault_path: &Path, type_name: &str, title: &str, body: &str) -> String {
     // Use parc-core directly to create a fragment
     let config = parc_core::config::load_config(&vault_path).unwrap();
     let schemas = parc_core::schema::load_schemas(&vault_path).unwrap();
@@ -138,6 +142,84 @@ fn test_no_tui_runs_today_plain() {
         .success()
         .stdout(predicate::str::contains("Touched today"))
         .stdout(predicate::str::contains("Open & high priority"));
+}
+
+#[test]
+fn test_global_flag_uses_global_vault_from_local_directory() {
+    let local = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    init_vault(&local);
+
+    parc()
+        .args(["init", "--global"])
+        .env("HOME", home.path())
+        .assert()
+        .success();
+
+    create_fragment_directly(&local, "note", "Local only note", "Body");
+    create_fragment_in_vault(
+        &home.path().join(".parc"),
+        "note",
+        "Global only note",
+        "Body",
+    );
+
+    parc()
+        .args(["--global", "list"])
+        .env("HOME", home.path())
+        .env("PARC_VAULT", local.path().join(".parc"))
+        .current_dir(local.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Global only note"))
+        .stdout(predicate::str::contains("Local only note").not());
+}
+
+#[test]
+fn test_global_flag_supports_type_alias_new() {
+    let local = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    init_vault(&local);
+
+    parc()
+        .args(["init", "--global"])
+        .env("HOME", home.path())
+        .assert()
+        .success();
+
+    let assert = parc()
+        .args(["-g", "n", "Global alias note"])
+        .env("HOME", home.path())
+        .env("EDITOR", "false")
+        .current_dir(local.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let id = stdout.trim();
+    let global_fragment =
+        parc_core::fragment::read_fragment(&home.path().join(".parc"), id).unwrap();
+
+    assert_eq!(global_fragment.fragment_type, "note");
+    assert_eq!(global_fragment.title, "Global alias note");
+    assert!(parc_core::fragment::read_fragment(&local.path().join(".parc"), id).is_err());
+
+    let assert = parc()
+        .args(["n", "Trailing global alias note", "--global"])
+        .env("HOME", home.path())
+        .env("EDITOR", "false")
+        .current_dir(local.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let id = stdout.trim();
+    let global_fragment =
+        parc_core::fragment::read_fragment(&home.path().join(".parc"), id).unwrap();
+
+    assert_eq!(global_fragment.fragment_type, "note");
+    assert_eq!(global_fragment.title, "Trailing global alias note");
+    assert!(parc_core::fragment::read_fragment(&local.path().join(".parc"), id).is_err());
 }
 
 #[test]

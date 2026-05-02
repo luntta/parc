@@ -121,7 +121,7 @@ These take precedence over `config.yml` for the duration of a single command.
 
 | Variable | Effect |
 |----------|--------|
-| `PARC_VAULT` | Use this vault path, skipping discovery |
+| `PARC_VAULT` | Use this vault path, unless `--vault` or `-g` / `--global` is passed |
 | `EDITOR` / `VISUAL` | Editor for `parc new` / `parc edit` |
 | `NO_COLOR` | Disable colour, equivalent to `--no-color` |
 | `PARC_LOG` | Set log filter, e.g. `PARC_LOG=debug` |

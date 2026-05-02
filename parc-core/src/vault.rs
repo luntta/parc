@@ -57,6 +57,16 @@ pub fn resolve_vault(explicit: Option<&Path>) -> Result<PathBuf, ParcError> {
     discover_vault()
 }
 
+/// Resolve the global vault directly, bypassing PARC_VAULT and local discovery.
+pub fn resolve_global_vault() -> Result<PathBuf, ParcError> {
+    let global = global_vault_path()?;
+    if !is_vault(&global) {
+        return Err(ParcError::VaultNotFound(global));
+    }
+    validate_safe_vault(&global)?;
+    Ok(global)
+}
+
 /// Resolve a vault path: if it ends with `.parc`, use directly; otherwise append `.parc`.
 /// Returns VaultNotFound if the resolved path is not a valid vault.
 fn resolve_vault_path(path: &Path) -> Result<PathBuf, ParcError> {

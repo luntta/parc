@@ -2,12 +2,13 @@ mod commands;
 pub mod hooks;
 mod render;
 
+use std::ffi::OsString;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 
 use clap::Parser;
 use parc_core::schema::load_schemas;
-use parc_core::vault::resolve_vault;
+use parc_core::vault::{resolve_global_vault, resolve_vault};
 
 #[derive(Parser)]
 #[command(
@@ -20,6 +21,10 @@ struct Cli {
     #[arg(global = true, long)]
     vault: Option<PathBuf>,
 
+    /// Use or create the global vault (~/.parc), ignoring local discovery and PARC_VAULT
+    #[arg(global = true, short = 'g', long = "global")]
+    global_vault: bool,
+
     /// Disable the TUI for bare `parc`
     #[arg(global = true, long)]
     no_tui: bool,
@@ -31,11 +36,7 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Commands {
     /// Initialize a new vault
-    Init {
-        /// Create the global vault (~/.parc) instead of a local one
-        #[arg(long)]
-        global: bool,
-    },
+    Init,
     /// Quickly capture a note
     #[command(name = "+")]
     Capture {
@@ -488,27 +489,27 @@ enum PluginCommands {
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     let command = cli.command;
 
     match command {
         None => {
-            let vault = resolve_vault(cli.vault.as_deref())?;
+            let vault = resolve_cli_vault(cli.vault.as_deref(), cli.global_vault)?;
             if !cli.no_tui && io::stdout().is_terminal() {
                 commands::tui::run(&vault)
             } else {
                 commands::today::run(&vault, false)
             }
         }
-        Some(Commands::Init { global }) => {
-            if global && cli.vault.is_some() {
-                anyhow::bail!("--vault and --global are mutually exclusive");
+        Some(Commands::Init) => {
+            if cli.global_vault && cli.vault.is_some() {
+                anyhow::bail!("--vault and --global/-g are mutually exclusive");
             }
-            commands::init::run(global, cli.vault.as_deref())
+            commands::init::run(cli.global_vault, cli.vault.as_deref())
         }
         Some(Commands::Completions { shell }) => commands::completions::run(&shell),
         Some(Commands::Vault { subcommand, json }) => {
-            let vault = resolve_vault(cli.vault.as_deref())?;
+            let vault = resolve_cli_vault(cli.vault.as_deref(), cli.global_vault)?;
             commands::vault::run(
                 &vault,
                 subcommand.map(|s| match s {
@@ -519,7 +520,7 @@ fn main() -> anyhow::Result<()> {
         }
         Some(command) => {
             // All other commands: resolve vault once, pass to command
-            let vault = resolve_vault(cli.vault.as_deref())?;
+            let vault = resolve_cli_vault(cli.vault.as_deref(), cli.global_vault)?;
             match command {
                 Commands::Capture {
                     text,
@@ -676,12 +677,67 @@ fn main() -> anyhow::Result<()> {
                     }
                 },
                 Commands::External(args) => run_external_command(&vault, args),
-                Commands::Init { .. } | Commands::Vault { .. } | Commands::Completions { .. } => {
+                Commands::Init | Commands::Vault { .. } | Commands::Completions { .. } => {
                     unreachable!()
                 }
             }
         }
     }
+}
+
+fn parse_cli() -> Cli {
+    Cli::parse_from(normalize_global_flag(std::env::args_os()))
+}
+
+fn normalize_global_flag<I>(args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let mut args = args.into_iter();
+    let Some(program) = args.next() else {
+        return Vec::new();
+    };
+
+    let mut normalized = vec![program];
+    let mut rest = Vec::new();
+    let mut saw_global = false;
+    let mut after_double_dash = false;
+
+    for arg in args {
+        if after_double_dash {
+            rest.push(arg);
+            continue;
+        }
+
+        if arg == "--" {
+            after_double_dash = true;
+            rest.push(arg);
+            continue;
+        }
+
+        if arg == "-g" || arg == "--global" {
+            saw_global = true;
+        } else {
+            rest.push(arg);
+        }
+    }
+
+    if saw_global {
+        normalized.push(OsString::from("-g"));
+    }
+    normalized.extend(rest);
+    normalized
+}
+
+fn resolve_cli_vault(explicit: Option<&std::path::Path>, global: bool) -> anyhow::Result<PathBuf> {
+    if global {
+        if explicit.is_some() {
+            anyhow::bail!("--vault and --global/-g are mutually exclusive");
+        }
+        return Ok(resolve_global_vault()?);
+    }
+
+    Ok(resolve_vault(explicit)?)
 }
 
 /// Clap struct for parsing alias arguments (mirrors `New` variant fields minus `type_name`)
