@@ -1,9 +1,14 @@
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixListener;
+#[cfg(unix)]
 use tokio::signal;
+#[cfg(unix)]
 use tokio::sync::Semaphore;
 
 #[cfg(unix)]
@@ -85,15 +90,11 @@ fn validate_socket_parent(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn bind_owner_only(path: &Path) -> anyhow::Result<UnixListener> {
-    Ok(UnixListener::bind(path)?)
-}
-
 use crate::jsonrpc::{self, Response, RpcError};
 use crate::router::Router;
 
 const MAX_RPC_LINE_BYTES: usize = 8 * 1024 * 1024;
+#[cfg(unix)]
 const MAX_SOCKET_CONNECTIONS: usize = 64;
 
 enum LimitedLine {
@@ -244,15 +245,10 @@ pub async fn run_stdio(router: Arc<Router>) -> anyhow::Result<()> {
 }
 
 /// Run the server on a Unix domain socket.
+#[cfg(unix)]
 pub async fn run_socket(router: Arc<Router>, socket_path: PathBuf) -> anyhow::Result<()> {
-    #[cfg(unix)]
     validate_socket_parent(&socket_path)?;
-    #[cfg(unix)]
     remove_stale_socket(&socket_path)?;
-    #[cfg(not(unix))]
-    if socket_path.exists() {
-        let _ = std::fs::remove_file(&socket_path);
-    }
 
     let listener = bind_owner_only(&socket_path)?;
     eprintln!(
@@ -296,6 +292,12 @@ pub async fn run_socket(router: Arc<Router>, socket_path: PathBuf) -> anyhow::Re
             }
         }
     }
+}
+
+/// Unix domain sockets are not available on Windows.
+#[cfg(not(unix))]
+pub async fn run_socket(_router: Arc<Router>, _socket_path: PathBuf) -> anyhow::Result<()> {
+    anyhow::bail!("socket transport is only supported on Unix platforms")
 }
 
 #[cfg(test)]
