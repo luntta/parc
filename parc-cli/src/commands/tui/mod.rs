@@ -15,10 +15,13 @@ use ratatui::Terminal;
 mod actions;
 mod app;
 mod cache;
+mod command;
 mod data;
 mod highlight;
 mod markdown;
 mod ui;
+
+use command::{CommandEntry, LauncherKind};
 
 #[derive(Clone)]
 pub(crate) enum Mode {
@@ -33,7 +36,7 @@ pub(crate) enum Mode {
         action: InputAction,
     },
     Capture(CaptureForm),
-    Search(SearchPopup),
+    Launcher(LauncherPopup),
     Help,
 }
 
@@ -48,7 +51,7 @@ pub(crate) enum InputAction {
     SetField { id: String, field: QuickField },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QuickField {
     Status,
     Due,
@@ -244,7 +247,7 @@ impl CaptureField {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tab {
     Today,
     List,
@@ -344,9 +347,10 @@ impl From<FuzzyHit> for Row {
 }
 
 #[derive(Clone)]
-pub(crate) struct SearchPopup {
+pub(crate) struct LauncherPopup {
     pub input: String,
     pub rows: Vec<Row>,
+    pub commands: Vec<CommandEntry>,
     pub list_state: ListState,
     pub focus: Focus,
     pub detail_scroll: u16,
@@ -354,11 +358,12 @@ pub(crate) struct SearchPopup {
     pub error: Option<String>,
 }
 
-impl SearchPopup {
+impl LauncherPopup {
     pub(crate) fn new(input: String) -> Self {
         Self {
             input,
             rows: Vec::new(),
+            commands: Vec::new(),
             list_state: ListState::default(),
             focus: Focus::List,
             detail_scroll: 0,
@@ -367,13 +372,28 @@ impl SearchPopup {
         }
     }
 
+    pub(crate) fn kind(&self) -> LauncherKind {
+        command::launcher_kind(&self.input)
+    }
+
     pub(crate) fn selected_id(&self) -> Option<String> {
+        if self.kind() != LauncherKind::Fragments {
+            return None;
+        }
         let idx = self.list_state.selected()?;
         self.rows.get(idx).map(|row| row.id.clone())
     }
 
+    pub(crate) fn selected_command(&self) -> Option<CommandEntry> {
+        if self.kind() != LauncherKind::Commands {
+            return None;
+        }
+        let idx = self.list_state.selected()?;
+        self.commands.get(idx).copied()
+    }
+
     pub(crate) fn select_first(&mut self) {
-        if self.rows.is_empty() {
+        if self.item_count() == 0 {
             self.list_state.select(None);
         } else {
             self.list_state.select(Some(0));
@@ -382,7 +402,7 @@ impl SearchPopup {
     }
 
     pub(crate) fn move_list(&mut self, delta: i32) {
-        let len = self.rows.len();
+        let len = self.item_count();
         if len == 0 {
             return;
         }
@@ -401,13 +421,21 @@ impl SearchPopup {
     }
 
     pub(crate) fn clamp_selection(&mut self) {
-        if self.rows.is_empty() {
+        let len = self.item_count();
+        if len == 0 {
             self.list_state.select(None);
             return;
         }
         let cur = self.list_state.selected().unwrap_or(0);
-        if cur >= self.rows.len() {
-            self.list_state.select(Some(self.rows.len() - 1));
+        if cur >= len {
+            self.list_state.select(Some(len - 1));
+        }
+    }
+
+    pub(crate) fn item_count(&self) -> usize {
+        match self.kind() {
+            LauncherKind::Fragments => self.rows.len(),
+            LauncherKind::Commands => self.commands.len(),
         }
     }
 }

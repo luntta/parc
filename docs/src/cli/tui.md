@@ -28,7 +28,7 @@ A persistent menu strip across the top selects between three tabs. Below it sits
 
 The detail pane renders the selected fragment's body as styled Markdown — headings, lists, blockquotes, code, inline code, bold/italic, links, and `[[id]]` wiki-links are highlighted. A scrollbar appears when the body overflows the pane.
 
-`/` or `4` opens a two-pane search popup over the current view. The query field stays active while the left pane lists live DSL search results and the right pane previews the selected fragment with matched terms highlighted.
+`/` or `4` opens a two-pane launcher over the current view in fragment search mode. The query field stays active while the left pane lists live DSL search results and the right pane previews the selected fragment with matched terms highlighted. `Ctrl-P` opens the same launcher with `>` prefilled, switching the left pane to commands; typing after `>` filters commands and `Enter` runs the highlighted command.
 
 ## Keybindings
 
@@ -39,7 +39,8 @@ The detail pane renders the selected fragment's body as styled Markdown — head
 | `1` / `2` / `3` | Jump to a tab |
 | `Tab` | Cycle to the next tab |
 | `Shift-Tab` | Toggle pane focus (list ↔ detail) |
-| `/` / `4` | Open the search popup |
+| `/` / `4` | Open the launcher in fragment search mode |
+| `Ctrl-P` | Open the launcher in command mode |
 | `↓` / `↑` | Move within the focused pane |
 | `PgDn` / `PgUp` | Page within the focused pane |
 | `Home` / `End` | Top / bottom of the focused pane |
@@ -67,13 +68,15 @@ The detail pane renders the selected fragment's body as styled Markdown — head
 | Key | Action |
 |-----|--------|
 | `?` | Toggle the help overlay |
-| `Esc` | Cancel a modal; close the search popup |
+| `Esc` | Cancel a modal; close the launcher |
 | `y` / `n` | Confirm or cancel inside a confirm dialog |
 | `Enter` | Submit inside an input prompt |
 | `q` | Quit |
 | `Ctrl-C` | Quit from anywhere |
 
-In the search popup, all printable keystrokes append to the query. The query is parsed as the full [search DSL]({{ '/search-dsl/' | url }}), so `type:todo #backend due:this-week` filters the list as you type. Use `Shift-Tab` to move focus between results and preview, `Enter` to edit the selected result, and `Esc` to close the popup.
+In launcher search mode, all printable keystrokes append to the query. The query is parsed as the full [search DSL]({{ '/search-dsl/' | url }}), so `type:todo #backend due:this-week` filters the list as you type. Use `Shift-Tab` to move focus between results and preview, `Enter` to edit the selected result, and `Esc` to close the launcher.
+
+If the launcher input starts with `>`, it switches to command mode. Command results include existing TUI actions such as edit, toggle status, archive, delete, promote, yank ID, quick field edits, capture, reload, help, and tab switching. Commands that need a selected fragment are hidden when nothing is selected.
 
 ## When to use it
 

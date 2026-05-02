@@ -14,9 +14,10 @@ use ratatui::Frame;
 
 use super::app::App;
 use super::cache::FragmentCache;
+use super::command::{CommandEntry, LauncherKind};
 use super::highlight;
 use super::markdown;
-use super::{CaptureField, CaptureForm, Focus, Mode, Row, SearchPopup, Tab};
+use super::{CaptureField, CaptureForm, Focus, LauncherPopup, Mode, Row, Tab};
 
 const MENU_BORDER: Color = Color::DarkGray;
 const LIST_BORDER: Color = Color::Blue;
@@ -62,8 +63,8 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
         Mode::Confirm { prompt, .. } => draw_confirm(frame, area, prompt),
         Mode::Input { prompt, value, .. } => draw_input(frame, area, prompt, value),
         Mode::Capture(form) => draw_capture(frame, area, form),
-        Mode::Search(popup) => {
-            draw_search_popup(frame, area, vault, config, &mut app.cache, popup, &status)
+        Mode::Launcher(popup) => {
+            draw_launcher_popup(frame, area, vault, config, &mut app.cache, popup, &status)
         }
     }
 }
@@ -356,28 +357,32 @@ fn render_detail_lines(
     }
 }
 
-fn draw_search_popup(
+fn draw_launcher_popup(
     frame: &mut Frame,
     area: Rect,
     vault: &Path,
     config: &Config,
     cache: &mut FragmentCache,
-    popup: &mut SearchPopup,
+    popup: &mut LauncherPopup,
     status: &str,
 ) {
     popup.clamp_selection();
     let popup_area = centered_rect(92, 86, area);
     frame.render_widget(Clear, popup_area);
 
+    let title = match popup.kind() {
+        LauncherKind::Fragments => " search ",
+        LauncherKind::Commands => " commands ",
+    };
     let block = Block::bordered()
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(ACTIVE_TAB))
-        .title(" search ");
+        .title(title);
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
     if inner.width < 24 || inner.height < 5 {
-        let paragraph = Paragraph::new("Search needs a larger terminal.")
+        let paragraph = Paragraph::new("Launcher needs a larger terminal.")
             .style(Style::default().fg(Color::Red));
         frame.render_widget(paragraph, inner);
         return;
@@ -390,24 +395,24 @@ fn draw_search_popup(
     ])
     .split(inner);
 
-    draw_search_query(frame, chunks[0], &popup.input);
+    draw_launcher_query(frame, chunks[0], &popup.input);
 
     let body = chunks[1];
     let left_width = (body.width / 2).max(32).min(body.width.saturating_sub(24));
     let panes =
         Layout::horizontal([Constraint::Length(left_width), Constraint::Min(1)]).split(body);
-    draw_search_results(frame, panes[0], popup, config);
-    draw_search_preview(frame, panes[1], vault, cache, popup);
-    draw_search_footer(frame, chunks[2], popup, status);
+    draw_launcher_results(frame, panes[0], popup, config);
+    draw_launcher_detail(frame, panes[1], vault, cache, popup);
+    draw_launcher_footer(frame, chunks[2], popup, status);
 }
 
-fn draw_search_query(frame: &mut Frame, area: Rect, search_input: &str) {
+fn draw_launcher_query(frame: &mut Frame, area: Rect, search_input: &str) {
     let block = Block::bordered()
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(MENU_BORDER))
         .title(" query ");
     let line = Line::from(vec![
-        Span::styled("> ", Style::default().fg(ACTIVE_TAB)),
+        Span::styled("input ", Style::default().fg(ACTIVE_TAB)),
         Span::raw(search_input.to_string()),
         Span::styled("_", Style::default().fg(ACTIVE_TAB)),
     ]);
@@ -415,13 +420,25 @@ fn draw_search_query(frame: &mut Frame, area: Rect, search_input: &str) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_search_results(frame: &mut Frame, area: Rect, popup: &mut SearchPopup, config: &Config) {
-    let total = popup.rows.len();
+fn draw_launcher_results(
+    frame: &mut Frame,
+    area: Rect,
+    popup: &mut LauncherPopup,
+    config: &Config,
+) {
+    let total = match popup.kind() {
+        LauncherKind::Fragments => popup.rows.len(),
+        LauncherKind::Commands => popup.commands.len(),
+    };
+    let title_label = match popup.kind() {
+        LauncherKind::Fragments => "results",
+        LauncherKind::Commands => "commands",
+    };
     let title = if total == 0 {
-        " results ".to_string()
+        format!(" {} ", title_label)
     } else {
         let cur = popup.list_state.selected().map(|i| i + 1).unwrap_or(0);
-        format!(" results  {}/{} ", cur, total)
+        format!(" {}  {}/{} ", title_label, cur, total)
     };
     let border_color = if popup.focus == Focus::List {
         LIST_BORDER_FOCUSED
@@ -433,7 +450,20 @@ fn draw_search_results(frame: &mut Frame, area: Rect, popup: &mut SearchPopup, c
         .border_style(Style::default().fg(border_color))
         .title(title);
 
-    let items: Vec<ListItem> = if popup.input.trim().is_empty() {
+    let items: Vec<ListItem> = match popup.kind() {
+        LauncherKind::Fragments => fragment_result_items(popup, config),
+        LauncherKind::Commands => command_result_items(popup),
+    };
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+
+    frame.render_stateful_widget(list, area, &mut popup.list_state);
+}
+
+fn fragment_result_items(popup: &LauncherPopup, config: &Config) -> Vec<ListItem<'static>> {
+    if popup.input.trim().is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "Type a query to search",
             Style::default().fg(MUTED_TEXT),
@@ -454,13 +484,45 @@ fn draw_search_results(frame: &mut Frame, area: Rect, popup: &mut SearchPopup, c
             .iter()
             .map(|row| ListItem::new(format_row(row, config.id_display_length)))
             .collect()
-    };
+    }
+}
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+fn command_result_items(popup: &LauncherPopup) -> Vec<ListItem<'static>> {
+    if popup.commands.is_empty() {
+        return vec![ListItem::new(Line::from(Span::styled(
+            "No commands",
+            Style::default().fg(MUTED_TEXT),
+        )))];
+    }
 
-    frame.render_stateful_widget(list, area, &mut popup.list_state);
+    popup
+        .commands
+        .iter()
+        .map(|command| ListItem::new(format_command(*command)))
+        .collect()
+}
+
+fn format_command(command: CommandEntry) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(command.label.to_string()),
+        Span::styled(
+            format!("  {}", command.key),
+            Style::default().fg(MUTED_TEXT),
+        ),
+    ])
+}
+
+fn draw_launcher_detail(
+    frame: &mut Frame,
+    area: Rect,
+    vault: &Path,
+    cache: &mut FragmentCache,
+    popup: &mut LauncherPopup,
+) {
+    match popup.kind() {
+        LauncherKind::Fragments => draw_search_preview(frame, area, vault, cache, popup),
+        LauncherKind::Commands => draw_command_preview(frame, area, popup),
+    }
 }
 
 fn draw_search_preview(
@@ -468,7 +530,7 @@ fn draw_search_preview(
     area: Rect,
     vault: &Path,
     cache: &mut FragmentCache,
-    popup: &mut SearchPopup,
+    popup: &mut LauncherPopup,
 ) {
     let border_color = if popup.focus == Focus::Detail {
         DETAIL_BORDER_FOCUSED
@@ -512,11 +574,65 @@ fn draw_search_preview(
     );
 }
 
-fn draw_search_footer(frame: &mut Frame, area: Rect, popup: &SearchPopup, status: &str) {
-    let focus_label = match popup.focus {
-        Focus::List => "[results]",
-        Focus::Detail => "[preview]",
+fn draw_command_preview(frame: &mut Frame, area: Rect, popup: &mut LauncherPopup) {
+    let border_color = if popup.focus == Focus::Detail {
+        DETAIL_BORDER_FOCUSED
+    } else {
+        DETAIL_BORDER
     };
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(border_color))
+        .title(" command ");
+
+    let Some(command) = popup.selected_command() else {
+        let paragraph = Paragraph::new(Line::from(Span::styled(
+            "No command selected",
+            Style::default().fg(MUTED_TEXT),
+        )))
+        .block(block);
+        frame.render_widget(paragraph, area);
+        popup.detail_max_scroll = 0;
+        return;
+    };
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            command.label,
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(command.description),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Key: {}", command.key),
+            Style::default().fg(MUTED_TEXT),
+        )),
+    ];
+    if !command.aliases.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("Search: {}", command.aliases.join(", ")),
+            Style::default().fg(MUTED_TEXT),
+        )));
+    }
+    if command.requires_selection {
+        lines.push(Line::from(Span::styled(
+            "Requires selected fragment",
+            Style::default().fg(MUTED_TEXT),
+        )));
+    }
+
+    render_detail_lines(
+        frame,
+        area,
+        block,
+        lines,
+        &mut popup.detail_scroll,
+        &mut popup.detail_max_scroll,
+    );
+}
+
+fn draw_launcher_footer(frame: &mut Frame, area: Rect, popup: &LauncherPopup, status: &str) {
     let text = if let Some(err) = &popup.error {
         Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red)))
     } else if !status.is_empty() {
@@ -525,13 +641,11 @@ fn draw_search_footer(frame: &mut Frame, area: Rect, popup: &SearchPopup, status
             Style::default().fg(ACTIVE_TAB),
         ))
     } else {
-        Line::from(Span::styled(
-            format!(
-                "{} type query  arrows move  S-tab focus  Enter edit  Esc close",
-                focus_label
-            ),
-            Style::default().fg(MUTED_TEXT),
-        ))
+        let help = match popup.kind() {
+            LauncherKind::Fragments => "type query  > commands  arrows move  Enter edit  Esc close",
+            LauncherKind::Commands => "type command  Backspace to search  Enter run  Esc close",
+        };
+        Line::from(Span::styled(help, Style::default().fg(MUTED_TEXT)))
     };
     frame.render_widget(Paragraph::new(text), area);
 }
@@ -589,10 +703,10 @@ fn footer_context(app: &App) -> String {
 fn footer_commands(focus: Focus) -> &'static str {
     match focus {
         Focus::List => {
-            "/ search  Tab tabs  S-tab detail  arrows move  c capture  e edit  s status  D due  ? help"
+            "/ search  Ctrl-P commands  Tab tabs  S-tab detail  arrows move  c capture  e edit  ? help"
         }
         Focus::Detail => {
-            "/ search  Tab tabs  S-tab list  arrows scroll  e edit  s status  D due  ? help"
+            "/ search  Ctrl-P commands  Tab tabs  S-tab list  arrows scroll  e edit  ? help"
         }
     }
 }
@@ -608,7 +722,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  1-3         switch tab (Today/List/Stale)"),
         Line::from("  Tab         cycle tabs"),
         Line::from("  Shift-Tab   toggle pane focus (list / detail)"),
-        Line::from("  / or 4      open search popup"),
+        Line::from("  / or 4      open launcher in search mode"),
+        Line::from("  Ctrl-P      open launcher in command mode"),
         Line::from("  ↓ / ↑       move within focused pane"),
         Line::from("  PgDn/PgUp   page within focused pane"),
         Line::from("  Home / End  top / bottom of focused pane"),
@@ -624,14 +739,16 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  p           promote to another type"),
         Line::from("  a           archive (toggle)"),
         Line::from("  d           delete (with confirm)"),
-        Line::from("  y           show full id in status bar"),
+        Line::from("  y           copy full id to clipboard"),
         Line::from("  r           reload current view"),
         Line::from(""),
         Line::from("General"),
         Line::from("  ?           toggle this help"),
+        Line::from("  Launcher    plain text searches, > filters commands"),
         Line::from("  Search      type to query, Enter edits, Esc closes"),
+        Line::from("  Commands    type after >, Enter runs highlighted command"),
         Line::from("  q           quit"),
-        Line::from("  Esc         cancel modal / close search"),
+        Line::from("  Esc         cancel modal / close launcher"),
     ];
 
     let popup = centered_rect(64, 80, area);

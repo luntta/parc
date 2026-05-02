@@ -11,9 +11,10 @@ use ratatui::widgets::ListState;
 use ratatui::Terminal;
 
 use super::cache::FragmentCache;
+use super::command::{self, CommandAction, LauncherKind};
 use super::{
-    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, Mode,
-    QuickField, Row, SearchPopup, Tab,
+    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, LauncherPopup,
+    Mode, QuickField, Row, Tab,
 };
 
 const PAGE_LINES: u16 = 10;
@@ -63,7 +64,7 @@ pub(super) struct App {
     pub list_state: ListState,
     pub detail_scroll: u16,
     pub detail_max_scroll: u16,
-    pub search_input: String,
+    pub launcher_input: String,
     pub rows: Vec<super::Row>,
     pub status: Status,
     pub mode: Mode,
@@ -85,7 +86,7 @@ impl App {
             list_state,
             detail_scroll: 0,
             detail_max_scroll: 0,
-            search_input: String::new(),
+            launcher_input: String::new(),
             rows,
             status: Status::Idle,
             mode: Mode::Normal,
@@ -216,8 +217,8 @@ pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Re
                     prompt,
                 } => handle_input(&mut app, key, prompt, value, action, vault, config)?,
                 Mode::Capture(form) => handle_capture(&mut app, key, form, vault, config)?,
-                Mode::Search(popup) => {
-                    handle_search(&mut app, key, popup, terminal, vault, config)?
+                Mode::Launcher(popup) => {
+                    handle_launcher(&mut app, key, popup, terminal, vault, config)?
                 }
                 Mode::Help => handle_help(&mut app, key)?,
             },
@@ -261,7 +262,10 @@ fn handle_normal(
         (KeyCode::Char('1'), _) => switch_tab(app, Tab::Today, vault, config)?,
         (KeyCode::Char('2'), _) => switch_tab(app, Tab::List, vault, config)?,
         (KeyCode::Char('3'), _) => switch_tab(app, Tab::Stale, vault, config)?,
-        (KeyCode::Char('4'), _) | (KeyCode::Char('/'), _) => open_search(app, vault),
+        (KeyCode::Char('4'), _) | (KeyCode::Char('/'), _) => open_launcher(app, vault, ""),
+        (KeyCode::Char('p') | KeyCode::Char('P'), m) if m.contains(KeyModifiers::CONTROL) => {
+            open_launcher(app, vault, ">")
+        }
 
         (KeyCode::Char('r'), _) if plain => {
             reload_rows(app, vault, config)?;
@@ -272,13 +276,7 @@ fn handle_normal(
             app.mode = Mode::Help;
             app.dirty = true;
         }
-        (KeyCode::Char('c'), _) if plain => match new_capture_form(vault) {
-            Ok(form) => {
-                app.mode = Mode::Capture(form);
-                app.dirty = true;
-            }
-            Err(err) => app.set_status(format!("capture unavailable: {}", err)),
-        },
+        (KeyCode::Char('c'), _) if plain => open_capture_form(app, vault),
 
         (KeyCode::Char('e'), _) if plain => {
             if let Some(id) = app.selected_id() {
@@ -302,22 +300,12 @@ fn handle_normal(
         }
         (KeyCode::Char('d'), _) if plain => {
             if let Some(id) = app.selected_id() {
-                let prompt = format!("Delete {}? (y/n)", &id[..8.min(id.len())]);
-                app.mode = Mode::Confirm {
-                    prompt,
-                    action: ConfirmAction::Delete { id },
-                };
-                app.dirty = true;
+                open_delete_confirm(app, id);
             }
         }
         (KeyCode::Char('p'), _) if plain => {
             if let Some(id) = app.selected_id() {
-                app.mode = Mode::Input {
-                    prompt: "Promote to type:".to_string(),
-                    value: String::new(),
-                    action: InputAction::Promote { id },
-                };
-                app.dirty = true;
+                open_promote_input(app, id);
             }
         }
         (KeyCode::Char('s'), _) if plain => start_field_input(app, QuickField::Status),
@@ -378,10 +366,10 @@ fn handle_normal(
     Ok(true)
 }
 
-fn handle_search(
+fn handle_launcher(
     app: &mut App,
     key: KeyEvent,
-    mut popup: SearchPopup,
+    mut popup: LauncherPopup,
     terminal: &mut Term,
     vault: &Path,
     config: &Config,
@@ -391,7 +379,7 @@ fn handle_search(
     match key.code {
         KeyCode::Char('c') if ctrl => return Ok(false),
         KeyCode::Esc => {
-            app.search_input = popup.input;
+            app.launcher_input = popup.input;
             app.mode = Mode::Normal;
             app.dirty = true;
             return Ok(true);
@@ -424,17 +412,17 @@ fn handle_search(
             Focus::Detail => popup.scroll_detail(-(HALF_PAGE_LINES as i32)),
         },
         KeyCode::Home => match popup.focus {
-            Focus::List => {
-                popup
-                    .list_state
-                    .select(if popup.rows.is_empty() { None } else { Some(0) })
-            }
+            Focus::List => popup.list_state.select(if popup.item_count() == 0 {
+                None
+            } else {
+                Some(0)
+            }),
             Focus::Detail => popup.detail_scroll = 0,
         },
         KeyCode::End => match popup.focus {
             Focus::List => {
-                let last = popup.rows.len().saturating_sub(1);
-                popup.list_state.select(if popup.rows.is_empty() {
+                let last = popup.item_count().saturating_sub(1);
+                popup.list_state.select(if popup.item_count() == 0 {
                     None
                 } else {
                     Some(last)
@@ -444,25 +432,36 @@ fn handle_search(
         },
         KeyCode::Backspace => {
             if popup.input.pop().is_some() {
-                reload_search_popup(app, &mut popup, vault, true);
+                reload_launcher_popup(app, &mut popup, vault, true);
             }
         }
-        KeyCode::Enter => {
-            if let Some(id) = popup.selected_id() {
-                edit_id(app, terminal, vault, config, &id)?;
-                reload_search_popup(app, &mut popup, vault, false);
+        KeyCode::Enter => match popup.kind() {
+            LauncherKind::Fragments => {
+                if let Some(id) = popup.selected_id() {
+                    edit_id(app, terminal, vault, config, &id)?;
+                    reload_launcher_popup(app, &mut popup, vault, false);
+                }
             }
-        }
+            LauncherKind::Commands => {
+                if let Some(command) = popup.selected_command() {
+                    app.launcher_input = popup.input;
+                    app.mode = Mode::Normal;
+                    execute_command_action(app, command.action, terminal, vault, config)?;
+                    app.dirty = true;
+                    return Ok(true);
+                }
+            }
+        },
         KeyCode::Char(c) if !ctrl => {
             popup.input.push(c);
-            reload_search_popup(app, &mut popup, vault, true);
+            reload_launcher_popup(app, &mut popup, vault, true);
         }
         _ => {}
     }
 
     popup.clamp_selection();
-    app.search_input = popup.input.clone();
-    app.mode = Mode::Search(popup);
+    app.launcher_input = popup.input.clone();
+    app.mode = Mode::Launcher(popup);
     app.dirty = true;
     Ok(true)
 }
@@ -650,11 +649,39 @@ fn submit_capture(app: &mut App, form: &CaptureForm, vault: &Path, config: &Conf
     Ok(())
 }
 
-fn open_search(app: &mut App, vault: &Path) {
-    let mut popup = SearchPopup::new(app.search_input.clone());
-    reload_search_popup(app, &mut popup, vault, true);
-    app.mode = Mode::Search(popup);
+fn open_launcher(app: &mut App, vault: &Path, input: &str) {
+    let mut popup = LauncherPopup::new(input.to_string());
+    reload_launcher_popup(app, &mut popup, vault, true);
+    app.mode = Mode::Launcher(popup);
     app.clear_status();
+    app.dirty = true;
+}
+
+fn open_capture_form(app: &mut App, vault: &Path) {
+    match new_capture_form(vault) {
+        Ok(form) => {
+            app.mode = Mode::Capture(form);
+            app.dirty = true;
+        }
+        Err(err) => app.set_status(format!("capture unavailable: {}", err)),
+    }
+}
+
+fn open_delete_confirm(app: &mut App, id: String) {
+    let prompt = format!("Delete {}? (y/n)", &id[..8.min(id.len())]);
+    app.mode = Mode::Confirm {
+        prompt,
+        action: ConfirmAction::Delete { id },
+    };
+    app.dirty = true;
+}
+
+fn open_promote_input(app: &mut App, id: String) {
+    app.mode = Mode::Input {
+        prompt: "Promote to type:".to_string(),
+        value: String::new(),
+        action: InputAction::Promote { id },
+    };
     app.dirty = true;
 }
 
@@ -683,9 +710,21 @@ fn quick_field_value(row: &Row, field: QuickField) -> String {
     }
 }
 
-fn reload_search_popup(
+fn reload_launcher_popup(
     app: &mut App,
-    popup: &mut SearchPopup,
+    popup: &mut LauncherPopup,
+    vault: &Path,
+    reset_selection: bool,
+) {
+    match popup.kind() {
+        LauncherKind::Fragments => reload_fragment_results(app, popup, vault, reset_selection),
+        LauncherKind::Commands => reload_command_results(app, popup, reset_selection),
+    }
+}
+
+fn reload_fragment_results(
+    app: &mut App,
+    popup: &mut LauncherPopup,
     vault: &Path,
     reset_selection: bool,
 ) {
@@ -694,6 +733,7 @@ fn reload_search_popup(
     } else {
         popup.selected_id()
     };
+    popup.commands.clear();
 
     match data::load_search_rows(vault, &popup.input, &mut app.search) {
         Ok(rows) => {
@@ -715,6 +755,87 @@ fn reload_search_popup(
             popup.select_first();
         }
     }
+}
+
+fn reload_command_results(app: &App, popup: &mut LauncherPopup, reset_selection: bool) {
+    let selected_action = if reset_selection {
+        None
+    } else {
+        popup.selected_command().map(|command| command.action)
+    };
+    popup.rows.clear();
+    popup.error = None;
+    popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
+
+    if let Some(action) = selected_action {
+        if let Some(idx) = popup
+            .commands
+            .iter()
+            .position(|command| command.action == action)
+        {
+            popup.list_state.select(Some(idx));
+            return;
+        }
+    }
+
+    popup.select_first();
+}
+
+fn execute_command_action(
+    app: &mut App,
+    action: CommandAction,
+    terminal: &mut Term,
+    vault: &Path,
+    config: &Config,
+) -> Result<()> {
+    match action {
+        CommandAction::Edit => {
+            if let Some(id) = app.selected_id() {
+                edit_id(app, terminal, vault, config, &id)?;
+            }
+        }
+        CommandAction::ToggleStatus => {
+            if let Some(id) = app.selected_id() {
+                toggle_status_id(app, vault, config, &id)?;
+            }
+        }
+        CommandAction::Archive => {
+            if let Some(id) = app.selected_id() {
+                archive_id(app, vault, config, &id)?;
+            }
+        }
+        CommandAction::Delete => {
+            if let Some(id) = app.selected_id() {
+                open_delete_confirm(app, id);
+            }
+        }
+        CommandAction::Promote => {
+            if let Some(id) = app.selected_id() {
+                open_promote_input(app, id);
+            }
+        }
+        CommandAction::YankId => {
+            if let Some(id) = app.selected_id() {
+                yank_id(app, &id);
+            }
+        }
+        CommandAction::SetField(field) => start_field_input(app, field),
+        CommandAction::Capture => open_capture_form(app, vault),
+        CommandAction::Reload => {
+            reload_rows(app, vault, config)?;
+            app.set_status("reloaded");
+        }
+        CommandAction::Help => {
+            app.mode = Mode::Help;
+            app.dirty = true;
+        }
+        CommandAction::SwitchTab(tab) => {
+            switch_tab(app, tab, vault, config)?;
+            app.clear_status();
+        }
+    }
+
+    Ok(())
 }
 
 fn edit_id(
