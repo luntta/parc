@@ -860,7 +860,7 @@ pub fn load_fuzzy_candidates(
     let clauses = build_filter_clauses(&query.filters, 1)?;
 
     let mut sql = String::from(
-        "SELECT f.id, f.type, f.title, f.status, f.body, f.created_at, f.updated_at \
+        "SELECT f.id, f.type, f.title, f.status, f.priority, f.due, f.assignee, f.body, f.created_at, f.updated_at \
          FROM fragments f",
     );
     sql.push_str(&clauses.joins);
@@ -887,9 +887,12 @@ pub fn load_fuzzy_candidates(
             fragment_type: row.get(1)?,
             title: row.get(2)?,
             status: row.get(3)?,
-            body: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
+            priority: row.get(4)?,
+            due: row.get(5)?,
+            assignee: row.get(6)?,
+            body: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
             tags: Vec::new(),
         })
     })?;

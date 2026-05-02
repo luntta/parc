@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use parc_core::config::Config;
+use parc_core::fragment::read_fragment;
 use parc_core::fuzzy::{FuzzyEngine, FuzzyHit};
 use parc_core::index::open_index;
 use parc_core::search::{
@@ -89,10 +90,12 @@ pub(super) fn load_search_rows(
 }
 
 fn query_rows(vault: &Path, query: SearchQuery) -> Result<Vec<Row>> {
-    Ok(resurfacing::run_search(vault, &query)?
+    let mut rows: Vec<Row> = resurfacing::run_search(vault, &query)?
         .into_iter()
         .map(Row::from)
-        .collect())
+        .collect();
+    hydrate_rows(vault, &mut rows);
+    Ok(rows)
 }
 
 fn fuzzy_pattern(query: &SearchQuery) -> String {
@@ -217,6 +220,7 @@ fn load_today_rows(vault: &Path, config: &Config) -> Result<Vec<Row>> {
         .into_iter(),
     );
 
+    hydrate_rows(vault, &mut rows);
     Ok(rows)
 }
 
@@ -249,7 +253,9 @@ fn load_stale_rows(vault: &Path, config: &Config) -> Result<Vec<Row>> {
 
     let mut results = resurfacing::merge_unique(groups);
     results.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
-    Ok(results.into_iter().map(Row::from).collect())
+    let mut rows: Vec<Row> = results.into_iter().map(Row::from).collect();
+    hydrate_rows(vault, &mut rows);
+    Ok(rows)
 }
 
 fn push_section(rows: &mut Vec<Row>, section: &str, results: impl Iterator<Item = SearchResult>) {
@@ -257,4 +263,28 @@ fn push_section(rows: &mut Vec<Row>, section: &str, results: impl Iterator<Item 
         row.section = Some(section.to_string());
         rows.push(row);
     }
+}
+
+fn hydrate_rows(vault: &Path, rows: &mut [Row]) {
+    for row in rows {
+        let Ok(fragment) = read_fragment(vault, &row.id) else {
+            continue;
+        };
+        row.priority = string_field(&fragment.extra_fields, "priority");
+        row.due = string_field(&fragment.extra_fields, "due");
+        row.assignee = string_field(&fragment.extra_fields, "assignee");
+        if row.tags.is_empty() {
+            row.tags = fragment.tags;
+        }
+    }
+}
+
+fn string_field(
+    fields: &std::collections::BTreeMap<String, serde_json::Value>,
+    key: &str,
+) -> Option<String> {
+    fields
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
 }

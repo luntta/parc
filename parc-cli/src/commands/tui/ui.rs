@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
 use parc_core::config::Config;
 use parc_core::search::{parse_query, TextTerm};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -174,7 +175,55 @@ fn format_row(row: &Row, id_len: usize) -> Line<'static> {
         &row.title_match_indices,
         &[],
     ));
+    if let Some(metadata) = row_metadata(row) {
+        spans.push(Span::styled(
+            format!("  {}", metadata),
+            Style::default().fg(MUTED_TEXT),
+        ));
+    }
     Line::from(spans)
+}
+
+fn row_metadata(row: &Row) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(due) = row.due.as_deref().filter(|value| !value.is_empty()) {
+        parts.push(format!("due:{}", due));
+    }
+    if let Some(priority) = row.priority.as_deref().filter(|value| !value.is_empty()) {
+        parts.push(format!("pri:{}", priority));
+    }
+    if let Some(assignee) = row.assignee.as_deref().filter(|value| !value.is_empty()) {
+        parts.push(format!("@{}", assignee));
+    }
+    if let Some(age) = updated_age(&row.updated_at) {
+        parts.push(format!("upd:{}", age));
+    }
+    for tag in row.tags.iter().take(2) {
+        parts.push(format!("#{}", tag));
+    }
+    if row.tags.len() > 2 {
+        parts.push(format!("+{} tags", row.tags.len() - 2));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+fn updated_age(updated_at: &str) -> Option<String> {
+    let dt = DateTime::parse_from_rfc3339(updated_at)
+        .ok()?
+        .with_timezone(&Utc);
+    let duration = Utc::now().signed_duration_since(dt);
+    if duration.num_days() >= 1 {
+        Some(format!("{}d", duration.num_days()))
+    } else if duration.num_hours() >= 1 {
+        Some(format!("{}h", duration.num_hours()))
+    } else {
+        Some(format!("{}m", duration.num_minutes().max(0)))
+    }
 }
 
 fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
