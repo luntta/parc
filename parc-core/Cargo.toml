@@ -12,15 +12,15 @@ serde_yaml_ng = "0.10"
 serde_json = "1"
 rusqlite = { version = "0.34", features = ["bundled"] }
 ulid = "1"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 thiserror = "1"
 libc = "0.2"
-comrak = "0.52.0"
+comrak = { version = "0.52.0", default-features = false }
 regex = "1"
 similar = "2"
 toml = "0.8"
 nucleo = "0.5"
-wasmtime = { version = "43.0.1", optional = true, default-features = false, features = ["cranelift", "runtime"] }
+wasmtime = { version = "43.0.2", optional = true, default-features = false, features = ["cranelift", "runtime"] }
 
 [features]
 default = []

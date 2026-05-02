@@ -18,12 +18,12 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 anyhow = "1"
 termimad = "0.30"
-comrak = "0.52.0"
+comrak = { version = "0.52.0", default-features = false }
 crossterm = "0.29"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
-ratatui = { version = "0.29", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 serde_json = "1"
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 semver = "1"
 ureq = { version = "2", features = ["json"] }
 
