@@ -126,6 +126,8 @@ These take precedence over `config.yml` for the duration of a single command.
 | `NO_COLOR` | Disable colour, equivalent to `--no-color` |
 | `PARC_LOG` | Set log filter, e.g. `PARC_LOG=debug` |
 
+`parc update check` is the only built-in CLI command that makes a network request; it queries the latest GitHub release when run explicitly.
+
 ## Schema overrides
 
 You can also override the built-in schemas by dropping a file with the same name in `<vault>/schemas/`. parc resolves schemas with vault-local overrides taking precedence over built-ins. Use this carefully — fragments created with one schema and read against another can fail validation.

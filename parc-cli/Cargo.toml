@@ -21,6 +21,8 @@ arboard = { version = "3", default-features = false, features = ["wayland-data-c
 ratatui = { version = "0.29", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 serde_json = "1"
 chrono = "0.4"
+semver = "1"
+ureq = { version = "2", features = ["json"] }
 
 [features]
 default = []

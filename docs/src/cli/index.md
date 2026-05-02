@@ -19,7 +19,7 @@ The `parc` command is the primary way to interact with a vault. It speaks JSON w
 | [Organization]({{ '/cli/organization/' | url }}) | `tags`, `archive`, `trash` |
 | [Export & import]({{ '/cli/export-import/' | url }}) | `export`, `import` |
 | [Vault management]({{ '/cli/vault/' | url }}) | `init`, `vault` |
-| [Maintenance]({{ '/cli/maintenance/' | url }}) | `reindex`, `doctor`, `git-hooks`, `types`, `schema`, `completions` |
+| [Maintenance]({{ '/cli/maintenance/' | url }}) | `reindex`, `doctor`, `git-hooks`, `types`, `schema`, `version`, `update`, `completions` |
 | [Terminal UI]({{ '/cli/tui/' | url }}) | `tui` (also: bare `parc` in a TTY) |
 
 A few commands are also dispatched through this CLI but live in their own pages:

@@ -145,6 +145,30 @@ fn test_no_tui_runs_today_plain() {
 }
 
 #[test]
+fn test_version_command_does_not_require_vault() {
+    let tmp = TempDir::new().unwrap();
+
+    parc()
+        .args(["version"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("parc"));
+
+    let output = parc()
+        .args(["version", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["name"], "parc");
+    assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(json["repo"], "luntta/parc");
+}
+
+#[test]
 fn test_global_flag_uses_global_vault_from_local_directory() {
     let local = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();

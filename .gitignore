@@ -1,6 +1,6 @@
 /target
 **/*.rs.bk
-Cargo.lock
+/parc-core/tests/fixtures/plugins/echo-plugin/Cargo.lock
 
 # Frontend
 node_modules/

@@ -4,7 +4,7 @@ title: Maintenance
 eyebrow: CLI · §10
 ---
 
-Index management, vault diagnostics, schemas, and shell completions.
+Index management, vault diagnostics, schemas, version checks, and shell completions.
 
 ## reindex
 
@@ -78,6 +78,24 @@ risk       (built-in)
 idea       (built-in)
 meeting    (custom: schemas/meeting.yml)
 ```
+
+## version
+
+```bash
+parc version [--json]
+parc --version
+```
+
+Prints the installed CLI version. The JSON form includes the release repository used by update checks.
+
+## update
+
+```bash
+parc update check [--json]
+parc update [--json]
+```
+
+Checks the latest published GitHub release and compares it with the installed version. This command performs an explicit network request to GitHub. Automatic installation is intentionally not implemented yet; use the listed release asset or your package manager.
 
 ## schema
 

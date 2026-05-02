@@ -33,4 +33,6 @@ pub mod trash;
 pub mod tui;
 pub mod types;
 pub mod unlink;
+pub mod update;
 pub mod vault;
+pub mod version;

@@ -13,6 +13,7 @@ use parc_core::vault::{resolve_global_vault, resolve_vault};
 #[derive(Parser)]
 #[command(
     name = "parc",
+    version,
     about = "Personal Archive — structured fragments of thought"
 )]
 #[command(allow_external_subcommands = true)]
@@ -332,6 +333,20 @@ enum Commands {
         /// Shell name (bash, zsh, fish, elvish)
         shell: String,
     },
+    /// Print parc version information
+    Version {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check for parc updates
+    Update {
+        #[command(subcommand)]
+        subcommand: Option<UpdateCommands>,
+        /// Output as JSON when no subcommand is given
+        #[arg(long)]
+        json: bool,
+    },
     /// Rebuild the search index from fragment files
     Reindex {
         /// Output as JSON
@@ -488,6 +503,16 @@ enum PluginCommands {
     },
 }
 
+#[derive(clap::Subcommand)]
+enum UpdateCommands {
+    /// Check the latest GitHub release
+    Check {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = parse_cli();
     let command = cli.command;
@@ -508,6 +533,11 @@ fn main() -> anyhow::Result<()> {
             commands::init::run(cli.global_vault, cli.vault.as_deref())
         }
         Some(Commands::Completions { shell }) => commands::completions::run(&shell),
+        Some(Commands::Version { json }) => commands::version::run(json),
+        Some(Commands::Update { subcommand, json }) => match subcommand {
+            Some(UpdateCommands::Check { json }) => commands::update::run_check(json),
+            None => commands::update::run_check(json),
+        },
         Some(Commands::Vault { subcommand, json }) => {
             let vault = resolve_cli_vault(cli.vault.as_deref(), cli.global_vault)?;
             commands::vault::run(
@@ -677,9 +707,11 @@ fn main() -> anyhow::Result<()> {
                     }
                 },
                 Commands::External(args) => run_external_command(&vault, args),
-                Commands::Init | Commands::Vault { .. } | Commands::Completions { .. } => {
-                    unreachable!()
-                }
+                Commands::Init
+                | Commands::Vault { .. }
+                | Commands::Completions { .. }
+                | Commands::Version { .. }
+                | Commands::Update { .. } => unreachable!(),
             }
         }
     }

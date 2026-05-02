@@ -2,7 +2,7 @@
 
 A local-first CLI for capturing, organizing, and retrieving structured fragments of thought. Notes, todos, decisions, risks, ideas — stored as plain Markdown in a `.parc` vault, indexed with SQLite FTS5, and searchable with a composable query DSL.
 
-No accounts. No network. No sync service. Just files you own.
+No accounts. No network unless you explicitly check for updates. No sync service. Just files you own.
 
 ## Install
 
@@ -315,6 +315,8 @@ parc reindex             # Rebuild index from files
 parc doctor              # Check vault health
 parc git-hooks install   # Add post-merge reindex hook
 parc types               # List registered types
+parc version             # Print installed version
+parc update check        # Check latest GitHub release
 parc schema show <type>  # Print schema definition
 parc schema add <file>   # Register a custom type
 parc completions <shell> # bash, zsh, fish, elvish
