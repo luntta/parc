@@ -50,7 +50,6 @@ pub(super) fn load_rows(vault: &Path, tab: Tab, config: &Config) -> Result<Vec<R
             },
         ),
         Tab::Stale => load_stale_rows(vault, config),
-        Tab::Search => Ok(Vec::new()),
     }
 }
 

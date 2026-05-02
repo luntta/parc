@@ -405,7 +405,7 @@ parc tui      # force the TUI
 parc --no-tui # force plain today output
 ```
 
-The TUI provides tabbed Today, List, Stale, and Search views with arrow-key navigation, debounced live search, a markdown-rendered detail pane, and inline actions for editing (`e`), toggling todo status (`t`), archiving (`a`), deleting (`d`), promoting (`p`), and yanking the ID to the clipboard (`y`). Press `?` inside the TUI for the full keymap.
+The TUI provides tabbed Today, List, and Stale views with arrow-key navigation, a two-pane search popup (`/`), a markdown-rendered detail pane, and inline actions for editing (`e`), toggling todo status (`t`), archiving (`a`), deleting (`d`), promoting (`p`), and yanking the ID to the clipboard (`y`). Press `?` inside the TUI for the full keymap.
 
 ## Architecture
 

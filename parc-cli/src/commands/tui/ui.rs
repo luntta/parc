@@ -12,9 +12,10 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use super::app::App;
+use super::cache::FragmentCache;
 use super::highlight;
 use super::markdown;
-use super::{CaptureField, CaptureForm, Focus, Mode, Row, Tab};
+use super::{CaptureField, CaptureForm, Focus, Mode, Row, SearchPopup, Tab};
 
 const MENU_BORDER: Color = Color::DarkGray;
 const LIST_BORDER: Color = Color::Blue;
@@ -34,21 +35,16 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
         return;
     }
 
-    let search_height = if app.tab == Tab::Search { 3 } else { 0 };
     let outer = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Length(search_height),
         Constraint::Min(1),
         Constraint::Length(3),
     ])
     .split(area);
 
     draw_menu(frame, outer[0], app.tab);
-    if app.tab == Tab::Search {
-        draw_search_input(frame, outer[1], &app.search_input);
-    }
 
-    let body = outer[2];
+    let body = outer[1];
     let left_width = (body.width / 2).max(34).min(body.width.saturating_sub(24));
     let body_chunks =
         Layout::horizontal([Constraint::Length(left_width), Constraint::Min(1)]).split(body);
@@ -56,14 +52,18 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
     draw_list(frame, body_chunks[0], app, config);
     draw_detail(frame, body_chunks[1], vault, app);
 
-    draw_footer(frame, outer[3], app.status.text(), app.focus);
+    let status = app.status.text().to_string();
+    draw_footer(frame, outer[2], &status, app.focus);
 
-    match &app.mode {
+    match &mut app.mode {
         Mode::Normal => {}
         Mode::Help => draw_help(frame, area),
         Mode::Confirm { prompt, .. } => draw_confirm(frame, area, prompt),
         Mode::Input { prompt, value, .. } => draw_input(frame, area, prompt, value),
         Mode::Capture(form) => draw_capture(frame, area, form),
+        Mode::Search(popup) => {
+            draw_search_popup(frame, area, vault, config, &mut app.cache, popup, &status)
+        }
     }
 }
 
@@ -72,7 +72,7 @@ fn draw_menu(frame: &mut Frame, area: Rect, tab: Tab) {
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(MENU_BORDER))
         .title(" parc ");
-    let titles: Vec<&str> = [Tab::Today, Tab::List, Tab::Stale, Tab::Search]
+    let titles: Vec<&str> = [Tab::Today, Tab::List, Tab::Stale]
         .iter()
         .map(|t| t.title())
         .collect();
@@ -87,19 +87,6 @@ fn draw_menu(frame: &mut Frame, area: Rect, tab: Tab) {
         )
         .divider(" ");
     frame.render_widget(tabs, area);
-}
-
-fn draw_search_input(frame: &mut Frame, area: Rect, search_input: &str) {
-    let block = Block::bordered()
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(MENU_BORDER))
-        .title(" search ");
-    let line = Line::from(vec![
-        Span::styled("/", Style::default().fg(ACTIVE_TAB)),
-        Span::raw(search_input.to_string()),
-    ]);
-    let paragraph = Paragraph::new(line).block(block);
-    frame.render_widget(paragraph, area);
 }
 
 fn draw_list(frame: &mut Frame, area: Rect, app: &mut App, config: &Config) {
@@ -180,19 +167,32 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         app.detail_max_scroll = 0;
         return;
     };
+    let lines = detail_lines(vault, &mut app.cache, &row, None);
+    render_detail_lines(
+        frame,
+        area,
+        block,
+        lines,
+        &mut app.detail_scroll,
+        &mut app.detail_max_scroll,
+    );
+}
+
+fn detail_lines(
+    vault: &Path,
+    cache: &mut FragmentCache,
+    row: &Row,
+    search_input: Option<&str>,
+) -> Vec<Line<'static>> {
     let id = row.id.clone();
-    let search_terms = if app.tab == Tab::Search {
-        parsed_search_terms(&app.search_input)
-    } else {
-        Vec::new()
-    };
-    let title_match_indices = if app.tab == Tab::Search {
+    let search_terms = search_input.map(parsed_search_terms).unwrap_or_default();
+    let title_match_indices: &[u32] = if search_input.is_some() {
         row.title_match_indices.as_slice()
     } else {
         &[]
     };
 
-    let lines = match app.cache.get_or_load(vault, &id) {
+    match cache.get_or_load(vault, &id) {
         Ok(fragment) => {
             let muted = Style::default().fg(MUTED_TEXT);
             let mut lines: Vec<Line> = Vec::new();
@@ -222,7 +222,7 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
                 }
             }
             lines.push(Line::from(""));
-            if app.tab == Tab::Search {
+            if search_input.is_some() {
                 lines.extend(markdown::render_body_highlighted(
                     &fragment.body,
                     &search_terms,
@@ -236,20 +236,29 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
             format!("Failed to load fragment: {}", err),
             Style::default().fg(Color::Red),
         ))],
-    };
+    }
+}
 
+fn render_detail_lines(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block<'static>,
+    lines: Vec<Line<'static>>,
+    detail_scroll: &mut u16,
+    detail_max_scroll: &mut u16,
+) {
     let inner = block.inner(area);
     let paragraph = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .block(block);
     let total = paragraph.line_count(inner.width) as u16;
     let viewport = inner.height;
-    app.detail_max_scroll = total.saturating_sub(viewport);
-    if app.detail_scroll > app.detail_max_scroll {
-        app.detail_scroll = app.detail_max_scroll;
+    *detail_max_scroll = total.saturating_sub(viewport);
+    if *detail_scroll > *detail_max_scroll {
+        *detail_scroll = *detail_max_scroll;
     }
 
-    let paragraph = paragraph.scroll((app.detail_scroll, 0));
+    let paragraph = paragraph.scroll((*detail_scroll, 0));
     frame.render_widget(paragraph, area);
 
     if total > viewport {
@@ -257,9 +266,189 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
             .begin_symbol(None)
             .end_symbol(None);
         let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(viewport) as usize)
-            .position(app.detail_scroll as usize);
+            .position(*detail_scroll as usize);
         frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
     }
+}
+
+fn draw_search_popup(
+    frame: &mut Frame,
+    area: Rect,
+    vault: &Path,
+    config: &Config,
+    cache: &mut FragmentCache,
+    popup: &mut SearchPopup,
+    status: &str,
+) {
+    popup.clamp_selection();
+    let popup_area = centered_rect(92, 86, area);
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(ACTIVE_TAB))
+        .title(" search ");
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    if inner.width < 24 || inner.height < 5 {
+        let paragraph = Paragraph::new("Search needs a larger terminal.")
+            .style(Style::default().fg(Color::Red));
+        frame.render_widget(paragraph, inner);
+        return;
+    }
+
+    let chunks = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    draw_search_query(frame, chunks[0], &popup.input);
+
+    let body = chunks[1];
+    let left_width = (body.width / 2).max(32).min(body.width.saturating_sub(24));
+    let panes =
+        Layout::horizontal([Constraint::Length(left_width), Constraint::Min(1)]).split(body);
+    draw_search_results(frame, panes[0], popup, config);
+    draw_search_preview(frame, panes[1], vault, cache, popup);
+    draw_search_footer(frame, chunks[2], popup, status);
+}
+
+fn draw_search_query(frame: &mut Frame, area: Rect, search_input: &str) {
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(MENU_BORDER))
+        .title(" query ");
+    let line = Line::from(vec![
+        Span::styled("> ", Style::default().fg(ACTIVE_TAB)),
+        Span::raw(search_input.to_string()),
+        Span::styled("_", Style::default().fg(ACTIVE_TAB)),
+    ]);
+    let paragraph = Paragraph::new(line).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+fn draw_search_results(frame: &mut Frame, area: Rect, popup: &mut SearchPopup, config: &Config) {
+    let total = popup.rows.len();
+    let title = if total == 0 {
+        " results ".to_string()
+    } else {
+        let cur = popup.list_state.selected().map(|i| i + 1).unwrap_or(0);
+        format!(" results  {}/{} ", cur, total)
+    };
+    let border_color = if popup.focus == Focus::List {
+        LIST_BORDER_FOCUSED
+    } else {
+        LIST_BORDER
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(border_color))
+        .title(title);
+
+    let items: Vec<ListItem> = if popup.input.trim().is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "Type a query to search",
+            Style::default().fg(MUTED_TEXT),
+        )))]
+    } else if let Some(err) = &popup.error {
+        vec![ListItem::new(Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(Color::Red),
+        )))]
+    } else if popup.rows.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "No results",
+            Style::default().fg(MUTED_TEXT),
+        )))]
+    } else {
+        popup
+            .rows
+            .iter()
+            .map(|row| ListItem::new(format_row(row, config.id_display_length)))
+            .collect()
+    };
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+
+    frame.render_stateful_widget(list, area, &mut popup.list_state);
+}
+
+fn draw_search_preview(
+    frame: &mut Frame,
+    area: Rect,
+    vault: &Path,
+    cache: &mut FragmentCache,
+    popup: &mut SearchPopup,
+) {
+    let border_color = if popup.focus == Focus::Detail {
+        DETAIL_BORDER_FOCUSED
+    } else {
+        DETAIL_BORDER
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(border_color))
+        .title(" preview ");
+
+    let selected_row = popup
+        .list_state
+        .selected()
+        .and_then(|idx| popup.rows.get(idx))
+        .cloned();
+    let Some(row) = selected_row else {
+        let message = if popup.input.trim().is_empty() {
+            "Preview appears here"
+        } else {
+            "No selection"
+        };
+        let paragraph = Paragraph::new(Line::from(Span::styled(
+            message,
+            Style::default().fg(MUTED_TEXT),
+        )))
+        .block(block);
+        frame.render_widget(paragraph, area);
+        popup.detail_max_scroll = 0;
+        return;
+    };
+
+    let lines = detail_lines(vault, cache, &row, Some(&popup.input));
+    render_detail_lines(
+        frame,
+        area,
+        block,
+        lines,
+        &mut popup.detail_scroll,
+        &mut popup.detail_max_scroll,
+    );
+}
+
+fn draw_search_footer(frame: &mut Frame, area: Rect, popup: &SearchPopup, status: &str) {
+    let focus_label = match popup.focus {
+        Focus::List => "[results]",
+        Focus::Detail => "[preview]",
+    };
+    let text = if let Some(err) = &popup.error {
+        Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red)))
+    } else if !status.is_empty() {
+        Line::from(Span::styled(
+            status.to_string(),
+            Style::default().fg(ACTIVE_TAB),
+        ))
+    } else {
+        Line::from(Span::styled(
+            format!(
+                "{} type query  arrows move  S-tab focus  Enter edit  Esc close",
+                focus_label
+            ),
+            Style::default().fg(MUTED_TEXT),
+        ))
+    };
+    frame.render_widget(Paragraph::new(text), area);
 }
 
 fn parsed_search_terms(search_input: &str) -> Vec<String> {
@@ -286,7 +475,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, status: &str, focus: Focus) {
         Focus::Detail => "[detail]",
     };
     let base = format!(
-        "{} 1-4 tabs  S-tab focus  arrows move  c capture  e edit  t toggle  p promote  a archive  d delete  y yank  ? help  q quit",
+        "{} 1-3 tabs  / search  S-tab focus  arrows move  c capture  e edit  t toggle  p promote  a archive  d delete  y yank  ? help  q quit",
         focus_label
     );
     let text = if status.is_empty() {
@@ -308,10 +497,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         Line::from("Navigation"),
-        Line::from("  1-4         switch tab (Today/List/Stale/Search)"),
+        Line::from("  1-3         switch tab (Today/List/Stale)"),
         Line::from("  Tab         cycle tabs"),
         Line::from("  Shift-Tab   toggle pane focus (list / detail)"),
-        Line::from("  /           jump to search"),
+        Line::from("  / or 4      open search popup"),
         Line::from("  ↓ / ↑       move within focused pane"),
         Line::from("  PgDn/PgUp   page within focused pane"),
         Line::from("  Home / End  top / bottom of focused pane"),
@@ -329,8 +518,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from("General"),
         Line::from("  ?           toggle this help"),
+        Line::from("  Search      type to query, Enter edits, Esc closes"),
         Line::from("  q           quit"),
-        Line::from("  Esc         cancel modal / clear search"),
+        Line::from("  Esc         cancel modal / close search"),
     ];
 
     let popup = centered_rect(64, 80, area);

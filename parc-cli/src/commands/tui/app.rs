@@ -12,7 +12,8 @@ use ratatui::Terminal;
 
 use super::cache::FragmentCache;
 use super::{
-    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, Mode, Tab,
+    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, Mode,
+    SearchPopup, Tab,
 };
 
 const PAGE_LINES: u16 = 10;
@@ -178,6 +179,9 @@ pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Re
                     prompt,
                 } => handle_input(&mut app, key, prompt, value, action, vault, config)?,
                 Mode::Capture(form) => handle_capture(&mut app, key, form, vault, config)?,
+                Mode::Search(popup) => {
+                    handle_search(&mut app, key, popup, terminal, vault, config)?
+                }
                 Mode::Help => handle_help(&mut app, key)?,
             },
             Event::Resize(_, _) => {
@@ -206,7 +210,7 @@ fn handle_normal(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     match (key.code, key.modifiers) {
-        (KeyCode::Char('q'), m) if m.is_empty() && app.tab != Tab::Search => return Ok(false),
+        (KeyCode::Char('q'), m) if m.is_empty() => return Ok(false),
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => return Ok(false),
 
         (KeyCode::Tab, _) => {
@@ -224,77 +228,46 @@ fn handle_normal(
         (KeyCode::Char('1'), _) => switch_tab(app, Tab::Today, vault, config)?,
         (KeyCode::Char('2'), _) => switch_tab(app, Tab::List, vault, config)?,
         (KeyCode::Char('3'), _) => switch_tab(app, Tab::Stale, vault, config)?,
-        (KeyCode::Char('4'), _) | (KeyCode::Char('/'), _) => {
-            switch_tab(app, Tab::Search, vault, config)?
-        }
+        (KeyCode::Char('4'), _) | (KeyCode::Char('/'), _) => open_search(app, vault),
 
-        (KeyCode::Char('r'), _) if app.tab != Tab::Search && plain => {
+        (KeyCode::Char('r'), _) if plain => {
             reload_rows(app, vault, config)?;
             app.set_status("reloaded");
         }
 
-        (KeyCode::Char('?'), _) if app.tab != Tab::Search => {
+        (KeyCode::Char('?'), _) => {
             app.mode = Mode::Help;
             app.dirty = true;
         }
-        (KeyCode::Char('c'), _) if plain && app.tab != Tab::Search => {
-            match new_capture_form(vault) {
-                Ok(form) => {
-                    app.mode = Mode::Capture(form);
-                    app.dirty = true;
-                }
-                Err(err) => app.set_status(format!("capture unavailable: {}", err)),
+        (KeyCode::Char('c'), _) if plain => match new_capture_form(vault) {
+            Ok(form) => {
+                app.mode = Mode::Capture(form);
+                app.dirty = true;
             }
-        }
+            Err(err) => app.set_status(format!("capture unavailable: {}", err)),
+        },
 
-        (KeyCode::Char('e'), _) if plain && app.tab != Tab::Search => {
+        (KeyCode::Char('e'), _) if plain => {
             if let Some(id) = app.selected_id() {
-                match actions::edit(terminal, vault, &id) {
-                    Ok(msg) => {
-                        app.cache.invalidate(&id);
-                        app.search.mark_stale();
-                        reload_rows(app, vault, config)?;
-                        app.set_status(msg);
-                    }
-                    Err(e) => app.set_status(format!("edit failed: {}", e)),
-                }
+                edit_id(app, terminal, vault, config, &id)?;
             }
         }
-        (KeyCode::Char('t'), _) if plain && app.tab != Tab::Search => {
+        (KeyCode::Char('t'), _) if plain => {
             if let Some(id) = app.selected_id() {
-                match actions::toggle_status(vault, &id) {
-                    Ok(msg) => {
-                        app.cache.invalidate(&id);
-                        app.search.mark_stale();
-                        reload_rows(app, vault, config)?;
-                        app.set_status(msg);
-                    }
-                    Err(e) => app.set_status(format!("toggle failed: {}", e)),
-                }
+                toggle_status_id(app, vault, config, &id)?;
             }
         }
-        (KeyCode::Char('a'), _) if plain && app.tab != Tab::Search => {
+        (KeyCode::Char('a'), _) if plain => {
             if let Some(id) = app.selected_id() {
-                match actions::archive(vault, &id) {
-                    Ok(msg) => {
-                        app.cache.invalidate(&id);
-                        app.search.mark_stale();
-                        reload_rows(app, vault, config)?;
-                        app.set_status(msg);
-                    }
-                    Err(e) => app.set_status(format!("archive failed: {}", e)),
-                }
+                archive_id(app, vault, config, &id)?;
             }
         }
-        (KeyCode::Char('y'), _) if plain && app.tab != Tab::Search => {
+        (KeyCode::Char('y'), _) if plain => {
             if let Some(id) = app.selected_id() {
-                match actions::yank(&id) {
-                    Ok(msg) => app.set_status(msg),
-                    Err(e) => app.set_status(format!("{} (id: {})", e, id)),
-                }
+                yank_id(app, &id);
             }
         }
-        (KeyCode::Char('d'), _) if plain && app.tab != Tab::Search => {
+        (KeyCode::Char('d'), _) if plain => {
             if let Some(id) = app.selected_id() {
                 let prompt = format!("Delete {}? (y/n)", &id[..8.min(id.len())]);
                 app.mode = Mode::Confirm {
@@ -304,7 +277,7 @@ fn handle_normal(
                 app.dirty = true;
             }
         }
-        (KeyCode::Char('p'), _) if plain && app.tab != Tab::Search => {
+        (KeyCode::Char('p'), _) if plain => {
             if let Some(id) = app.selected_id() {
                 app.mode = Mode::Input {
                     prompt: "Promote to type:".to_string(),
@@ -361,31 +334,98 @@ fn handle_normal(
             }
         },
 
-        (KeyCode::Backspace, _) if app.tab == Tab::Search => {
-            if app.search_input.pop().is_some() {
-                app.list_state.select(Some(0));
-                app.detail_scroll = 0;
-                reload_rows(app, vault, config)?;
-                app.dirty = true;
+        _ => {}
+    }
+
+    Ok(true)
+}
+
+fn handle_search(
+    app: &mut App,
+    key: KeyEvent,
+    mut popup: SearchPopup,
+    terminal: &mut Term,
+    vault: &Path,
+    config: &Config,
+) -> Result<bool> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    match key.code {
+        KeyCode::Char('c') if ctrl => return Ok(false),
+        KeyCode::Esc => {
+            app.search_input = popup.input;
+            app.mode = Mode::Normal;
+            app.dirty = true;
+            return Ok(true);
+        }
+        KeyCode::BackTab => {
+            popup.focus = popup.focus.toggle();
+        }
+        KeyCode::Down => match popup.focus {
+            Focus::List => popup.move_list(1),
+            Focus::Detail => popup.scroll_detail(1),
+        },
+        KeyCode::Up => match popup.focus {
+            Focus::List => popup.move_list(-1),
+            Focus::Detail => popup.scroll_detail(-1),
+        },
+        KeyCode::PageDown => match popup.focus {
+            Focus::List => popup.move_list(PAGE_LINES as i32),
+            Focus::Detail => popup.scroll_detail(PAGE_LINES as i32),
+        },
+        KeyCode::PageUp => match popup.focus {
+            Focus::List => popup.move_list(-(PAGE_LINES as i32)),
+            Focus::Detail => popup.scroll_detail(-(PAGE_LINES as i32)),
+        },
+        KeyCode::Char('d') if ctrl => match popup.focus {
+            Focus::List => popup.move_list(HALF_PAGE_LINES as i32),
+            Focus::Detail => popup.scroll_detail(HALF_PAGE_LINES as i32),
+        },
+        KeyCode::Char('u') if ctrl => match popup.focus {
+            Focus::List => popup.move_list(-(HALF_PAGE_LINES as i32)),
+            Focus::Detail => popup.scroll_detail(-(HALF_PAGE_LINES as i32)),
+        },
+        KeyCode::Home => match popup.focus {
+            Focus::List => {
+                popup
+                    .list_state
+                    .select(if popup.rows.is_empty() { None } else { Some(0) })
+            }
+            Focus::Detail => popup.detail_scroll = 0,
+        },
+        KeyCode::End => match popup.focus {
+            Focus::List => {
+                let last = popup.rows.len().saturating_sub(1);
+                popup.list_state.select(if popup.rows.is_empty() {
+                    None
+                } else {
+                    Some(last)
+                });
+            }
+            Focus::Detail => popup.detail_scroll = popup.detail_max_scroll,
+        },
+        KeyCode::Backspace => {
+            if popup.input.pop().is_some() {
+                reload_search_popup(app, &mut popup, vault, true);
             }
         }
-        (KeyCode::Esc, _) if app.tab == Tab::Search && !app.search_input.is_empty() => {
-            app.search_input.clear();
-            app.list_state.select(Some(0));
-            app.detail_scroll = 0;
-            reload_rows(app, vault, config)?;
-            app.dirty = true;
+        KeyCode::Enter => {
+            if let Some(id) = popup.selected_id() {
+                edit_id(app, terminal, vault, config, &id)?;
+                reload_search_popup(app, &mut popup, vault, false);
+            }
         }
-        (KeyCode::Char(c), _) if app.tab == Tab::Search && !ctrl => {
-            app.search_input.push(c);
-            app.list_state.select(Some(0));
-            app.detail_scroll = 0;
-            reload_rows(app, vault, config)?;
-            app.dirty = true;
+        KeyCode::Char(c) if !ctrl => {
+            popup.input.push(c);
+            reload_search_popup(app, &mut popup, vault, true);
         }
         _ => {}
     }
 
+    popup.clamp_selection();
+    app.search_input = popup.input.clone();
+    app.mode = Mode::Search(popup);
+    app.dirty = true;
     Ok(true)
 }
 
@@ -558,6 +598,100 @@ fn submit_capture(app: &mut App, form: &CaptureForm, vault: &Path, config: &Conf
     Ok(())
 }
 
+fn open_search(app: &mut App, vault: &Path) {
+    let mut popup = SearchPopup::new(app.search_input.clone());
+    reload_search_popup(app, &mut popup, vault, true);
+    app.mode = Mode::Search(popup);
+    app.clear_status();
+    app.dirty = true;
+}
+
+fn reload_search_popup(
+    app: &mut App,
+    popup: &mut SearchPopup,
+    vault: &Path,
+    reset_selection: bool,
+) {
+    let selected_id = if reset_selection {
+        None
+    } else {
+        popup.selected_id()
+    };
+
+    match data::load_search_rows(vault, &popup.input, &mut app.search) {
+        Ok(rows) => {
+            popup.rows = rows;
+            popup.error = None;
+            if let Some(id) = selected_id {
+                if let Some(idx) = popup.rows.iter().position(|row| row.id == id) {
+                    popup.list_state.select(Some(idx));
+                } else {
+                    popup.select_first();
+                }
+            } else {
+                popup.select_first();
+            }
+        }
+        Err(err) => {
+            popup.rows.clear();
+            popup.error = Some(err.to_string());
+            popup.select_first();
+        }
+    }
+}
+
+fn edit_id(
+    app: &mut App,
+    terminal: &mut Term,
+    vault: &Path,
+    config: &Config,
+    id: &str,
+) -> Result<()> {
+    match actions::edit(terminal, vault, id) {
+        Ok(msg) => {
+            app.cache.invalidate(id);
+            app.search.mark_stale();
+            reload_rows(app, vault, config)?;
+            app.set_status(msg);
+        }
+        Err(e) => app.set_status(format!("edit failed: {}", e)),
+    }
+    Ok(())
+}
+
+fn toggle_status_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> Result<()> {
+    match actions::toggle_status(vault, id) {
+        Ok(msg) => {
+            app.cache.invalidate(id);
+            app.search.mark_stale();
+            reload_rows(app, vault, config)?;
+            app.set_status(msg);
+        }
+        Err(e) => app.set_status(format!("toggle failed: {}", e)),
+    }
+    Ok(())
+}
+
+fn archive_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> Result<()> {
+    match actions::archive(vault, id) {
+        Ok(msg) => {
+            app.cache.invalidate(id);
+            app.search.mark_stale();
+            reload_rows(app, vault, config)?;
+            app.set_status(msg);
+        }
+        Err(e) => app.set_status(format!("archive failed: {}", e)),
+    }
+    Ok(())
+}
+
+fn yank_id(app: &mut App, id: &str) {
+    match actions::yank(id) {
+        Ok(msg) => app.set_status(msg),
+        Err(e) => app.set_status(format!("{} (id: {})", e, id)),
+    }
+}
+
 fn handle_help(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
@@ -579,10 +713,7 @@ fn switch_tab(app: &mut App, tab: Tab, vault: &Path, config: &Config) -> Result<
 }
 
 fn reload_rows(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
-    app.rows = match app.tab {
-        Tab::Search => data::load_search_rows(vault, &app.search_input, &mut app.search)?,
-        _ => data::load_rows(vault, app.tab, config)?,
-    };
+    app.rows = data::load_rows(vault, app.tab, config)?;
     Ok(())
 }
 

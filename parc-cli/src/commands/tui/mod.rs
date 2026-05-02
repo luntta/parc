@@ -9,6 +9,7 @@ use parc_core::config::load_config;
 use parc_core::fuzzy::FuzzyHit;
 use parc_core::search::SearchResult;
 use ratatui::backend::CrosstermBackend;
+use ratatui::widgets::ListState;
 use ratatui::Terminal;
 
 mod actions;
@@ -32,6 +33,7 @@ pub(crate) enum Mode {
         action: InputAction,
     },
     Capture(CaptureForm),
+    Search(SearchPopup),
     Help,
 }
 
@@ -215,7 +217,6 @@ pub(crate) enum Tab {
     Today,
     List,
     Stale,
-    Search,
 }
 
 impl Tab {
@@ -224,7 +225,6 @@ impl Tab {
             Tab::Today => "Today",
             Tab::List => "List",
             Tab::Stale => "Stale",
-            Tab::Search => "Search",
         }
     }
 
@@ -232,8 +232,7 @@ impl Tab {
         match self {
             Tab::Today => Tab::List,
             Tab::List => Tab::Stale,
-            Tab::Stale => Tab::Search,
-            Tab::Search => Tab::Today,
+            Tab::Stale => Tab::Today,
         }
     }
 
@@ -242,7 +241,6 @@ impl Tab {
             Tab::Today => 0,
             Tab::List => 1,
             Tab::Stale => 2,
-            Tab::Search => 3,
         }
     }
 }
@@ -294,6 +292,75 @@ impl From<FuzzyHit> for Row {
             status: hit.item.status,
             section: None,
             title_match_indices: hit.title_match_indices,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SearchPopup {
+    pub input: String,
+    pub rows: Vec<Row>,
+    pub list_state: ListState,
+    pub focus: Focus,
+    pub detail_scroll: u16,
+    pub detail_max_scroll: u16,
+    pub error: Option<String>,
+}
+
+impl SearchPopup {
+    pub(crate) fn new(input: String) -> Self {
+        Self {
+            input,
+            rows: Vec::new(),
+            list_state: ListState::default(),
+            focus: Focus::List,
+            detail_scroll: 0,
+            detail_max_scroll: 0,
+            error: None,
+        }
+    }
+
+    pub(crate) fn selected_id(&self) -> Option<String> {
+        let idx = self.list_state.selected()?;
+        self.rows.get(idx).map(|row| row.id.clone())
+    }
+
+    pub(crate) fn select_first(&mut self) {
+        if self.rows.is_empty() {
+            self.list_state.select(None);
+        } else {
+            self.list_state.select(Some(0));
+        }
+        self.detail_scroll = 0;
+    }
+
+    pub(crate) fn move_list(&mut self, delta: i32) {
+        let len = self.rows.len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.list_state.selected().unwrap_or(0) as i32;
+        let next = (cur + delta).clamp(0, len as i32 - 1) as usize;
+        if Some(next) != self.list_state.selected() {
+            self.list_state.select(Some(next));
+            self.detail_scroll = 0;
+        }
+    }
+
+    pub(crate) fn scroll_detail(&mut self, delta: i32) {
+        let cur = self.detail_scroll as i32;
+        let max = self.detail_max_scroll as i32;
+        self.detail_scroll = (cur + delta).clamp(0, max) as u16;
+    }
+
+    pub(crate) fn clamp_selection(&mut self) {
+        if self.rows.is_empty() {
+            self.list_state.select(None);
+            return;
+        }
+        let cur = self.list_state.selected().unwrap_or(0);
+        if cur >= self.rows.len() {
+            self.list_state.select(Some(self.rows.len() - 1));
         }
     }
 }
