@@ -29,7 +29,9 @@ A persistent menu strip across the top selects between six tabs. Below it sits a
 | **Review** | `5` | The same multi-section digest as `parc review` |
 | **Search** | `6` | The most recent launcher fragment search results |
 
-The detail pane renders the selected fragment's body as styled Markdown — headings, lists, blockquotes, code, inline code, bold/italic, links, and `[[id]]` wiki-links are highlighted. A scrollbar appears when the body overflows the pane.
+The detail pane renders the selected fragment's body as styled Markdown — headings, lists, blockquotes, code, inline code, bold/italic, links, and `[[id]]` wiki-links are highlighted. A scrollbar appears when the body overflows the pane. When the fragment has incoming links, a `## Backlinks` section is appended automatically.
+
+Two in-detail actions use a vimium-style overlay: `f` follows a `[[wiki-link]]` and `x` toggles a `[ ]` / `[x]` checkbox. Each visible target gets a letter label; press the letter to act, or `Esc` to cancel. With only one target in view the action runs immediately. After following a link, `Ctrl-O` jumps back through the navigation stack and `Ctrl-I` jumps forward.
 
 `/` opens a two-pane universal launcher over the current view. Plain input searches fragments with the full DSL and also matches commands/views, so typing `review`, `due`, `archive`, or `#backend` surfaces the relevant action or fragment result. When a fragment is selected, typed field intents such as `status done`, `due friday`, `priority high`, or `assignee alice` appear as runnable actions; partial inputs like `status `, `priority h`, `due tom`, or `assignee al` suggest schema-aware values. Tag actions are explicit to avoid accidental replacement: `add tag tui`, `remove tag old`, or `set tags tui backend`. The right pane previews the highlighted fragment, command, or action; field-action previews show validation errors or normalized due dates before you run them. `Enter` on a fragment opens the result set in the Search tab; `Enter` on a command/action runs it. `Ctrl-P` opens the same launcher with `>` prefilled for command-only filtering; typing after `>` filters commands.
 
@@ -48,6 +50,7 @@ The detail pane renders the selected fragment's body as styled Markdown — head
 | `PgDn` / `PgUp` | Page within the focused pane |
 | `Home` / `End` | Top / bottom of the focused pane |
 | `Ctrl-d` / `Ctrl-u` | Half-page scroll within the focused pane |
+| `Ctrl-o` / `Ctrl-i` | Navigate back / forward through followed links |
 | `r` | Reload the current tab |
 
 ### Actions on the selected fragment
@@ -65,6 +68,13 @@ The detail pane renders the selected fragment's body as styled Markdown — head
 | `a` | Archive (toggle) |
 | `d` | Delete — opens a `y/n` confirm dialog |
 | `y` | Copy the full ID to the system clipboard |
+
+### In-detail actionables (detail pane focused)
+
+| Key | Action |
+|-----|--------|
+| `f` | Open the follow-link overlay; type the letter label of a `[[wiki-link]]` to jump to it |
+| `x` | Open the toggle-checkbox overlay; type the letter label of a `[ ]` / `[x]` to flip it |
 
 ### Modals and general
 
