@@ -822,6 +822,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("In the detail pane (Shift-Tab to focus)"),
         Line::from("  f           follow a [[wiki-link]] (overlay picks one)"),
         Line::from("  x           toggle a [ ] / [x] checkbox"),
+        Line::from("  Ctrl-o      jump back through follow history"),
+        Line::from("  Ctrl-i      jump forward through follow history"),
         Line::from(""),
         Line::from("General"),
         Line::from("  ?           toggle this help"),

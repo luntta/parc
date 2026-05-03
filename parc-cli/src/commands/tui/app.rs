@@ -52,6 +52,41 @@ impl Status {
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
+/// Browser-style back/forward stack for link-follow navigation.
+/// Only `follow_link_action` pushes onto it — arrow-key list movement does
+/// NOT, so Ctrl-o feels like "go back to where you came from after following
+/// a link", not "undo my browsing".
+#[derive(Default, Clone)]
+pub(super) struct NavHistory {
+    back: Vec<String>,
+    forward: Vec<String>,
+}
+
+impl NavHistory {
+    /// Record `current` (where we were) before navigating elsewhere.
+    /// Clears the forward stack — a new branch invalidates redo.
+    pub(super) fn push(&mut self, current: String) {
+        self.back.push(current);
+        self.forward.clear();
+    }
+
+    /// Pop the previous fragment id; record `current` so a forward step
+    /// can return here.
+    pub(super) fn back(&mut self, current: String) -> Option<String> {
+        let prev = self.back.pop()?;
+        self.forward.push(current);
+        Some(prev)
+    }
+
+    /// Pop the next fragment id; record `current` so a back step can
+    /// return here.
+    pub(super) fn forward(&mut self, current: String) -> Option<String> {
+        let next = self.forward.pop()?;
+        self.back.push(current);
+        Some(next)
+    }
+}
+
 #[derive(Clone, Default)]
 struct TabViewState {
     selected_id: Option<String>,
@@ -81,6 +116,9 @@ pub(super) struct App {
     /// Last-rendered viewport height of the detail pane's inner area.
     /// Used by overlay visibility filtering. `0` until the first render.
     pub detail_viewport: u16,
+    /// Back/forward stack populated only by link-follow; arrow-key list
+    /// movement does not record a step.
+    pub nav_history: NavHistory,
     tab_states: [TabViewState; TAB_COUNT],
 }
 
@@ -106,6 +144,7 @@ impl App {
             detail_items: Vec::new(),
             detail_body_offset: 0,
             detail_viewport: 0,
+            nav_history: NavHistory::default(),
             tab_states: std::array::from_fn(|_| TabViewState::default()),
         }
     }
@@ -338,6 +377,8 @@ fn handle_normal(
         (KeyCode::Char('x'), _) if plain && app.focus == Focus::Detail => {
             open_overlay(app, OverlayKind::ToggleCheckbox, vault, config);
         }
+        (KeyCode::Char('o'), _) if ctrl => nav_back(app, vault, config)?,
+        (KeyCode::Char('i'), _) if ctrl => nav_forward(app, vault, config)?,
 
         (KeyCode::Down, _) => match app.focus {
             Focus::List => app.move_list(1),
@@ -1015,11 +1056,95 @@ fn invoke_actionable(
             }
         }
         (OverlayKind::FollowLink, ActionKind::WikiLink { target, .. }) => {
-            // Step 5 wires the actual jump.
-            app.set_status(format!("would follow [[{}]]", target));
+            follow_link_action(app, vault, config, target);
         }
         _ => {}
     }
+}
+
+/// Resolve `target` to a fragment id, push the current selection onto the
+/// nav stack, then jump. If the target isn't visible in the current tab,
+/// switch to `Tab::List` (which shows recent fragments) and try again.
+fn follow_link_action(app: &mut App, vault: &Path, config: &Config, target: &str) {
+    let resolved = match actions::follow_link(vault, target) {
+        Ok(id) => id,
+        Err(e) => {
+            app.set_status(format!("follow failed: {}", e));
+            return;
+        }
+    };
+    let from = app.selected_id();
+    if jump_to_id(app, vault, config, &resolved).is_err() {
+        app.set_status(format!("follow failed: could not show {}", short_id(&resolved)));
+        return;
+    }
+    if let Some(from) = from {
+        if from != resolved {
+            app.nav_history.push(from);
+        }
+    }
+    app.set_status(format!("→ {}", short_id(&resolved)));
+}
+
+fn nav_back(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
+    let Some(current) = app.selected_id() else {
+        return Ok(());
+    };
+    let Some(prev) = app.nav_history.back(current.clone()) else {
+        app.set_status("no history");
+        return Ok(());
+    };
+    if jump_to_id(app, vault, config, &prev).is_err() {
+        // Restore the stack — nothing happened.
+        let _ = app.nav_history.forward(current);
+        app.set_status(format!("could not show {}", short_id(&prev)));
+        return Ok(());
+    }
+    app.set_status(format!("← {}", short_id(&prev)));
+    Ok(())
+}
+
+fn nav_forward(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
+    let Some(current) = app.selected_id() else {
+        return Ok(());
+    };
+    let Some(next) = app.nav_history.forward(current.clone()) else {
+        app.set_status("no forward history");
+        return Ok(());
+    };
+    if jump_to_id(app, vault, config, &next).is_err() {
+        let _ = app.nav_history.back(current);
+        app.set_status(format!("could not show {}", short_id(&next)));
+        return Ok(());
+    }
+    app.set_status(format!("→ {}", short_id(&next)));
+    Ok(())
+}
+
+/// Try to select `id` in the current tab. If absent, switch to `Tab::List`
+/// (recent-fragments view) and try again. Returns Err if still not found.
+fn jump_to_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> Result<()> {
+    if app.rows.iter().any(|row| row.id == id) {
+        select_row_by_id(app, id);
+        app.detail_scroll = 0;
+        app.dirty = true;
+        return Ok(());
+    }
+    if app.tab != Tab::List {
+        switch_tab(app, Tab::List, vault, config)?;
+    }
+    if app.rows.iter().any(|row| row.id == id) {
+        select_row_by_id(app, id);
+        app.detail_scroll = 0;
+        app.dirty = true;
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("not in current view"))
+    }
+}
+
+fn short_id(id: &str) -> &str {
+    &id[..8.min(id.len())]
 }
 
 const LABEL_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
@@ -1157,5 +1282,36 @@ mod tests {
         let items = vec![link(0), link(1)];
         let visible = visible_actionables(&items, 0, 50, 10, OverlayKind::FollowLink);
         assert!(visible.is_empty());
+    }
+
+    #[test]
+    fn nav_history_tracks_back_and_forward() {
+        let mut nav = NavHistory::default();
+        // Start at A, follow → B, follow → C.
+        nav.push("A".into());
+        nav.push("B".into());
+        // Currently at C.
+        assert_eq!(nav.back("C".into()), Some("B".into()));
+        // Currently at B.
+        assert_eq!(nav.back("B".into()), Some("A".into()));
+        // Currently at A; nothing further back.
+        assert_eq!(nav.back("A".into()), None);
+        // Forward to B.
+        assert_eq!(nav.forward("A".into()), Some("B".into()));
+        // Forward to C.
+        assert_eq!(nav.forward("B".into()), Some("C".into()));
+        assert_eq!(nav.forward("C".into()), None);
+    }
+
+    #[test]
+    fn nav_history_push_clears_forward() {
+        let mut nav = NavHistory::default();
+        nav.push("A".into());
+        nav.push("B".into());
+        // Back twice, then a fresh push should drop forward stack.
+        assert_eq!(nav.back("C".into()), Some("B".into()));
+        assert_eq!(nav.back("B".into()), Some("A".into()));
+        nav.push("A".into()); // user followed a link from A
+        assert_eq!(nav.forward("X".into()), None); // forward stack gone
     }
 }

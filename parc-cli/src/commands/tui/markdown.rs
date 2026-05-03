@@ -50,9 +50,15 @@ pub(super) struct Actionable {
 pub(super) enum ActionKind {
     WikiLink {
         target: String,
+        // Reserved for future overlay hints / yank-link by content.
+        #[allow(dead_code)]
         display_text: Option<String>,
     },
     Checkbox {
+        // Source-of-truth for the checkbox is the byte range in the body —
+        // this is just informational so a future overlay can preview the
+        // toggle direction.
+        #[allow(dead_code)]
         checked: bool,
     },
 }

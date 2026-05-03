@@ -125,6 +125,14 @@ pub(super) fn toggle_status(vault: &Path, id: &str) -> Result<String> {
     Ok(format!("{} {}", short(&frag.id), next))
 }
 
+/// Resolve a `[[target]]` wiki-link to a full fragment ID. The target may be
+/// a ULID prefix; `read_fragment` already handles ambiguity and not-found
+/// errors, which propagate to the caller as a status message.
+pub(super) fn follow_link(vault: &Path, target: &str) -> Result<String> {
+    let frag = read_fragment(vault, target)?;
+    Ok(frag.id)
+}
+
 /// Toggle a `[ ]` ↔ `[x]` checkbox at a known byte range in the fragment body.
 /// The range must point at exactly the 3-byte bracket literal — no offset
 /// shift, so the rest of the body is untouched.
