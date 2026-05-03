@@ -854,25 +854,14 @@ fn reload_universal_results(
         Ok(rows) => {
             popup.rows = rows;
             popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
-            popup.items = popup
-                .commands
-                .iter()
-                .copied()
-                .map(LauncherItem::Command)
-                .chain(popup.rows.iter().cloned().map(LauncherItem::Fragment))
-                .collect();
+            popup.items = ranked_universal_items(&popup.input, &popup.commands, &popup.rows);
             popup.error = None;
             restore_launcher_selection(popup, selected_item);
         }
         Err(err) => {
             popup.rows.clear();
             popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
-            popup.items = popup
-                .commands
-                .iter()
-                .copied()
-                .map(LauncherItem::Command)
-                .collect();
+            popup.items = ranked_universal_items(&popup.input, &popup.commands, &popup.rows);
             popup.error = Some(err.to_string());
             restore_launcher_selection(popup, selected_item);
         }
@@ -917,6 +906,50 @@ fn same_launcher_item(a: &LauncherItem, b: &LauncherItem) -> bool {
         (LauncherItem::Fragment(a), LauncherItem::Fragment(b)) => a.id == b.id,
         (LauncherItem::Command(a), LauncherItem::Command(b)) => a.action == b.action,
         _ => false,
+    }
+}
+
+fn ranked_universal_items(
+    input: &str,
+    commands: &[command::CommandEntry],
+    rows: &[Row],
+) -> Vec<LauncherItem> {
+    let query = command::command_query(input).trim();
+    let mut scored = commands
+        .iter()
+        .copied()
+        .map(LauncherItem::Command)
+        .chain(rows.iter().cloned().map(LauncherItem::Fragment))
+        .map(|item| (launcher_item_score(&item, query), item))
+        .collect::<Vec<_>>();
+    scored.sort_by(|(score_a, _), (score_b, _)| score_b.cmp(score_a));
+    scored.into_iter().map(|(_, item)| item).collect()
+}
+
+fn launcher_item_score(item: &LauncherItem, query: &str) -> i64 {
+    match item {
+        LauncherItem::Command(command) => command.match_score(query).unwrap_or(0),
+        LauncherItem::Fragment(row) => fragment_result_score(row, query),
+    }
+}
+
+fn fragment_result_score(row: &Row, query: &str) -> i64 {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return row.score as i64;
+    }
+
+    let title = row.title.to_lowercase();
+    if title == query {
+        940_000
+    } else if title.starts_with(&query) {
+        900_000
+    } else if title.split_whitespace().any(|word| word == query) {
+        850_000
+    } else if title.contains(&query) {
+        800_000
+    } else {
+        100_000 + i64::from(row.score.min(100_000))
     }
 }
 

@@ -345,6 +345,7 @@ pub(crate) struct Row {
     pub updated_at: String,
     pub section: Option<String>,
     pub title_match_indices: Vec<u32>,
+    pub score: u32,
 }
 
 impl From<SearchResult> for Row {
@@ -361,6 +362,7 @@ impl From<SearchResult> for Row {
             updated_at: result.updated_at,
             section: None,
             title_match_indices: Vec::new(),
+            score: 0,
         }
     }
 }
@@ -379,6 +381,7 @@ impl From<FuzzyHit> for Row {
             updated_at: hit.item.updated_at,
             section: None,
             title_match_indices: hit.title_match_indices,
+            score: hit.score,
         }
     }
 }

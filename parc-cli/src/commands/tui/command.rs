@@ -32,13 +32,48 @@ pub(crate) struct CommandEntry {
 }
 
 impl CommandEntry {
-    pub(crate) fn matches(self, query: &str) -> bool {
+    pub(crate) fn match_score(self, query: &str) -> Option<i64> {
         let terms = query
             .split_whitespace()
             .map(str::to_lowercase)
             .collect::<Vec<_>>();
         if terms.is_empty() {
-            return true;
+            return Some(0);
+        }
+
+        let query = query.trim().to_lowercase();
+        if let CommandAction::SwitchTab(tab) = self.action {
+            if tab.title().eq_ignore_ascii_case(&query) {
+                return Some(970_000);
+            }
+        }
+
+        let label = self.label.to_lowercase();
+        if label == query {
+            return Some(960_000);
+        }
+        if self
+            .aliases
+            .iter()
+            .any(|alias| alias.eq_ignore_ascii_case(&query))
+        {
+            return Some(950_000);
+        }
+        if label.split_whitespace().any(|word| word == query) {
+            return Some(930_000);
+        }
+        if label.starts_with(&query) {
+            return Some(880_000);
+        }
+        if self
+            .aliases
+            .iter()
+            .any(|alias| alias.to_lowercase().starts_with(&query))
+        {
+            return Some(860_000);
+        }
+        if label.contains(&query) {
+            return Some(820_000);
         }
 
         let haystack = format!(
@@ -50,7 +85,11 @@ impl CommandEntry {
         )
         .to_lowercase();
 
-        terms.iter().all(|term| haystack.contains(term))
+        if terms.iter().all(|term| haystack.contains(term)) {
+            Some(500_000)
+        } else {
+            None
+        }
     }
 }
 
@@ -68,10 +107,12 @@ pub(crate) fn command_query(input: &str) -> &str {
 
 pub(crate) fn matching_commands(input: &str, has_selection: bool) -> Vec<CommandEntry> {
     let query = command_query(input);
-    available_commands(has_selection)
+    let mut scored = available_commands(has_selection)
         .into_iter()
-        .filter(|command| command.matches(query))
-        .collect()
+        .filter_map(|command| command.match_score(query).map(|score| (score, command)))
+        .collect::<Vec<_>>();
+    scored.sort_by(|(score_a, _), (score_b, _)| score_b.cmp(score_a));
+    scored.into_iter().map(|(_, command)| command).collect()
 }
 
 pub(crate) fn available_commands(has_selection: bool) -> Vec<CommandEntry> {
