@@ -108,6 +108,7 @@ pub(super) struct App {
     pub mode: Mode,
     pub dirty: bool,
     pub search: data::SearchState,
+    pub search_view_query: Option<String>,
     pub cache: FragmentCache,
     /// Actionables (wiki-links, checkboxes) in the currently rendered detail
     /// body. Refreshed by `ui::draw_detail` each render. Logical-line indices
@@ -148,6 +149,7 @@ impl App {
             mode: Mode::Normal,
             dirty: true,
             search: data::SearchState::new(),
+            search_view_query: None,
             cache: FragmentCache::new(FRAGMENT_CACHE_CAP),
             detail_items: Vec::new(),
             detail_body_offset: 0,
@@ -353,6 +355,7 @@ fn handle_normal(
         (KeyCode::Char('3'), _) => switch_tab(app, Tab::Stale, vault, config)?,
         (KeyCode::Char('4'), _) => switch_tab(app, Tab::Due, vault, config)?,
         (KeyCode::Char('5'), _) => switch_tab(app, Tab::Review, vault, config)?,
+        (KeyCode::Char('6'), _) => switch_tab(app, Tab::Search, vault, config)?,
         (KeyCode::Char('/'), _) => open_launcher(app, vault, ""),
         (KeyCode::Char('p') | KeyCode::Char('P'), m) if m.contains(KeyModifiers::CONTROL) => {
             open_launcher(app, vault, ">")
@@ -537,8 +540,12 @@ fn handle_launcher(
         }
         KeyCode::Enter => match popup.selected_item().cloned() {
             Some(LauncherItem::Fragment(row)) => {
-                edit_id(app, terminal, vault, config, &row.id)?;
-                reload_launcher_popup(app, &mut popup, vault, false);
+                let rows = popup.rows.clone();
+                let query = popup.input.clone();
+                app.launcher_input = query.clone();
+                app.mode = Mode::Normal;
+                open_search_result(app, rows, query, &row.id);
+                return Ok(true);
             }
             Some(LauncherItem::Command(command)) => {
                 app.launcher_input = popup.input;
@@ -762,6 +769,18 @@ fn open_capture_form(app: &mut App, vault: &Path) {
         }
         Err(err) => app.set_status(format!("capture unavailable: {}", err)),
     }
+}
+
+fn open_search_result(app: &mut App, rows: Vec<Row>, query: String, id: &str) {
+    app.save_tab_state();
+    app.tab = Tab::Search;
+    app.search_view_query = Some(query.trim().to_string());
+    app.rows = rows;
+    select_row_by_id(app, id);
+    app.focus = Focus::List;
+    app.detail_scroll = 0;
+    app.set_status(format!("opened {}", short_id(id)));
+    app.dirty = true;
 }
 
 fn open_delete_confirm(app: &mut App, id: String) {
@@ -1259,7 +1278,16 @@ fn switch_tab(app: &mut App, tab: Tab, vault: &Path, config: &Config) -> Result<
 }
 
 fn reload_rows(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
-    app.rows = data::load_rows(vault, app.tab, config)?;
+    app.rows = if app.tab == Tab::Search {
+        match app.search_view_query.clone() {
+            Some(query) if !query.trim().is_empty() => {
+                data::load_search_rows(vault, &query, &mut app.search)?
+            }
+            _ => Vec::new(),
+        }
+    } else {
+        data::load_rows(vault, app.tab, config)?
+    };
     Ok(())
 }
 

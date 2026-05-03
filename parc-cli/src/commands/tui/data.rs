@@ -54,6 +54,7 @@ pub(super) fn load_rows(vault: &Path, tab: Tab, config: &Config) -> Result<Vec<R
         Tab::Stale => load_stale_rows(vault, config),
         Tab::Due => load_due_rows(vault),
         Tab::Review => load_review_rows(vault, config),
+        Tab::Search => Ok(Vec::new()),
     }
 }
 

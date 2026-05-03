@@ -270,10 +270,18 @@ pub(crate) enum Tab {
     Stale,
     Due,
     Review,
+    Search,
 }
 
 impl Tab {
-    pub(crate) const ALL: [Self; 5] = [Tab::Today, Tab::List, Tab::Stale, Tab::Due, Tab::Review];
+    pub(crate) const ALL: [Self; 6] = [
+        Tab::Today,
+        Tab::List,
+        Tab::Stale,
+        Tab::Due,
+        Tab::Review,
+        Tab::Search,
+    ];
 
     pub(crate) fn title(self) -> &'static str {
         match self {
@@ -282,6 +290,7 @@ impl Tab {
             Tab::Stale => "Stale",
             Tab::Due => "Due",
             Tab::Review => "Review",
+            Tab::Search => "Search",
         }
     }
 
@@ -291,7 +300,8 @@ impl Tab {
             Tab::List => Tab::Stale,
             Tab::Stale => Tab::Due,
             Tab::Due => Tab::Review,
-            Tab::Review => Tab::Today,
+            Tab::Review => Tab::Search,
+            Tab::Search => Tab::Today,
         }
     }
 
@@ -302,6 +312,7 @@ impl Tab {
             Tab::Stale => 2,
             Tab::Due => 3,
             Tab::Review => 4,
+            Tab::Search => 5,
         }
     }
 }

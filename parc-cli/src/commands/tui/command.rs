@@ -235,6 +235,14 @@ fn all_commands() -> Vec<CommandEntry> {
             requires_selection: false,
             action: CommandAction::SwitchTab(Tab::Review),
         },
+        CommandEntry {
+            label: "Switch to Search",
+            description: "Show the most recent launcher fragment search results.",
+            key: "6",
+            aliases: &["tab", "results", "launcher"],
+            requires_selection: false,
+            action: CommandAction::SwitchTab(Tab::Search),
+        },
     ]
 }
 

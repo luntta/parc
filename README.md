@@ -405,7 +405,7 @@ parc tui      # force the TUI
 parc --no-tui # force plain today output
 ```
 
-The TUI provides tabbed Today, List, Stale, Due, and Review views with arrow-key navigation, a two-pane universal launcher (`/`) for fragments/commands/views, a markdown-rendered detail pane, and inline actions for editing (`e`), toggling todo status (`t`), archiving (`a`), deleting (`d`), promoting (`p`), and yanking the ID to the clipboard (`y`). Press `?` inside the TUI for the full keymap.
+The TUI provides tabbed Today, List, Stale, Due, Review, and Search views with arrow-key navigation, a two-pane universal launcher (`/`) for fragments/commands/views, a markdown-rendered detail pane, and inline actions for editing (`e`), toggling todo status (`t`), archiving (`a`), deleting (`d`), promoting (`p`), and yanking the ID to the clipboard (`y`). Press `?` inside the TUI for the full keymap.
 
 ## Architecture
 

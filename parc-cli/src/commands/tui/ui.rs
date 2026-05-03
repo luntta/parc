@@ -782,7 +782,7 @@ fn draw_launcher_footer(frame: &mut Frame, area: Rect, popup: &LauncherPopup, st
     } else {
         let help = match popup.kind() {
             LauncherKind::Universal => {
-                "type fragments/commands/views  > command-only  Enter edit/run  Esc close"
+                "type fragments/commands/views  > command-only  Enter open/run  Esc close"
             }
             LauncherKind::Commands => "type command  Backspace to search  Enter run  Esc close",
         };
@@ -860,7 +860,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         Line::from("Navigation"),
-        Line::from("  1-5         switch tab (Today/List/Stale/Due/Review)"),
+        Line::from("  1-6         switch tab (Today/List/Stale/Due/Review/Search)"),
         Line::from("  Tab         cycle tabs"),
         Line::from("  Shift-Tab   toggle pane focus (list / detail)"),
         Line::from("  /           open universal launcher"),
@@ -892,7 +892,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("General"),
         Line::from("  ?           toggle this help"),
         Line::from("  Launcher    plain text finds fragments, commands, and views"),
-        Line::from("  Search      type DSL text, Enter edits result, Esc closes"),
+        Line::from("  Search      type DSL text, Enter opens result, Esc closes"),
         Line::from("  Commands    type a command or prefix > for command-only"),
         Line::from("  q           quit"),
         Line::from("  Esc         cancel modal / close launcher"),
