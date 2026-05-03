@@ -37,7 +37,32 @@ pub(crate) enum Mode {
     },
     Capture(CaptureForm),
     Launcher(LauncherPopup),
+    Overlay(OverlayState),
     Help,
+}
+
+/// Vimium-style overlay over the detail pane: visible actionables get a
+/// single-letter label; the next keypress invokes the matching item.
+#[derive(Clone)]
+pub(crate) struct OverlayState {
+    pub kind: OverlayKind,
+    /// (label-key, index into `App.detail_items`)
+    pub labels: Vec<(char, usize)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OverlayKind {
+    FollowLink,
+    ToggleCheckbox,
+}
+
+impl OverlayKind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            OverlayKind::FollowLink => "follow link",
+            OverlayKind::ToggleCheckbox => "toggle checkbox",
+        }
+    }
 }
 
 #[derive(Clone)]

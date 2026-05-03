@@ -17,7 +17,7 @@ use super::cache::FragmentCache;
 use super::command::{CommandEntry, LauncherKind};
 use super::highlight;
 use super::markdown::{self, Actionable};
-use super::{CaptureField, CaptureForm, Focus, LauncherPopup, Mode, Row, Tab};
+use super::{CaptureField, CaptureForm, Focus, LauncherPopup, Mode, OverlayState, Row, Tab};
 
 const MENU_BORDER: Color = Color::DarkGray;
 const LIST_BORDER: Color = Color::Blue;
@@ -66,6 +66,8 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
         Mode::Launcher(popup) => {
             draw_launcher_popup(frame, area, vault, config, &mut app.cache, popup, &status)
         }
+        // Overlay labels are painted inside draw_detail.
+        Mode::Overlay(_) => {}
     }
 }
 
@@ -238,6 +240,9 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         .border_style(Style::default().fg(border_color))
         .title(" detail ");
 
+    let inner = block.inner(area);
+    app.detail_viewport = inner.height;
+
     let selected_row = app
         .list_state
         .selected()
@@ -251,6 +256,8 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         .block(block);
         frame.render_widget(paragraph, area);
         app.detail_max_scroll = 0;
+        app.detail_items.clear();
+        app.detail_body_offset = 0;
         return;
     };
     let detail = detail_lines(vault, &mut app.cache, &row, None);
@@ -264,6 +271,54 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         &mut app.detail_scroll,
         &mut app.detail_max_scroll,
     );
+
+    if let Mode::Overlay(state) = &app.mode {
+        draw_overlay_labels(
+            frame,
+            inner,
+            app.detail_scroll,
+            app.detail_body_offset,
+            &app.detail_items,
+            state,
+        );
+    }
+}
+
+fn draw_overlay_labels(
+    frame: &mut Frame,
+    inner: Rect,
+    detail_scroll: u16,
+    body_offset: usize,
+    items: &[Actionable],
+    state: &OverlayState,
+) {
+    let buf = frame.buffer_mut();
+    let badge_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+
+    for (label, item_idx) in &state.labels {
+        let Some(item) = items.get(*item_idx) else {
+            continue;
+        };
+        let absolute_line = item.logical_line + body_offset;
+        if absolute_line < detail_scroll as usize {
+            continue;
+        }
+        let row_offset = absolute_line - detail_scroll as usize;
+        if row_offset >= inner.height as usize {
+            continue;
+        }
+        let y = inner.y + row_offset as u16;
+        let badge = format!("[{}]", label);
+        // Anchor at column 0 of the inner area; cheap and unambiguous.
+        // Skip if there isn't room for the badge.
+        if inner.width < badge.len() as u16 {
+            continue;
+        }
+        buf.set_string(inner.x, y, badge, badge_style);
+    }
 }
 
 /// Output of `detail_lines`: the fully composed line list plus positional
@@ -728,7 +783,7 @@ fn footer_commands(focus: Focus) -> &'static str {
             "/ search  Ctrl-P commands  Tab tabs  S-tab detail  arrows move  c capture  e edit  ? help"
         }
         Focus::Detail => {
-            "/ search  Ctrl-P commands  Tab tabs  S-tab list  arrows scroll  e edit  ? help"
+            "/ search  Ctrl-P commands  Tab tabs  S-tab list  arrows scroll  f follow  x toggle  e edit  ? help"
         }
     }
 }
@@ -763,6 +818,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  d           delete (with confirm)"),
         Line::from("  y           copy full id to clipboard"),
         Line::from("  r           reload current view"),
+        Line::from(""),
+        Line::from("In the detail pane (Shift-Tab to focus)"),
+        Line::from("  f           follow a [[wiki-link]] (overlay picks one)"),
+        Line::from("  x           toggle a [ ] / [x] checkbox"),
         Line::from(""),
         Line::from("General"),
         Line::from("  ?           toggle this help"),

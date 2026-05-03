@@ -12,10 +12,10 @@ use ratatui::Terminal;
 
 use super::cache::FragmentCache;
 use super::command::{self, CommandAction, LauncherKind};
-use super::markdown::Actionable;
+use super::markdown::{ActionKind, Actionable};
 use super::{
     actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, LauncherPopup,
-    Mode, QuickField, Row, Tab,
+    Mode, OverlayKind, OverlayState, QuickField, Row, Tab,
 };
 
 const PAGE_LINES: u16 = 10;
@@ -78,6 +78,9 @@ pub(super) struct App {
     /// `lines`-vector indices.
     pub detail_items: Vec<Actionable>,
     pub detail_body_offset: usize,
+    /// Last-rendered viewport height of the detail pane's inner area.
+    /// Used by overlay visibility filtering. `0` until the first render.
+    pub detail_viewport: u16,
     tab_states: [TabViewState; TAB_COUNT],
 }
 
@@ -102,6 +105,7 @@ impl App {
             cache: FragmentCache::new(FRAGMENT_CACHE_CAP),
             detail_items: Vec::new(),
             detail_body_offset: 0,
+            detail_viewport: 0,
             tab_states: std::array::from_fn(|_| TabViewState::default()),
         }
     }
@@ -184,6 +188,10 @@ impl App {
             self.dirty = true;
         }
     }
+
+    pub(super) fn detail_viewport_height(&self) -> u16 {
+        self.detail_viewport
+    }
 }
 
 pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Result<()> {
@@ -229,6 +237,7 @@ pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Re
                 Mode::Launcher(popup) => {
                     handle_launcher(&mut app, key, popup, terminal, vault, config)?
                 }
+                Mode::Overlay(state) => handle_overlay(&mut app, key, state)?,
                 Mode::Help => handle_help(&mut app, key)?,
             },
             Event::Resize(_, _) => {
@@ -322,6 +331,13 @@ fn handle_normal(
         (KeyCode::Char('P'), _) => start_field_input(app, QuickField::Priority),
         (KeyCode::Char('@'), _) => start_field_input(app, QuickField::Assignee),
         (KeyCode::Char('#'), _) => start_field_input(app, QuickField::Tags),
+
+        (KeyCode::Char('f'), _) if plain && app.focus == Focus::Detail => {
+            open_overlay(app, OverlayKind::FollowLink);
+        }
+        (KeyCode::Char('x'), _) if plain && app.focus == Focus::Detail => {
+            open_overlay(app, OverlayKind::ToggleCheckbox);
+        }
 
         (KeyCode::Down, _) => match app.focus {
             Focus::List => app.move_list(1),
@@ -899,6 +915,119 @@ fn yank_id(app: &mut App, id: &str) {
     }
 }
 
+fn open_overlay(app: &mut App, kind: OverlayKind) {
+    let viewport = app.detail_viewport_height();
+    let visible = visible_actionables(
+        &app.detail_items,
+        app.detail_body_offset,
+        app.detail_scroll,
+        viewport,
+        kind,
+    );
+
+    if visible.is_empty() {
+        let what = match kind {
+            OverlayKind::FollowLink => "no links in view",
+            OverlayKind::ToggleCheckbox => "no checkboxes in view",
+        };
+        app.set_status(what);
+        return;
+    }
+
+    if visible.len() == 1 {
+        invoke_actionable(app, kind, visible[0]);
+        return;
+    }
+
+    let labels: Vec<(char, usize)> = visible
+        .into_iter()
+        .zip(LABEL_ALPHABET.chars())
+        .map(|(idx, ch)| (ch, idx))
+        .collect();
+
+    app.mode = Mode::Overlay(OverlayState { kind, labels });
+    app.dirty = true;
+}
+
+fn handle_overlay(app: &mut App, key: KeyEvent, state: OverlayState) -> Result<bool> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('c') if ctrl => return Ok(false),
+        KeyCode::Esc => {
+            app.mode = Mode::Normal;
+            app.set_status("cancelled");
+        }
+        KeyCode::Char(ch) => {
+            let target = state
+                .labels
+                .iter()
+                .find(|(label, _)| *label == ch.to_ascii_lowercase())
+                .map(|(_, idx)| *idx);
+            match target {
+                Some(idx) => {
+                    app.mode = Mode::Normal;
+                    invoke_actionable(app, state.kind, idx);
+                }
+                None => {
+                    app.mode = Mode::Overlay(state);
+                }
+            }
+        }
+        _ => {
+            app.mode = Mode::Overlay(state);
+        }
+    }
+    Ok(true)
+}
+
+/// Step 3 stub: just set a status message describing what would happen.
+/// Steps 4/5 wire actual checkbox toggle and link follow.
+fn invoke_actionable(app: &mut App, kind: OverlayKind, item_idx: usize) {
+    let Some(item) = app.detail_items.get(item_idx).cloned() else {
+        return;
+    };
+    let msg = match (kind, &item.kind) {
+        (OverlayKind::FollowLink, ActionKind::WikiLink { target, .. }) => {
+            format!("would follow [[{}]]", target)
+        }
+        (OverlayKind::ToggleCheckbox, ActionKind::Checkbox { checked }) => {
+            format!("would toggle checkbox ({})", if *checked { "✓→·" } else { "·→✓" })
+        }
+        _ => "nothing to do".to_string(),
+    };
+    app.set_status(msg);
+}
+
+const LABEL_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
+
+/// Returns indices into `items` that (a) match the overlay kind and
+/// (b) sit in the currently visible viewport.
+fn visible_actionables(
+    items: &[Actionable],
+    body_offset: usize,
+    detail_scroll: u16,
+    viewport: u16,
+    kind: OverlayKind,
+) -> Vec<usize> {
+    let top = detail_scroll as usize;
+    let bottom = top.saturating_add(viewport as usize);
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| match (kind, &item.kind) {
+            (OverlayKind::FollowLink, ActionKind::WikiLink { .. }) => true,
+            (OverlayKind::ToggleCheckbox, ActionKind::Checkbox { .. }) => true,
+            _ => false,
+        })
+        .filter(|(_, item)| {
+            let line = item.logical_line + body_offset;
+            line >= top && line < bottom
+        })
+        .map(|(idx, _)| idx)
+        .take(LABEL_ALPHABET.len())
+        .collect()
+}
+
 fn handle_help(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
@@ -954,5 +1083,55 @@ fn clamp_selection(app: &mut App) {
         app.list_state.select(Some(0));
     } else if cur >= app.rows.len() {
         app.list_state.select(Some(app.rows.len() - 1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::tui::markdown::{ActionKind, Actionable};
+
+    fn link(line: usize) -> Actionable {
+        Actionable {
+            kind: ActionKind::WikiLink {
+                target: format!("ID{}", line),
+                display_text: None,
+            },
+            logical_line: line,
+            source_range: 0..0,
+        }
+    }
+
+    fn checkbox(line: usize) -> Actionable {
+        Actionable {
+            kind: ActionKind::Checkbox { checked: false },
+            logical_line: line,
+            source_range: 0..0,
+        }
+    }
+
+    #[test]
+    fn visible_filter_picks_in_range_links_only() {
+        // viewport rows [scroll..scroll+height); body_offset adds to each item.
+        let items = vec![link(0), checkbox(2), link(4), link(20)];
+        let visible =
+            visible_actionables(&items, /*body_offset=*/ 5, /*scroll=*/ 5, /*viewport=*/ 10, OverlayKind::FollowLink);
+        // line indices: 0+5=5 (in), 2+5=7 (in but checkbox), 4+5=9 (in), 20+5=25 (out).
+        assert_eq!(visible, vec![0, 2]);
+    }
+
+    #[test]
+    fn visible_filter_caps_at_alphabet_size() {
+        let items: Vec<Actionable> = (0..40).map(link).collect();
+        let visible =
+            visible_actionables(&items, 0, 0, 100, OverlayKind::FollowLink);
+        assert_eq!(visible.len(), LABEL_ALPHABET.len());
+    }
+
+    #[test]
+    fn visible_filter_returns_empty_when_scrolled_past() {
+        let items = vec![link(0), link(1)];
+        let visible = visible_actionables(&items, 0, 50, 10, OverlayKind::FollowLink);
+        assert!(visible.is_empty());
     }
 }
