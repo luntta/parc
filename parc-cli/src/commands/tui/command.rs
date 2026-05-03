@@ -17,7 +17,7 @@ pub(crate) enum CommandAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LauncherKind {
-    Fragments,
+    Universal,
     Commands,
 }
 
@@ -32,7 +32,7 @@ pub(crate) struct CommandEntry {
 }
 
 impl CommandEntry {
-    fn matches(self, query: &str) -> bool {
+    pub(crate) fn matches(self, query: &str) -> bool {
         let terms = query
             .split_whitespace()
             .map(str::to_lowercase)
@@ -58,7 +58,7 @@ pub(crate) fn launcher_kind(input: &str) -> LauncherKind {
     if input.starts_with('>') {
         LauncherKind::Commands
     } else {
-        LauncherKind::Fragments
+        LauncherKind::Universal
     }
 }
 
@@ -215,9 +215,25 @@ fn all_commands() -> Vec<CommandEntry> {
             label: "Switch to Stale",
             description: "Show stale fragments that may need attention.",
             key: "3",
-            aliases: &["tab", "review"],
+            aliases: &["tab", "quiet", "stalled"],
             requires_selection: false,
             action: CommandAction::SwitchTab(Tab::Stale),
+        },
+        CommandEntry {
+            label: "Switch to Due",
+            description: "Show open todos due this week.",
+            key: "4",
+            aliases: &["tab", "deadline", "overdue", "this week"],
+            requires_selection: false,
+            action: CommandAction::SwitchTab(Tab::Due),
+        },
+        CommandEntry {
+            label: "Switch to Review",
+            description: "Show a multi-section review digest.",
+            key: "5",
+            aliases: &["tab", "weekly", "digest", "recap"],
+            requires_selection: false,
+            action: CommandAction::SwitchTab(Tab::Review),
         },
     ]
 }
@@ -246,12 +262,12 @@ mod tests {
             .map(|command| command.label)
             .collect::<Vec<_>>();
 
-        assert_eq!(labels, vec!["Set Due Date"]);
+        assert_eq!(labels, vec!["Set Due Date", "Switch to Due"]);
     }
 
     #[test]
     fn plain_input_is_fragment_search() {
-        assert_eq!(launcher_kind("due"), LauncherKind::Fragments);
+        assert_eq!(launcher_kind("due"), LauncherKind::Universal);
         assert_eq!(launcher_kind(">due"), LauncherKind::Commands);
     }
 }

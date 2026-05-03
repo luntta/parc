@@ -156,8 +156,7 @@ pub(super) fn toggle_checkbox(
             ));
         }
     };
-    frag.body
-        .replace_range(source_range.clone(), next);
+    frag.body.replace_range(source_range.clone(), next);
     frag.updated_at = Utc::now();
 
     let runner = CliHookRunner;
@@ -170,7 +169,11 @@ pub(super) fn toggle_checkbox(
     Ok(format!(
         "{} checkbox {}",
         short(&frag.id),
-        if next == "[x]" { "checked" } else { "unchecked" }
+        if next == "[x]" {
+            "checked"
+        } else {
+            "unchecked"
+        }
     ))
 }
 

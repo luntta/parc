@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use parc_core::config::Config;
+use parc_core::date;
 use parc_core::fragment::read_fragment;
 use parc_core::fuzzy::{FuzzyEngine, FuzzyHit};
 use parc_core::index::open_index;
@@ -51,6 +52,8 @@ pub(super) fn load_rows(vault: &Path, tab: Tab, config: &Config) -> Result<Vec<R
             },
         ),
         Tab::Stale => load_stale_rows(vault, config),
+        Tab::Due => load_due_rows(vault),
+        Tab::Review => load_review_rows(vault, config),
     }
 }
 
@@ -254,6 +257,193 @@ fn load_stale_rows(vault: &Path, config: &Config) -> Result<Vec<Row>> {
     let mut results = resurfacing::merge_unique(groups);
     results.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
     let mut rows: Vec<Row> = results.into_iter().map(Row::from).collect();
+    hydrate_rows(vault, &mut rows);
+    Ok(rows)
+}
+
+fn load_due_rows(vault: &Path) -> Result<Vec<Row>> {
+    let next_week = resurfacing::in_days_string(7);
+    let mut filters = vec![
+        Filter::Type {
+            value: "todo".to_string(),
+            negated: false,
+        },
+        Filter::Due(DateFilter::Absolute {
+            op: CompareOp::Lte,
+            date: next_week,
+        }),
+    ];
+    filters.extend(resurfacing::unfinished_status_filters());
+
+    let mut rows = query_rows(
+        vault,
+        SearchQuery {
+            text_terms: Vec::new(),
+            filters,
+            sort: SortOrder::CreatedAsc,
+            limit: Some(200),
+        },
+    )?;
+    for row in &mut rows {
+        row.section = due_section(row);
+    }
+    Ok(rows)
+}
+
+fn due_section(row: &Row) -> Option<String> {
+    let due = row.due.as_deref()?;
+    let today = resurfacing::today_string();
+    let section = if due < today.as_str() {
+        "Overdue"
+    } else if due == today.as_str() {
+        "Due today"
+    } else {
+        "Due soon"
+    };
+    Some(section.to_string())
+}
+
+fn load_review_rows(vault: &Path, config: &Config) -> Result<Vec<Row>> {
+    let window = config.resurfacing.review_window.clone();
+    let window_filter = date::parse_relative_date(&window)
+        .map(DateFilter::Relative)
+        .unwrap_or(DateFilter::Absolute {
+            op: CompareOp::Gte,
+            date: window,
+        });
+    let next_week = resurfacing::in_days_string(7);
+    let stale_cutoff = resurfacing::days_ago_string(config.resurfacing.stale_days);
+
+    let mut rows = Vec::new();
+
+    push_section(
+        &mut rows,
+        "Edited",
+        resurfacing::run_search(
+            vault,
+            &SearchQuery {
+                text_terms: Vec::new(),
+                filters: vec![Filter::Updated(window_filter.clone())],
+                sort: SortOrder::UpdatedDesc,
+                limit: Some(200),
+            },
+        )?
+        .into_iter(),
+    );
+
+    push_section(
+        &mut rows,
+        "Created",
+        resurfacing::run_search(
+            vault,
+            &SearchQuery {
+                text_terms: Vec::new(),
+                filters: vec![Filter::Created(window_filter.clone())],
+                sort: SortOrder::CreatedDesc,
+                limit: Some(200),
+            },
+        )?
+        .into_iter(),
+    );
+
+    push_section(
+        &mut rows,
+        "Decisions accepted",
+        resurfacing::run_search(
+            vault,
+            &SearchQuery {
+                text_terms: Vec::new(),
+                filters: vec![
+                    Filter::Type {
+                        value: "decision".to_string(),
+                        negated: false,
+                    },
+                    Filter::Status {
+                        value: "accepted".to_string(),
+                        negated: false,
+                    },
+                    Filter::Updated(window_filter.clone()),
+                ],
+                sort: SortOrder::UpdatedDesc,
+                limit: Some(200),
+            },
+        )?
+        .into_iter(),
+    );
+
+    push_section(
+        &mut rows,
+        "Risks identified",
+        resurfacing::run_search(
+            vault,
+            &SearchQuery {
+                text_terms: Vec::new(),
+                filters: vec![
+                    Filter::Type {
+                        value: "risk".to_string(),
+                        negated: false,
+                    },
+                    Filter::Created(window_filter),
+                ],
+                sort: SortOrder::CreatedDesc,
+                limit: Some(200),
+            },
+        )?
+        .into_iter(),
+    );
+
+    let mut due_filters = vec![
+        Filter::Type {
+            value: "todo".to_string(),
+            negated: false,
+        },
+        Filter::Due(DateFilter::Absolute {
+            op: CompareOp::Lte,
+            date: next_week,
+        }),
+    ];
+    due_filters.extend(resurfacing::unfinished_status_filters());
+    push_section(
+        &mut rows,
+        "Open todos due soon",
+        resurfacing::run_search(
+            vault,
+            &SearchQuery {
+                text_terms: Vec::new(),
+                filters: due_filters,
+                sort: SortOrder::CreatedAsc,
+                limit: Some(200),
+            },
+        )?
+        .into_iter(),
+    );
+
+    let mut stale_filters = vec![
+        Filter::Type {
+            value: "todo".to_string(),
+            negated: false,
+        },
+        Filter::Updated(DateFilter::Absolute {
+            op: CompareOp::Lt,
+            date: stale_cutoff,
+        }),
+    ];
+    stale_filters.extend(resurfacing::unfinished_status_filters());
+    push_section(
+        &mut rows,
+        "Stale todos",
+        resurfacing::run_search(
+            vault,
+            &SearchQuery {
+                text_terms: Vec::new(),
+                filters: stale_filters,
+                sort: SortOrder::UpdatedAsc,
+                limit: Some(200),
+            },
+        )?
+        .into_iter(),
+    );
+
     hydrate_rows(vault, &mut rows);
     Ok(rows)
 }

@@ -16,8 +16,8 @@ use super::cache::FragmentCache;
 use super::command::{self, CommandAction, LauncherKind};
 use super::markdown::{ActionKind, Actionable};
 use super::{
-    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, LauncherPopup,
-    Mode, OverlayKind, OverlayState, QuickField, Row, Tab,
+    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, LauncherItem,
+    LauncherPopup, Mode, OverlayKind, OverlayState, QuickField, Row, Tab,
 };
 
 const PAGE_LINES: u16 = 10;
@@ -25,7 +25,7 @@ const HALF_PAGE_LINES: u16 = 5;
 const FRAGMENT_CACHE_CAP: usize = 64;
 const IDLE_POLL_SECS: u64 = 60;
 const STATUS_LIFETIME_SECS: u64 = 4;
-const TAB_COUNT: usize = 3;
+const TAB_COUNT: usize = Tab::ALL.len();
 
 pub(super) enum Status {
     Idle,
@@ -351,7 +351,9 @@ fn handle_normal(
         (KeyCode::Char('1'), _) => switch_tab(app, Tab::Today, vault, config)?,
         (KeyCode::Char('2'), _) => switch_tab(app, Tab::List, vault, config)?,
         (KeyCode::Char('3'), _) => switch_tab(app, Tab::Stale, vault, config)?,
-        (KeyCode::Char('4'), _) | (KeyCode::Char('/'), _) => open_launcher(app, vault, ""),
+        (KeyCode::Char('4'), _) => switch_tab(app, Tab::Due, vault, config)?,
+        (KeyCode::Char('5'), _) => switch_tab(app, Tab::Review, vault, config)?,
+        (KeyCode::Char('/'), _) => open_launcher(app, vault, ""),
         (KeyCode::Char('p') | KeyCode::Char('P'), m) if m.contains(KeyModifiers::CONTROL) => {
             open_launcher(app, vault, ">")
         }
@@ -533,22 +535,19 @@ fn handle_launcher(
                 reload_launcher_popup(app, &mut popup, vault, true);
             }
         }
-        KeyCode::Enter => match popup.kind() {
-            LauncherKind::Fragments => {
-                if let Some(id) = popup.selected_id() {
-                    edit_id(app, terminal, vault, config, &id)?;
-                    reload_launcher_popup(app, &mut popup, vault, false);
-                }
+        KeyCode::Enter => match popup.selected_item().cloned() {
+            Some(LauncherItem::Fragment(row)) => {
+                edit_id(app, terminal, vault, config, &row.id)?;
+                reload_launcher_popup(app, &mut popup, vault, false);
             }
-            LauncherKind::Commands => {
-                if let Some(command) = popup.selected_command() {
-                    app.launcher_input = popup.input;
-                    app.mode = Mode::Normal;
-                    execute_command_action(app, command.action, terminal, vault, config)?;
-                    app.dirty = true;
-                    return Ok(true);
-                }
+            Some(LauncherItem::Command(command)) => {
+                app.launcher_input = popup.input;
+                app.mode = Mode::Normal;
+                execute_command_action(app, command.action, terminal, vault, config)?;
+                app.dirty = true;
+                return Ok(true);
             }
+            None => {}
         },
         KeyCode::Char(c) if !ctrl => {
             popup.input.push(c);
@@ -815,68 +814,91 @@ fn reload_launcher_popup(
     reset_selection: bool,
 ) {
     match popup.kind() {
-        LauncherKind::Fragments => reload_fragment_results(app, popup, vault, reset_selection),
+        LauncherKind::Universal => reload_universal_results(app, popup, vault, reset_selection),
         LauncherKind::Commands => reload_command_results(app, popup, reset_selection),
     }
 }
 
-fn reload_fragment_results(
+fn reload_universal_results(
     app: &mut App,
     popup: &mut LauncherPopup,
     vault: &Path,
     reset_selection: bool,
 ) {
-    let selected_id = if reset_selection {
+    let selected_item = if reset_selection {
         None
     } else {
-        popup.selected_id()
+        popup.selected_item().cloned()
     };
-    popup.commands.clear();
 
     match data::load_search_rows(vault, &popup.input, &mut app.search) {
         Ok(rows) => {
             popup.rows = rows;
+            popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
+            popup.items = popup
+                .commands
+                .iter()
+                .copied()
+                .map(LauncherItem::Command)
+                .chain(popup.rows.iter().cloned().map(LauncherItem::Fragment))
+                .collect();
             popup.error = None;
-            if let Some(id) = selected_id {
-                if let Some(idx) = popup.rows.iter().position(|row| row.id == id) {
-                    popup.list_state.select(Some(idx));
-                } else {
-                    popup.select_first();
-                }
-            } else {
-                popup.select_first();
-            }
+            restore_launcher_selection(popup, selected_item);
         }
         Err(err) => {
             popup.rows.clear();
+            popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
+            popup.items = popup
+                .commands
+                .iter()
+                .copied()
+                .map(LauncherItem::Command)
+                .collect();
             popup.error = Some(err.to_string());
-            popup.select_first();
+            restore_launcher_selection(popup, selected_item);
         }
     }
 }
 
 fn reload_command_results(app: &App, popup: &mut LauncherPopup, reset_selection: bool) {
-    let selected_action = if reset_selection {
+    let selected_item = if reset_selection {
         None
     } else {
-        popup.selected_command().map(|command| command.action)
+        popup.selected_item().cloned()
     };
     popup.rows.clear();
     popup.error = None;
     popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
+    popup.items = popup
+        .commands
+        .iter()
+        .copied()
+        .map(LauncherItem::Command)
+        .collect();
 
-    if let Some(action) = selected_action {
-        if let Some(idx) = popup
-            .commands
+    restore_launcher_selection(popup, selected_item);
+}
+
+fn restore_launcher_selection(popup: &mut LauncherPopup, selected_item: Option<LauncherItem>) {
+    let idx = selected_item.and_then(|selected| {
+        popup
+            .items
             .iter()
-            .position(|command| command.action == action)
-        {
-            popup.list_state.select(Some(idx));
-            return;
-        }
+            .position(|candidate| same_launcher_item(candidate, &selected))
+    });
+    if let Some(idx) = idx {
+        popup.list_state.select(Some(idx));
+    } else {
+        popup.select_first();
     }
+}
 
-    popup.select_first();
+fn same_launcher_item(a: &LauncherItem, b: &LauncherItem) -> bool {
+    match (a, b) {
+        (LauncherItem::Fragment(a), LauncherItem::Fragment(b)) => a.id == b.id,
+        (LauncherItem::Command(a), LauncherItem::Command(b)) => a.action == b.action,
+        _ => false,
+    }
 }
 
 fn execute_command_action(
@@ -1107,7 +1129,10 @@ fn follow_link_action(app: &mut App, vault: &Path, config: &Config, target: &str
     };
     let from = app.selected_id();
     if jump_to_id(app, vault, config, &resolved).is_err() {
-        app.set_status(format!("follow failed: could not show {}", short_id(&resolved)));
+        app.set_status(format!(
+            "follow failed: could not show {}",
+            short_id(&resolved)
+        ));
         return;
     }
     if let Some(from) = from {
@@ -1295,8 +1320,13 @@ mod tests {
     fn visible_filter_picks_in_range_links_only() {
         // viewport rows [scroll..scroll+height); body_offset adds to each item.
         let items = vec![link(0), checkbox(2), link(4), link(20)];
-        let visible =
-            visible_actionables(&items, /*body_offset=*/ 5, /*scroll=*/ 5, /*viewport=*/ 10, OverlayKind::FollowLink);
+        let visible = visible_actionables(
+            &items,
+            /*body_offset=*/ 5,
+            /*scroll=*/ 5,
+            /*viewport=*/ 10,
+            OverlayKind::FollowLink,
+        );
         // line indices: 0+5=5 (in), 2+5=7 (in but checkbox), 4+5=9 (in), 20+5=25 (out).
         assert_eq!(visible, vec![0, 2]);
     }
@@ -1304,8 +1334,7 @@ mod tests {
     #[test]
     fn visible_filter_caps_at_alphabet_size() {
         let items: Vec<Actionable> = (0..40).map(link).collect();
-        let visible =
-            visible_actionables(&items, 0, 0, 100, OverlayKind::FollowLink);
+        let visible = visible_actionables(&items, 0, 0, 100, OverlayKind::FollowLink);
         assert_eq!(visible.len(), LABEL_ALPHABET.len());
     }
 

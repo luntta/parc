@@ -18,17 +18,19 @@ The CLI auto-falls-back to the `today` digest when output is piped or redirected
 
 ## Layout
 
-A persistent menu strip across the top selects between three tabs. Below it sits a two-pane split: a list panel on the left, a detail panel on the right. Exactly one pane is _focused_ at a time — its border is highlighted and navigation keys (arrows, page, etc.) act on it. A footer strip at the bottom shows the current focus and a key cheat-sheet.
+A persistent menu strip across the top selects between five tabs. Below it sits a two-pane split: a list panel on the left, a detail panel on the right. Exactly one pane is _focused_ at a time — its border is highlighted and navigation keys (arrows, page, etc.) act on it. A footer strip at the bottom shows the current focus and a key cheat-sheet.
 
 | Tab | Number | What it shows |
 |-----|--------|---------------|
 | **Today** | `1` | The same three sections as `parc today` (touched today / due / open & high priority) |
 | **List** | `2` | Recent fragments, newest first |
 | **Stale** | `3` | The same set as `parc stale` |
+| **Due** | `4` | Open todos due this week, grouped by overdue / today / soon |
+| **Review** | `5` | The same multi-section digest as `parc review` |
 
 The detail pane renders the selected fragment's body as styled Markdown — headings, lists, blockquotes, code, inline code, bold/italic, links, and `[[id]]` wiki-links are highlighted. A scrollbar appears when the body overflows the pane.
 
-`/` or `4` opens a two-pane launcher over the current view in fragment search mode. The query field stays active while the left pane lists live DSL search results and the right pane previews the selected fragment with matched terms highlighted. `Ctrl-P` opens the same launcher with `>` prefilled, switching the left pane to commands; typing after `>` filters commands and `Enter` runs the highlighted command.
+`/` opens a two-pane universal launcher over the current view. Plain input searches fragments with the full DSL and also matches commands/views, so typing `review`, `due`, `archive`, or `#backend` surfaces the relevant action or fragment result. The right pane previews the highlighted fragment or command. `Ctrl-P` opens the same launcher with `>` prefilled for command-only filtering; typing after `>` filters commands and `Enter` runs the highlighted command.
 
 ## Keybindings
 
@@ -36,16 +38,16 @@ The detail pane renders the selected fragment's body as styled Markdown — head
 
 | Key | Action |
 |-----|--------|
-| `1` / `2` / `3` | Jump to a tab |
+| `1` / `2` / `3` / `4` / `5` | Jump to a tab |
 | `Tab` | Cycle to the next tab |
 | `Shift-Tab` | Toggle pane focus (list ↔ detail) |
-| `/` / `4` | Open the launcher in fragment search mode |
-| `Ctrl-P` | Open the launcher in command mode |
+| `/` | Open the universal launcher |
+| `Ctrl-P` | Open the launcher command-only |
 | `↓` / `↑` | Move within the focused pane |
 | `PgDn` / `PgUp` | Page within the focused pane |
 | `Home` / `End` | Top / bottom of the focused pane |
 | `Ctrl-d` / `Ctrl-u` | Half-page scroll within the focused pane |
-| `r` | Reload the current tab (Today / List / Stale) |
+| `r` | Reload the current tab |
 
 ### Actions on the selected fragment
 
@@ -74,10 +76,10 @@ The detail pane renders the selected fragment's body as styled Markdown — head
 | `q` | Quit |
 | `Ctrl-C` | Quit from anywhere |
 
-In launcher search mode, all printable keystrokes append to the query. The query is parsed as the full [search DSL]({{ '/search-dsl/' | url }}), so `type:todo #backend due:this-week` filters the list as you type. Use `Shift-Tab` to move focus between results and preview, `Enter` to edit the selected result, and `Esc` to close the launcher.
+In universal launcher mode, all printable keystrokes append to the query. The query is parsed as the full [search DSL]({{ '/search-dsl/' | url }}), so `type:todo #backend due:this-week` filters fragments as you type, while command/view matches are mixed into the same result list. Use `Shift-Tab` to move focus between results and preview, `Enter` to edit a selected fragment or run a selected command, and `Esc` to close the launcher.
 
-If the launcher input starts with `>`, it switches to command mode. Command results include existing TUI actions such as edit, toggle status, archive, delete, promote, yank ID, quick field edits, capture, reload, help, and tab switching. Commands that need a selected fragment are hidden when nothing is selected.
+If the launcher input starts with `>`, it switches to command-only mode. Command results include existing TUI actions such as edit, toggle status, archive, delete, promote, yank ID, quick field edits, capture, reload, help, and tab switching. Commands that need a selected fragment are hidden when nothing is selected.
 
 ## When to use it
 
-The TUI shines for browsing and quick edits — flipping between tabs to see what you've been doing, opening search to refine, and editing or toggling todos without leaving the keyboard. For one-shot queries, scripted output, or piping into other tools, the CLI is faster: every persistent TUI tab maps directly to a `parc today`, `parc list`, or `parc stale` invocation, and every TUI action maps to `parc edit`, `parc set`, `parc archive`, `parc delete`, or `parc promote`.
+The TUI shines for browsing and quick edits — flipping between tabs to see what you've been doing, using the launcher to search or run actions, and editing or toggling todos without leaving the keyboard. For one-shot queries, scripted output, or piping into other tools, the CLI is faster: every persistent TUI tab maps directly to a resurfacing/list command, and every TUI action maps to `parc edit`, `parc set`, `parc archive`, `parc delete`, or `parc promote`.

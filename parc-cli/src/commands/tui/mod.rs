@@ -268,14 +268,20 @@ pub(crate) enum Tab {
     Today,
     List,
     Stale,
+    Due,
+    Review,
 }
 
 impl Tab {
+    pub(crate) const ALL: [Self; 5] = [Tab::Today, Tab::List, Tab::Stale, Tab::Due, Tab::Review];
+
     pub(crate) fn title(self) -> &'static str {
         match self {
             Tab::Today => "Today",
             Tab::List => "List",
             Tab::Stale => "Stale",
+            Tab::Due => "Due",
+            Tab::Review => "Review",
         }
     }
 
@@ -283,7 +289,9 @@ impl Tab {
         match self {
             Tab::Today => Tab::List,
             Tab::List => Tab::Stale,
-            Tab::Stale => Tab::Today,
+            Tab::Stale => Tab::Due,
+            Tab::Due => Tab::Review,
+            Tab::Review => Tab::Today,
         }
     }
 
@@ -292,6 +300,8 @@ impl Tab {
             Tab::Today => 0,
             Tab::List => 1,
             Tab::Stale => 2,
+            Tab::Due => 3,
+            Tab::Review => 4,
         }
     }
 }
@@ -363,10 +373,17 @@ impl From<FuzzyHit> for Row {
 }
 
 #[derive(Clone)]
+pub(crate) enum LauncherItem {
+    Fragment(Row),
+    Command(CommandEntry),
+}
+
+#[derive(Clone)]
 pub(crate) struct LauncherPopup {
     pub input: String,
     pub rows: Vec<Row>,
     pub commands: Vec<CommandEntry>,
+    pub items: Vec<LauncherItem>,
     pub list_state: ListState,
     pub focus: Focus,
     pub detail_scroll: u16,
@@ -380,6 +397,7 @@ impl LauncherPopup {
             input,
             rows: Vec::new(),
             commands: Vec::new(),
+            items: Vec::new(),
             list_state: ListState::default(),
             focus: Focus::List,
             detail_scroll: 0,
@@ -392,20 +410,23 @@ impl LauncherPopup {
         command::launcher_kind(&self.input)
     }
 
-    pub(crate) fn selected_id(&self) -> Option<String> {
-        if self.kind() != LauncherKind::Fragments {
-            return None;
-        }
+    pub(crate) fn selected_item(&self) -> Option<&LauncherItem> {
         let idx = self.list_state.selected()?;
-        self.rows.get(idx).map(|row| row.id.clone())
+        self.items.get(idx)
+    }
+
+    pub(crate) fn selected_row(&self) -> Option<&Row> {
+        match self.selected_item()? {
+            LauncherItem::Fragment(row) => Some(row),
+            LauncherItem::Command(_) => None,
+        }
     }
 
     pub(crate) fn selected_command(&self) -> Option<CommandEntry> {
-        if self.kind() != LauncherKind::Commands {
-            return None;
+        match self.selected_item()? {
+            LauncherItem::Command(command) => Some(*command),
+            LauncherItem::Fragment(_) => None,
         }
-        let idx = self.list_state.selected()?;
-        self.commands.get(idx).copied()
     }
 
     pub(crate) fn select_first(&mut self) {
@@ -449,10 +470,7 @@ impl LauncherPopup {
     }
 
     pub(crate) fn item_count(&self) -> usize {
-        match self.kind() {
-            LauncherKind::Fragments => self.rows.len(),
-            LauncherKind::Commands => self.commands.len(),
-        }
+        self.items.len()
     }
 }
 

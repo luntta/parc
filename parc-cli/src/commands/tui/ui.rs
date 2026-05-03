@@ -19,7 +19,9 @@ use super::cache::FragmentCache;
 use super::command::{CommandEntry, LauncherKind};
 use super::highlight;
 use super::markdown::{self, Actionable};
-use super::{CaptureField, CaptureForm, Focus, LauncherPopup, Mode, OverlayState, Row, Tab};
+use super::{
+    CaptureField, CaptureForm, Focus, LauncherItem, LauncherPopup, Mode, OverlayState, Row, Tab,
+};
 
 const MENU_BORDER: Color = Color::DarkGray;
 const LIST_BORDER: Color = Color::Blue;
@@ -78,10 +80,7 @@ fn draw_menu(frame: &mut Frame, area: Rect, tab: Tab) {
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(MENU_BORDER))
         .title(" parc ");
-    let titles: Vec<&str> = [Tab::Today, Tab::List, Tab::Stale]
-        .iter()
-        .map(|t| t.title())
-        .collect();
+    let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
     let tabs = Tabs::new(titles)
         .block(block)
         .select(tab.index())
@@ -491,7 +490,7 @@ fn draw_launcher_popup(
     frame.render_widget(Clear, popup_area);
 
     let title = match popup.kind() {
-        LauncherKind::Fragments => " search ",
+        LauncherKind::Universal => " launcher ",
         LauncherKind::Commands => " commands ",
     };
     let block = Block::bordered()
@@ -547,11 +546,11 @@ fn draw_launcher_results(
     config: &Config,
 ) {
     let total = match popup.kind() {
-        LauncherKind::Fragments => popup.rows.len(),
+        LauncherKind::Universal => popup.item_count(),
         LauncherKind::Commands => popup.commands.len(),
     };
     let title_label = match popup.kind() {
-        LauncherKind::Fragments => "results",
+        LauncherKind::Universal => "results",
         LauncherKind::Commands => "commands",
     };
     let title = if total == 0 {
@@ -571,7 +570,7 @@ fn draw_launcher_results(
         .title(title);
 
     let items: Vec<ListItem> = match popup.kind() {
-        LauncherKind::Fragments => fragment_result_items(popup, config),
+        LauncherKind::Universal => universal_result_items(popup, config),
         LauncherKind::Commands => command_result_items(popup),
     };
 
@@ -582,27 +581,27 @@ fn draw_launcher_results(
     frame.render_stateful_widget(list, area, &mut popup.list_state);
 }
 
-fn fragment_result_items(popup: &LauncherPopup, config: &Config) -> Vec<ListItem<'static>> {
-    if popup.input.trim().is_empty() {
+fn universal_result_items(popup: &LauncherPopup, config: &Config) -> Vec<ListItem<'static>> {
+    if popup.items.is_empty() && popup.input.trim().is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "Type a query to search",
+            "Type to find fragments, commands, and views",
             Style::default().fg(MUTED_TEXT),
         )))]
-    } else if let Some(err) = &popup.error {
+    } else if let Some(err) = popup.error.as_ref().filter(|_| popup.items.is_empty()) {
         vec![ListItem::new(Line::from(Span::styled(
             err.clone(),
             Style::default().fg(Color::Red),
         )))]
-    } else if popup.rows.is_empty() {
+    } else if popup.items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "No results",
             Style::default().fg(MUTED_TEXT),
         )))]
     } else {
         popup
-            .rows
+            .items
             .iter()
-            .map(|row| ListItem::new(format_row(row, config.id_display_length)))
+            .map(|item| ListItem::new(format_launcher_item(item, config.id_display_length)))
             .collect()
     }
 }
@@ -632,6 +631,24 @@ fn format_command(command: CommandEntry) -> Line<'static> {
     ])
 }
 
+fn format_launcher_item(item: &LauncherItem, id_len: usize) -> Line<'static> {
+    match item {
+        LauncherItem::Command(command) => {
+            let mut line = vec![Span::styled(
+                "› ",
+                Style::default().fg(ACTIVE_TAB).add_modifier(Modifier::BOLD),
+            )];
+            line.extend(format_command(*command).spans);
+            Line::from(line)
+        }
+        LauncherItem::Fragment(row) => {
+            let mut line = vec![Span::styled("• ", Style::default().fg(MUTED_TEXT))];
+            line.extend(format_row(row, id_len).spans);
+            Line::from(line)
+        }
+    }
+}
+
 fn draw_launcher_detail(
     frame: &mut Frame,
     area: Rect,
@@ -639,9 +656,13 @@ fn draw_launcher_detail(
     cache: &mut FragmentCache,
     popup: &mut LauncherPopup,
 ) {
-    match popup.kind() {
-        LauncherKind::Fragments => draw_search_preview(frame, area, vault, cache, popup),
-        LauncherKind::Commands => draw_command_preview(frame, area, popup),
+    match popup.selected_item() {
+        Some(LauncherItem::Fragment(_)) => draw_search_preview(frame, area, vault, cache, popup),
+        Some(LauncherItem::Command(_)) => draw_command_preview(frame, area, popup),
+        None => match popup.kind() {
+            LauncherKind::Universal => draw_search_preview(frame, area, vault, cache, popup),
+            LauncherKind::Commands => draw_command_preview(frame, area, popup),
+        },
     }
 }
 
@@ -662,11 +683,7 @@ fn draw_search_preview(
         .border_style(Style::default().fg(border_color))
         .title(" preview ");
 
-    let selected_row = popup
-        .list_state
-        .selected()
-        .and_then(|idx| popup.rows.get(idx))
-        .cloned();
+    let selected_row = popup.selected_row().cloned();
     let Some(row) = selected_row else {
         let message = if popup.input.trim().is_empty() {
             "Preview appears here"
@@ -764,7 +781,9 @@ fn draw_launcher_footer(frame: &mut Frame, area: Rect, popup: &LauncherPopup, st
         ))
     } else {
         let help = match popup.kind() {
-            LauncherKind::Fragments => "type query  > commands  arrows move  Enter edit  Esc close",
+            LauncherKind::Universal => {
+                "type fragments/commands/views  > command-only  Enter edit/run  Esc close"
+            }
             LauncherKind::Commands => "type command  Backspace to search  Enter run  Esc close",
         };
         Line::from(Span::styled(help, Style::default().fg(MUTED_TEXT)))
@@ -825,10 +844,10 @@ fn footer_context(app: &App) -> String {
 fn footer_commands(focus: Focus) -> &'static str {
     match focus {
         Focus::List => {
-            "/ search  Ctrl-P commands  Tab tabs  S-tab detail  arrows move  c capture  e edit  ? help"
+            "/ launcher  Ctrl-P commands  Tab tabs  S-tab detail  arrows move  c capture  e edit  ? help"
         }
         Focus::Detail => {
-            "/ search  Ctrl-P commands  Tab tabs  S-tab list  arrows scroll  f follow  x toggle  e edit  ? help"
+            "/ launcher  Ctrl-P commands  Tab tabs  S-tab list  arrows scroll  f follow  x toggle  e edit  ? help"
         }
     }
 }
@@ -841,11 +860,11 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         Line::from("Navigation"),
-        Line::from("  1-3         switch tab (Today/List/Stale)"),
+        Line::from("  1-5         switch tab (Today/List/Stale/Due/Review)"),
         Line::from("  Tab         cycle tabs"),
         Line::from("  Shift-Tab   toggle pane focus (list / detail)"),
-        Line::from("  / or 4      open launcher in search mode"),
-        Line::from("  Ctrl-P      open launcher in command mode"),
+        Line::from("  /           open universal launcher"),
+        Line::from("  Ctrl-P      open launcher command-only"),
         Line::from("  ↓ / ↑       move within focused pane"),
         Line::from("  PgDn/PgUp   page within focused pane"),
         Line::from("  Home / End  top / bottom of focused pane"),
@@ -872,9 +891,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from("General"),
         Line::from("  ?           toggle this help"),
-        Line::from("  Launcher    plain text searches, > filters commands"),
-        Line::from("  Search      type to query, Enter edits, Esc closes"),
-        Line::from("  Commands    type after >, Enter runs highlighted command"),
+        Line::from("  Launcher    plain text finds fragments, commands, and views"),
+        Line::from("  Search      type DSL text, Enter edits result, Esc closes"),
+        Line::from("  Commands    type a command or prefix > for command-only"),
         Line::from("  q           quit"),
         Line::from("  Esc         cancel modal / close launcher"),
     ];
