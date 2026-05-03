@@ -19,6 +19,7 @@ clap_complete = "4"
 anyhow = "1"
 termimad = "0.30"
 comrak = { version = "0.52.0", default-features = false }
+regex = "1"
 crossterm = "0.29"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }

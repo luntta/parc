@@ -308,14 +308,12 @@ fn detail_lines(
                 }
             }
             lines.push(Line::from(""));
-            if search_input.is_some() {
-                lines.extend(markdown::render_body_highlighted(
-                    &fragment.body,
-                    &search_terms,
-                ));
+            let rendered = if search_input.is_some() {
+                markdown::render_body_highlighted(&fragment.body, &search_terms)
             } else {
-                lines.extend(markdown::render_body(&fragment.body));
-            }
+                markdown::render_body(&fragment.body)
+            };
+            lines.extend(rendered.lines);
             lines
         }
         Err(err) => vec![Line::from(Span::styled(

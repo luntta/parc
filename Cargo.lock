@@ -1597,6 +1597,7 @@ dependencies = [
  "parc-server",
  "predicates",
  "ratatui",
+ "regex",
  "semver",
  "serde_json",
  "tempfile",
