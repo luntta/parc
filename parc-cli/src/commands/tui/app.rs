@@ -237,7 +237,7 @@ pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Re
                 Mode::Launcher(popup) => {
                     handle_launcher(&mut app, key, popup, terminal, vault, config)?
                 }
-                Mode::Overlay(state) => handle_overlay(&mut app, key, state)?,
+                Mode::Overlay(state) => handle_overlay(&mut app, key, state, vault, config)?,
                 Mode::Help => handle_help(&mut app, key)?,
             },
             Event::Resize(_, _) => {
@@ -333,10 +333,10 @@ fn handle_normal(
         (KeyCode::Char('#'), _) => start_field_input(app, QuickField::Tags),
 
         (KeyCode::Char('f'), _) if plain && app.focus == Focus::Detail => {
-            open_overlay(app, OverlayKind::FollowLink);
+            open_overlay(app, OverlayKind::FollowLink, vault, config);
         }
         (KeyCode::Char('x'), _) if plain && app.focus == Focus::Detail => {
-            open_overlay(app, OverlayKind::ToggleCheckbox);
+            open_overlay(app, OverlayKind::ToggleCheckbox, vault, config);
         }
 
         (KeyCode::Down, _) => match app.focus {
@@ -915,7 +915,7 @@ fn yank_id(app: &mut App, id: &str) {
     }
 }
 
-fn open_overlay(app: &mut App, kind: OverlayKind) {
+fn open_overlay(app: &mut App, kind: OverlayKind, vault: &Path, config: &Config) {
     let viewport = app.detail_viewport_height();
     let visible = visible_actionables(
         &app.detail_items,
@@ -935,7 +935,7 @@ fn open_overlay(app: &mut App, kind: OverlayKind) {
     }
 
     if visible.len() == 1 {
-        invoke_actionable(app, kind, visible[0]);
+        invoke_actionable(app, kind, visible[0], vault, config);
         return;
     }
 
@@ -949,7 +949,13 @@ fn open_overlay(app: &mut App, kind: OverlayKind) {
     app.dirty = true;
 }
 
-fn handle_overlay(app: &mut App, key: KeyEvent, state: OverlayState) -> Result<bool> {
+fn handle_overlay(
+    app: &mut App,
+    key: KeyEvent,
+    state: OverlayState,
+    vault: &Path,
+    config: &Config,
+) -> Result<bool> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('c') if ctrl => return Ok(false),
@@ -966,7 +972,7 @@ fn handle_overlay(app: &mut App, key: KeyEvent, state: OverlayState) -> Result<b
             match target {
                 Some(idx) => {
                     app.mode = Mode::Normal;
-                    invoke_actionable(app, state.kind, idx);
+                    invoke_actionable(app, state.kind, idx, vault, config);
                 }
                 None => {
                     app.mode = Mode::Overlay(state);
@@ -980,22 +986,40 @@ fn handle_overlay(app: &mut App, key: KeyEvent, state: OverlayState) -> Result<b
     Ok(true)
 }
 
-/// Step 3 stub: just set a status message describing what would happen.
-/// Steps 4/5 wire actual checkbox toggle and link follow.
-fn invoke_actionable(app: &mut App, kind: OverlayKind, item_idx: usize) {
+fn invoke_actionable(
+    app: &mut App,
+    kind: OverlayKind,
+    item_idx: usize,
+    vault: &Path,
+    config: &Config,
+) {
     let Some(item) = app.detail_items.get(item_idx).cloned() else {
         return;
     };
-    let msg = match (kind, &item.kind) {
-        (OverlayKind::FollowLink, ActionKind::WikiLink { target, .. }) => {
-            format!("would follow [[{}]]", target)
-        }
-        (OverlayKind::ToggleCheckbox, ActionKind::Checkbox { checked }) => {
-            format!("would toggle checkbox ({})", if *checked { "✓→·" } else { "·→✓" })
-        }
-        _ => "nothing to do".to_string(),
+    let Some(id) = app.selected_id() else {
+        return;
     };
-    app.set_status(msg);
+    match (kind, &item.kind) {
+        (OverlayKind::ToggleCheckbox, ActionKind::Checkbox { .. }) => {
+            match actions::toggle_checkbox(vault, &id, item.source_range.clone()) {
+                Ok(msg) => {
+                    app.cache.invalidate(&id);
+                    app.search.mark_stale();
+                    if let Err(e) = reload_rows(app, vault, config) {
+                        app.set_status(format!("toggle ok but reload failed: {}", e));
+                        return;
+                    }
+                    app.set_status(msg);
+                }
+                Err(e) => app.set_status(format!("toggle failed: {}", e)),
+            }
+        }
+        (OverlayKind::FollowLink, ActionKind::WikiLink { target, .. }) => {
+            // Step 5 wires the actual jump.
+            app.set_status(format!("would follow [[{}]]", target));
+        }
+        _ => {}
+    }
 }
 
 const LABEL_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";

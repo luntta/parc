@@ -125,6 +125,47 @@ pub(super) fn toggle_status(vault: &Path, id: &str) -> Result<String> {
     Ok(format!("{} {}", short(&frag.id), next))
 }
 
+/// Toggle a `[ ]` ↔ `[x]` checkbox at a known byte range in the fragment body.
+/// The range must point at exactly the 3-byte bracket literal — no offset
+/// shift, so the rest of the body is untouched.
+pub(super) fn toggle_checkbox(
+    vault: &Path,
+    id: &str,
+    source_range: std::ops::Range<usize>,
+) -> Result<String> {
+    let mut frag = read_fragment(vault, id)?;
+    let bytes = frag.body.as_bytes();
+    if source_range.end > bytes.len() || source_range.end - source_range.start != 3 {
+        return Err(anyhow!("checkbox source range out of bounds"));
+    }
+    let next = match &bytes[source_range.start..source_range.end] {
+        b"[ ]" => "[x]",
+        b"[x]" | b"[X]" => "[ ]",
+        other => {
+            return Err(anyhow!(
+                "checkbox source range did not match `[ ]`/`[x]` (found {:?})",
+                String::from_utf8_lossy(other)
+            ));
+        }
+    };
+    frag.body
+        .replace_range(source_range.clone(), next);
+    frag.updated_at = Utc::now();
+
+    let runner = CliHookRunner;
+    let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
+    write_fragment(vault, &frag)?;
+    let conn = index::open_index(vault)?;
+    index::index_fragment_auto(&conn, &frag, vault)?;
+    hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
+
+    Ok(format!(
+        "{} checkbox {}",
+        short(&frag.id),
+        if next == "[x]" { "checked" } else { "unchecked" }
+    ))
+}
+
 pub(super) fn archive(vault: &Path, id: &str) -> Result<String> {
     let mut frag = read_fragment(vault, id)?;
     let full_id = frag.id.clone();
@@ -413,5 +454,69 @@ mod tests {
         set_field(&vault, &id, QuickField::Due, "").unwrap();
         let fragment = read_fragment(&vault, &id).unwrap();
         assert!(!fragment.extra_fields.contains_key("due"));
+    }
+
+    #[test]
+    fn toggle_checkbox_round_trips() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        init_vault(&vault).unwrap();
+
+        let (id, _) = capture(
+            &vault,
+            CaptureInput {
+                text: "task list\n\n- [ ] one\n- [ ] two\n".to_string(),
+                fragment_type: "note".to_string(),
+                tags: String::new(),
+                status: String::new(),
+                due: String::new(),
+                priority: String::new(),
+                assignee: String::new(),
+            },
+        )
+        .unwrap();
+
+        // Locate the second `[ ]` byte range.
+        let frag = read_fragment(&vault, &id).unwrap();
+        let mut occurrences = frag.body.match_indices("[ ]");
+        let _first = occurrences.next().unwrap();
+        let (second_start, _) = occurrences.next().unwrap();
+        let range = second_start..second_start + 3;
+
+        let msg = toggle_checkbox(&vault, &id, range.clone()).unwrap();
+        assert!(msg.contains("checked"));
+        let frag = read_fragment(&vault, &id).unwrap();
+        assert_eq!(&frag.body[range.clone()], "[x]");
+
+        let msg = toggle_checkbox(&vault, &id, range.clone()).unwrap();
+        assert!(msg.contains("unchecked"));
+        let frag = read_fragment(&vault, &id).unwrap();
+        assert_eq!(&frag.body[range], "[ ]");
+    }
+
+    #[test]
+    fn toggle_checkbox_rejects_bad_range() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        init_vault(&vault).unwrap();
+
+        let (id, _) = capture(
+            &vault,
+            CaptureInput {
+                text: "no checkboxes here".to_string(),
+                fragment_type: "note".to_string(),
+                tags: String::new(),
+                status: String::new(),
+                due: String::new(),
+                priority: String::new(),
+                assignee: String::new(),
+            },
+        )
+        .unwrap();
+
+        // Range that doesn't point at `[ ]`.
+        assert!(toggle_checkbox(&vault, &id, 0..3).is_err());
+        // Out-of-bounds.
+        assert!(toggle_checkbox(&vault, &id, 1_000..1_003).is_err());
     }
 }
