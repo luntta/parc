@@ -56,15 +56,6 @@ pub(crate) enum OverlayKind {
     ToggleCheckbox,
 }
 
-impl OverlayKind {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            OverlayKind::FollowLink => "follow link",
-            OverlayKind::ToggleCheckbox => "toggle checkbox",
-        }
-    }
-}
-
 #[derive(Clone)]
 pub(crate) enum ConfirmAction {
     Delete { id: String },

@@ -1598,6 +1598,7 @@ dependencies = [
  "predicates",
  "ratatui",
  "regex",
+ "rusqlite",
  "semver",
  "serde_json",
  "tempfile",

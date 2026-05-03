@@ -5,10 +5,12 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use parc_core::config::Config;
+use parc_core::index;
 use parc_core::schema::load_schemas;
 use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::ListState;
 use ratatui::Terminal;
+use rusqlite::Connection;
 
 use super::cache::FragmentCache;
 use super::command::{self, CommandAction, LauncherKind};
@@ -119,6 +121,12 @@ pub(super) struct App {
     /// Back/forward stack populated only by link-follow; arrow-key list
     /// movement does not record a step.
     pub nav_history: NavHistory,
+    /// Lazily opened SQLite index handle for backlink lookups. Cached for
+    /// the lifetime of the App so backlinks queries don't reopen per render.
+    index_db: Option<Connection>,
+    /// Set once if opening the index fails, to avoid logging a status
+    /// message on every redraw.
+    index_open_failed: bool,
     tab_states: [TabViewState; TAB_COUNT],
 }
 
@@ -145,6 +153,8 @@ impl App {
             detail_body_offset: 0,
             detail_viewport: 0,
             nav_history: NavHistory::default(),
+            index_db: None,
+            index_open_failed: false,
             tab_states: std::array::from_fn(|_| TabViewState::default()),
         }
     }
@@ -230,6 +240,28 @@ impl App {
 
     pub(super) fn detail_viewport_height(&self) -> u16 {
         self.detail_viewport
+    }
+
+    /// Lazily open the SQLite index. Returns `None` (silently) if the
+    /// index can't be opened — backlinks are then omitted from the detail
+    /// pane rather than crashing or spamming status messages.
+    pub(super) fn ensure_index(&mut self, vault: &Path) -> Option<&Connection> {
+        if self.index_db.is_some() {
+            return self.index_db.as_ref();
+        }
+        if self.index_open_failed {
+            return None;
+        }
+        match index::open_index(vault) {
+            Ok(conn) => {
+                self.index_db = Some(conn);
+                self.index_db.as_ref()
+            }
+            Err(_) => {
+                self.index_open_failed = true;
+                None
+            }
+        }
     }
 }
 

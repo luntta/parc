@@ -2,6 +2,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use parc_core::config::Config;
+use parc_core::index::{self, BacklinkInfo};
 use parc_core::search::{parse_query, TextTerm};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -11,6 +12,7 @@ use ratatui::widgets::{
     ScrollbarState, Tabs, Wrap,
 };
 use ratatui::Frame;
+use rusqlite::Connection;
 
 use super::app::App;
 use super::cache::FragmentCache;
@@ -260,7 +262,8 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         app.detail_body_offset = 0;
         return;
     };
-    let detail = detail_lines(vault, &mut app.cache, &row, None);
+    let appendix = backlinks_appendix(app, vault, &row.id);
+    let detail = detail_lines(vault, &mut app.cache, &row, None, appendix.as_deref());
     app.detail_items = detail.items;
     app.detail_body_offset = detail.body_offset;
     render_detail_lines(
@@ -332,11 +335,44 @@ pub(super) struct DetailRender {
     pub body_offset: usize,
 }
 
+/// Build the markdown for a "## Backlinks" section, or `None` if there are
+/// no inbound links. Each entry is rendered as `[[id|title (type)]]` so the
+/// existing wiki-link follow path picks them up automatically.
+fn backlinks_appendix(app: &mut App, vault: &Path, fragment_id: &str) -> Option<String> {
+    let conn: &Connection = app.ensure_index(vault)?;
+    let backlinks = index::get_backlinks(conn, fragment_id).ok()?;
+    if backlinks.is_empty() {
+        return None;
+    }
+    Some(format_backlinks(&backlinks))
+}
+
+fn format_backlinks(backlinks: &[BacklinkInfo]) -> String {
+    let mut out = String::from("\n\n## Backlinks\n\n");
+    for bl in backlinks {
+        // Sanitize title for wiki-link alias: strip the bracket and pipe
+        // characters that would otherwise re-enter wiki-link parsing.
+        let safe_title: String = bl
+            .source_title
+            .chars()
+            .filter(|c| *c != ']' && *c != '[' && *c != '|')
+            .collect();
+        let display = if safe_title.trim().is_empty() {
+            format!("({})", bl.source_type)
+        } else {
+            format!("{} ({})", safe_title, bl.source_type)
+        };
+        out.push_str(&format!("- [[{}|{}]]\n", bl.source_id, display));
+    }
+    out
+}
+
 fn detail_lines(
     vault: &Path,
     cache: &mut FragmentCache,
     row: &Row,
     search_input: Option<&str>,
+    appendix_md: Option<&str>,
 ) -> DetailRender {
     let id = row.id.clone();
     let search_terms = search_input.map(parsed_search_terms).unwrap_or_default();
@@ -377,10 +413,19 @@ fn detail_lines(
             }
             lines.push(Line::from(""));
             let body_offset = lines.len();
+            // Build the source we render: body, then optional appendix
+            // (currently used for the auto-generated Backlinks section).
+            // Concatenating before render keeps Actionable line indices
+            // valid against the combined output without per-section
+            // bookkeeping.
+            let render_input = match appendix_md {
+                Some(extra) => format!("{}{}", fragment.body, extra),
+                None => fragment.body.clone(),
+            };
             let rendered = if search_input.is_some() {
-                markdown::render_body_highlighted(&fragment.body, &search_terms)
+                markdown::render_body_highlighted(&render_input, &search_terms)
             } else {
-                markdown::render_body(&fragment.body)
+                markdown::render_body(&render_input)
             };
             lines.extend(rendered.lines);
             DetailRender {
@@ -638,9 +683,9 @@ fn draw_search_preview(
         return;
     };
 
-    // Launcher preview discards items — actions only fire on the main
-    // detail pane, not the popup preview.
-    let detail = detail_lines(vault, cache, &row, Some(&popup.input));
+    // Launcher preview discards items and never appends backlinks —
+    // actions only fire on the main detail pane.
+    let detail = detail_lines(vault, cache, &row, Some(&popup.input), None);
     render_detail_lines(
         frame,
         area,
@@ -995,5 +1040,42 @@ fn short_id(id: &str, len: usize) -> &str {
         &id[..len]
     } else {
         id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bl(id: &str, ty: &str, title: &str) -> BacklinkInfo {
+        BacklinkInfo {
+            source_id: id.into(),
+            source_type: ty.into(),
+            source_title: title.into(),
+        }
+    }
+
+    #[test]
+    fn format_backlinks_emits_wiki_link_per_entry() {
+        let out = format_backlinks(&[
+            bl("01ABC", "todo", "Pay invoice"),
+            bl("02DEF", "note", "Sketch idea"),
+        ]);
+        assert!(out.starts_with("\n\n## Backlinks\n\n"));
+        assert!(out.contains("- [[01ABC|Pay invoice (todo)]]"));
+        assert!(out.contains("- [[02DEF|Sketch idea (note)]]"));
+    }
+
+    #[test]
+    fn format_backlinks_strips_brackets_and_pipes_from_title() {
+        let out = format_backlinks(&[bl("01XYZ", "decision", "Use [a|b] split")]);
+        // Neither character should appear in the alias portion.
+        assert!(out.contains("- [[01XYZ|Use ab split (decision)]]"));
+    }
+
+    #[test]
+    fn format_backlinks_handles_empty_title() {
+        let out = format_backlinks(&[bl("01XYZ", "note", "   ")]);
+        assert!(out.contains("- [[01XYZ|(note)]]"));
     }
 }
