@@ -677,7 +677,9 @@ fn format_launcher_item(
         LauncherItem::Intent(intent) => Line::from(vec![
             Span::styled(
                 "↯ ",
-                Style::default().fg(ACTIVE_TAB).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(if intent.valid { ACTIVE_TAB } else { Color::Red })
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(intent.label.clone()),
         ]),
@@ -815,22 +817,37 @@ fn draw_command_preview(frame: &mut Frame, area: Rect, popup: &mut LauncherPopup
 fn draw_intent_preview(frame: &mut Frame, area: Rect, intent: &LauncherIntent) {
     let block = Block::bordered()
         .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(DETAIL_BORDER))
+        .border_style(Style::default().fg(if intent.valid {
+            DETAIL_BORDER
+        } else {
+            Color::Red
+        }))
         .title(" action ");
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             intent.label.clone(),
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(intent.description.clone()),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Enter runs this against the selected fragment.",
-            Style::default().fg(MUTED_TEXT),
-        )),
     ];
+    if let Some(detail) = &intent.detail {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            detail.clone(),
+            Style::default().fg(if intent.valid { MUTED_TEXT } else { Color::Red }),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        if intent.valid {
+            "Enter runs this against the selected fragment."
+        } else {
+            "Enter will not run until the value is valid."
+        },
+        Style::default().fg(MUTED_TEXT),
+    )));
 
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }

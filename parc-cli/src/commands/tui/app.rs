@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use parc_core::config::Config;
+use parc_core::date;
 use parc_core::index;
 use parc_core::schema::{load_schemas, FieldType};
 use ratatui::backend::CrosstermBackend;
@@ -558,7 +559,15 @@ fn handle_launcher(
             Some(LauncherItem::Intent(intent)) => {
                 app.launcher_input = popup.input;
                 app.mode = Mode::Normal;
-                execute_intent_action(app, intent.action, vault, config)?;
+                if intent.valid {
+                    execute_intent_action(app, intent.action, vault, config)?;
+                } else {
+                    app.set_status(
+                        intent
+                            .detail
+                            .unwrap_or_else(|| "invalid action".to_string()),
+                    );
+                }
                 app.dirty = true;
                 return Ok(true);
             }
@@ -989,11 +998,23 @@ fn launcher_intents(
     values
         .into_iter()
         .take(8)
-        .map(|value| build_set_field_intent(field, value))
+        .map(|value| build_set_field_intent(vault, selected_row, field, value))
         .collect()
 }
 
-fn build_set_field_intent(field: QuickField, value: String) -> LauncherIntent {
+fn build_set_field_intent(
+    vault: &Path,
+    selected_row: &Row,
+    field: QuickField,
+    value: String,
+) -> LauncherIntent {
+    let validation = validate_set_field_intent(vault, selected_row, field, &value);
+    let valid = validation.is_ok();
+    let detail = match validation {
+        Ok(Some(detail)) => Some(detail),
+        Ok(None) => None,
+        Err(reason) => Some(reason),
+    };
     LauncherIntent {
         label: format!("Set {} to {}", field.label(), value),
         description: format!(
@@ -1001,7 +1022,37 @@ fn build_set_field_intent(field: QuickField, value: String) -> LauncherIntent {
             field.key(),
             value
         ),
+        detail,
+        valid,
         action: IntentAction::SetField { field, value },
+    }
+}
+
+fn validate_set_field_intent(
+    vault: &Path,
+    selected_row: &Row,
+    field: QuickField,
+    value: &str,
+) -> std::result::Result<Option<String>, String> {
+    match field {
+        QuickField::Due => date::resolve_due_date(value)
+            .map(|normalized| Some(format!("Will store due date `{}`.", normalized)))
+            .map_err(|err| err.to_string()),
+        QuickField::Status | QuickField::Priority => {
+            let allowed = schema_enum_values(vault, &selected_row.fragment_type, field.key());
+            if allowed.is_empty() || allowed.iter().any(|allowed| allowed == value) {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "Invalid {} `{}`. Allowed values: {}.",
+                    field.key(),
+                    value,
+                    allowed.join(", ")
+                ))
+            }
+        }
+        QuickField::Assignee => Ok(None),
+        QuickField::Tags => Ok(None),
     }
 }
 
@@ -1733,5 +1784,42 @@ mod tests {
             .map(|intent| intent.label)
             .collect::<Vec<_>>();
         assert_eq!(labels, vec!["Set Assignee to alice"]);
+    }
+
+    #[test]
+    fn launcher_intents_validate_and_preview_values() {
+        let (_tmp, vault) = test_vault();
+        let selected = row("todo", "selected", None);
+
+        let intent = launcher_intents("due tomorrow", Some(&selected), &[], &[], &vault)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(intent.valid);
+        assert_eq!(
+            intent.detail,
+            Some(format!(
+                "Will store due date `{}`.",
+                date::resolve_due_date("tomorrow").unwrap()
+            ))
+        );
+
+        let intent = launcher_intents("due someday", Some(&selected), &[], &[], &vault)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(!intent.valid);
+        assert!(intent
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("invalid due date"));
+
+        let intent = launcher_intents("status nope", Some(&selected), &[], &[], &vault)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(!intent.valid);
+        assert!(intent.detail.as_deref().unwrap().contains("Allowed values"));
     }
 }

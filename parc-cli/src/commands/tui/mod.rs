@@ -397,6 +397,8 @@ pub(crate) enum LauncherItem {
 pub(crate) struct LauncherIntent {
     pub label: String,
     pub description: String,
+    pub detail: Option<String>,
+    pub valid: bool,
     pub action: IntentAction,
 }
 
