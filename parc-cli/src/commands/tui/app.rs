@@ -12,6 +12,7 @@ use ratatui::Terminal;
 
 use super::cache::FragmentCache;
 use super::command::{self, CommandAction, LauncherKind};
+use super::markdown::Actionable;
 use super::{
     actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, LauncherPopup,
     Mode, QuickField, Row, Tab,
@@ -71,6 +72,12 @@ pub(super) struct App {
     pub dirty: bool,
     pub search: data::SearchState,
     pub cache: FragmentCache,
+    /// Actionables (wiki-links, checkboxes) in the currently rendered detail
+    /// body. Refreshed by `ui::draw_detail` each render. Logical-line indices
+    /// are body-relative; add `detail_body_offset` to translate to
+    /// `lines`-vector indices.
+    pub detail_items: Vec<Actionable>,
+    pub detail_body_offset: usize,
     tab_states: [TabViewState; TAB_COUNT],
 }
 
@@ -93,6 +100,8 @@ impl App {
             dirty: true,
             search: data::SearchState::new(),
             cache: FragmentCache::new(FRAGMENT_CACHE_CAP),
+            detail_items: Vec::new(),
+            detail_body_offset: 0,
             tab_states: std::array::from_fn(|_| TabViewState::default()),
         }
     }

@@ -16,7 +16,7 @@ use super::app::App;
 use super::cache::FragmentCache;
 use super::command::{CommandEntry, LauncherKind};
 use super::highlight;
-use super::markdown;
+use super::markdown::{self, Actionable};
 use super::{CaptureField, CaptureForm, Focus, LauncherPopup, Mode, Row, Tab};
 
 const MENU_BORDER: Color = Color::DarkGray;
@@ -253,15 +253,28 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         app.detail_max_scroll = 0;
         return;
     };
-    let lines = detail_lines(vault, &mut app.cache, &row, None);
+    let detail = detail_lines(vault, &mut app.cache, &row, None);
+    app.detail_items = detail.items;
+    app.detail_body_offset = detail.body_offset;
     render_detail_lines(
         frame,
         area,
         block,
-        lines,
+        detail.lines,
         &mut app.detail_scroll,
         &mut app.detail_max_scroll,
     );
+}
+
+/// Output of `detail_lines`: the fully composed line list plus positional
+/// metadata for in-body actions. `body_offset` is the count of header lines
+/// (title, ID, type, tags, fields, blank) prepended before the rendered
+/// markdown body — used to translate `Actionable.logical_line` (body-relative)
+/// into a `lines` index (header-relative).
+pub(super) struct DetailRender {
+    pub lines: Vec<Line<'static>>,
+    pub items: Vec<Actionable>,
+    pub body_offset: usize,
 }
 
 fn detail_lines(
@@ -269,7 +282,7 @@ fn detail_lines(
     cache: &mut FragmentCache,
     row: &Row,
     search_input: Option<&str>,
-) -> Vec<Line<'static>> {
+) -> DetailRender {
     let id = row.id.clone();
     let search_terms = search_input.map(parsed_search_terms).unwrap_or_default();
     let title_match_indices: &[u32] = if search_input.is_some() {
@@ -308,18 +321,27 @@ fn detail_lines(
                 }
             }
             lines.push(Line::from(""));
+            let body_offset = lines.len();
             let rendered = if search_input.is_some() {
                 markdown::render_body_highlighted(&fragment.body, &search_terms)
             } else {
                 markdown::render_body(&fragment.body)
             };
             lines.extend(rendered.lines);
-            lines
+            DetailRender {
+                lines,
+                items: rendered.items,
+                body_offset,
+            }
         }
-        Err(err) => vec![Line::from(Span::styled(
-            format!("Failed to load fragment: {}", err),
-            Style::default().fg(Color::Red),
-        ))],
+        Err(err) => DetailRender {
+            lines: vec![Line::from(Span::styled(
+                format!("Failed to load fragment: {}", err),
+                Style::default().fg(Color::Red),
+            ))],
+            items: Vec::new(),
+            body_offset: 0,
+        },
     }
 }
 
@@ -561,12 +583,14 @@ fn draw_search_preview(
         return;
     };
 
-    let lines = detail_lines(vault, cache, &row, Some(&popup.input));
+    // Launcher preview discards items — actions only fire on the main
+    // detail pane, not the popup preview.
+    let detail = detail_lines(vault, cache, &row, Some(&popup.input));
     render_detail_lines(
         frame,
         area,
         block,
-        lines,
+        detail.lines,
         &mut popup.detail_scroll,
         &mut popup.detail_max_scroll,
     );
