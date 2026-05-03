@@ -6,7 +6,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use parc_core::config::Config;
 use parc_core::index;
-use parc_core::schema::load_schemas;
+use parc_core::schema::{load_schemas, FieldType};
 use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::ListState;
 use ratatui::Terminal;
@@ -862,7 +862,14 @@ fn reload_universal_results(
         Ok(rows) => {
             popup.rows = rows;
             popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
-            let intents = launcher_intents(&popup.input, app.selected_id().is_some());
+            let selected_row = app.selected_row().cloned();
+            let intents = launcher_intents(
+                &popup.input,
+                selected_row.as_ref(),
+                &app.rows,
+                &popup.rows,
+                vault,
+            );
             popup.items =
                 ranked_universal_items(&popup.input, &intents, &popup.commands, &popup.rows);
             popup.error = None;
@@ -871,7 +878,14 @@ fn reload_universal_results(
         Err(err) => {
             popup.rows.clear();
             popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
-            let intents = launcher_intents(&popup.input, app.selected_id().is_some());
+            let selected_row = app.selected_row().cloned();
+            let intents = launcher_intents(
+                &popup.input,
+                selected_row.as_ref(),
+                &app.rows,
+                &popup.rows,
+                vault,
+            );
             popup.items =
                 ranked_universal_items(&popup.input, &intents, &popup.commands, &popup.rows);
             popup.error = Some(err.to_string());
@@ -941,17 +955,46 @@ fn ranked_universal_items(
     scored.into_iter().map(|(_, item)| item).collect()
 }
 
-fn launcher_intents(input: &str, has_selection: bool) -> Vec<LauncherIntent> {
-    if !has_selection {
+fn launcher_intents(
+    input: &str,
+    selected_row: Option<&Row>,
+    current_rows: &[Row],
+    search_rows: &[Row],
+    vault: &Path,
+) -> Vec<LauncherIntent> {
+    let Some(selected_row) = selected_row else {
         return Vec::new();
-    }
-
-    let query = command::command_query(input).trim();
-    let Some((field, value)) = parse_field_intent(query) else {
+    };
+    let query = input.strip_prefix('>').unwrap_or(input).trim_start();
+    let Some((field, value_prefix)) = parse_field_intent(query) else {
         return Vec::new();
     };
 
-    vec![LauncherIntent {
+    let value_prefix = value_prefix.trim();
+    let mut values = suggested_field_values(vault, selected_row, current_rows, search_rows, field)
+        .into_iter()
+        .filter(|value| {
+            value_prefix.is_empty()
+                || value.starts_with(value_prefix)
+                || value
+                    .get(..value_prefix.len().min(value.len()))
+                    .is_some_and(|head| head.eq_ignore_ascii_case(value_prefix))
+        })
+        .collect::<Vec<_>>();
+
+    if values.is_empty() && !value_prefix.is_empty() {
+        values.push(value_prefix.to_string());
+    }
+
+    values
+        .into_iter()
+        .take(8)
+        .map(|value| build_set_field_intent(field, value))
+        .collect()
+}
+
+fn build_set_field_intent(field: QuickField, value: String) -> LauncherIntent {
+    LauncherIntent {
         label: format!("Set {} to {}", field.label(), value),
         description: format!(
             "Update the selected fragment's {} field to `{}`.",
@@ -959,11 +1002,65 @@ fn launcher_intents(input: &str, has_selection: bool) -> Vec<LauncherIntent> {
             value
         ),
         action: IntentAction::SetField { field, value },
-    }]
+    }
 }
 
-fn parse_field_intent(input: &str) -> Option<(QuickField, String)> {
-    let input = input.trim();
+fn suggested_field_values(
+    vault: &Path,
+    selected_row: &Row,
+    current_rows: &[Row],
+    search_rows: &[Row],
+    field: QuickField,
+) -> Vec<String> {
+    match field {
+        QuickField::Status | QuickField::Priority => {
+            schema_enum_values(vault, &selected_row.fragment_type, field.key())
+        }
+        QuickField::Due => vec![
+            "today".to_string(),
+            "tomorrow".to_string(),
+            "this-week".to_string(),
+            "next-week".to_string(),
+            "in-3-days".to_string(),
+        ],
+        QuickField::Assignee => known_assignees(current_rows, search_rows),
+        QuickField::Tags => Vec::new(),
+    }
+}
+
+fn schema_enum_values(vault: &Path, fragment_type: &str, field_key: &str) -> Vec<String> {
+    let Ok(schemas) = load_schemas(vault) else {
+        return Vec::new();
+    };
+    let Some(schema) = schemas.resolve(fragment_type) else {
+        return Vec::new();
+    };
+    schema
+        .fields
+        .iter()
+        .find(|field| field.name == field_key)
+        .and_then(|field| match &field.field_type {
+            FieldType::Enum(values) => Some(values.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn known_assignees(current_rows: &[Row], search_rows: &[Row]) -> Vec<String> {
+    let mut values = Vec::new();
+    for row in current_rows.iter().chain(search_rows) {
+        let Some(assignee) = row.assignee.as_deref().filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if !values.iter().any(|value: &String| value == assignee) {
+            values.push(assignee.to_string());
+        }
+    }
+    values
+}
+
+fn parse_field_intent(input: &str) -> Option<(QuickField, &str)> {
+    let input = input.trim_start();
     for (prefix, field) in [
         ("set status ", QuickField::Status),
         ("status ", QuickField::Status),
@@ -978,10 +1075,7 @@ fn parse_field_intent(input: &str) -> Option<(QuickField, String)> {
         ("assign ", QuickField::Assignee),
     ] {
         if let Some(value) = strip_ascii_prefix(input, prefix) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some((field, value.to_string()));
-            }
+            return Some((field, value));
         }
     }
     None
@@ -1454,6 +1548,31 @@ fn clamp_selection(app: &mut App) {
 mod tests {
     use super::*;
     use crate::commands::tui::markdown::{ActionKind, Actionable};
+    use parc_core::vault::init_vault;
+
+    fn test_vault() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        init_vault(&vault).unwrap();
+        (tmp, vault)
+    }
+
+    fn row(fragment_type: &str, title: &str, assignee: Option<&str>) -> Row {
+        Row {
+            id: format!("{}-id", title),
+            title: title.to_string(),
+            fragment_type: fragment_type.to_string(),
+            status: None,
+            priority: None,
+            due: None,
+            assignee: assignee.map(str::to_string),
+            tags: Vec::new(),
+            updated_at: "2026-05-03T00:00:00Z".to_string(),
+            section: None,
+            title_match_indices: Vec::new(),
+            score: 0,
+        }
+    }
 
     fn link(line: usize) -> Actionable {
         Actionable {
@@ -1536,7 +1655,9 @@ mod tests {
 
     #[test]
     fn launcher_intents_parse_selected_field_updates() {
-        let intents = launcher_intents("status done", true);
+        let (_tmp, vault) = test_vault();
+        let selected = row("todo", "selected", None);
+        let intents = launcher_intents("status done", Some(&selected), &[], &[], &vault);
         assert_eq!(intents.len(), 1);
         assert_eq!(intents[0].label, "Set Status to done");
         assert_eq!(
@@ -1547,7 +1668,7 @@ mod tests {
             }
         );
 
-        let intents = launcher_intents("due next friday", true);
+        let intents = launcher_intents("due next friday", Some(&selected), &[], &[], &vault);
         assert_eq!(
             intents[0].action,
             IntentAction::SetField {
@@ -1559,8 +1680,58 @@ mod tests {
 
     #[test]
     fn launcher_intents_require_selection_and_value() {
-        assert!(launcher_intents("status done", false).is_empty());
-        assert!(launcher_intents("status", true).is_empty());
-        assert!(launcher_intents("tui", true).is_empty());
+        let (_tmp, vault) = test_vault();
+        let selected = row("todo", "selected", None);
+        assert!(launcher_intents("status done", None, &[], &[], &vault).is_empty());
+        assert!(launcher_intents("status", Some(&selected), &[], &[], &vault).is_empty());
+        assert!(launcher_intents("tui", Some(&selected), &[], &[], &vault).is_empty());
+    }
+
+    #[test]
+    fn launcher_intents_suggest_schema_enum_values() {
+        let (_tmp, vault) = test_vault();
+        let selected = row("todo", "selected", None);
+
+        let labels = launcher_intents("status ", Some(&selected), &[], &[], &vault)
+            .into_iter()
+            .map(|intent| intent.label)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            vec![
+                "Set Status to open",
+                "Set Status to in-progress",
+                "Set Status to done",
+                "Set Status to cancelled"
+            ]
+        );
+
+        let labels = launcher_intents("priority h", Some(&selected), &[], &[], &vault)
+            .into_iter()
+            .map(|intent| intent.label)
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["Set Priority to high"]);
+    }
+
+    #[test]
+    fn launcher_intents_suggest_due_and_assignee_values() {
+        let (_tmp, vault) = test_vault();
+        let selected = row("todo", "selected", None);
+
+        let labels = launcher_intents("due tom", Some(&selected), &[], &[], &vault)
+            .into_iter()
+            .map(|intent| intent.label)
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["Set Due to tomorrow"]);
+
+        let current = vec![
+            row("todo", "a", Some("alice")),
+            row("todo", "b", Some("bob")),
+        ];
+        let labels = launcher_intents("assignee a", Some(&selected), &current, &[], &vault)
+            .into_iter()
+            .map(|intent| intent.label)
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["Set Assignee to alice"]);
     }
 }
