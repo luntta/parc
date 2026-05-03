@@ -20,7 +20,8 @@ use super::command::{CommandEntry, LauncherKind};
 use super::highlight;
 use super::markdown::{self, Actionable};
 use super::{
-    CaptureField, CaptureForm, Focus, LauncherItem, LauncherPopup, Mode, OverlayState, Row, Tab,
+    CaptureField, CaptureForm, Focus, LauncherIntent, LauncherItem, LauncherPopup, Mode,
+    OverlayState, Row, Tab,
 };
 
 const MENU_BORDER: Color = Color::DarkGray;
@@ -673,6 +674,13 @@ fn format_launcher_item(
             line.extend(format_command(*command).spans);
             Line::from(line)
         }
+        LauncherItem::Intent(intent) => Line::from(vec![
+            Span::styled(
+                "↯ ",
+                Style::default().fg(ACTIVE_TAB).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(intent.label.clone()),
+        ]),
         LauncherItem::Fragment(row) => {
             let mut line = vec![Span::styled("• ", Style::default().fg(MUTED_TEXT))];
             line.extend(format_row(row, id_len, search_terms).spans);
@@ -691,6 +699,7 @@ fn draw_launcher_detail(
     match popup.selected_item() {
         Some(LauncherItem::Fragment(_)) => draw_search_preview(frame, area, vault, cache, popup),
         Some(LauncherItem::Command(_)) => draw_command_preview(frame, area, popup),
+        Some(LauncherItem::Intent(intent)) => draw_intent_preview(frame, area, intent),
         None => match popup.kind() {
             LauncherKind::Universal => draw_search_preview(frame, area, vault, cache, popup),
             LauncherKind::Commands => draw_command_preview(frame, area, popup),
@@ -801,6 +810,29 @@ fn draw_command_preview(frame: &mut Frame, area: Rect, popup: &mut LauncherPopup
         &mut popup.detail_scroll,
         &mut popup.detail_max_scroll,
     );
+}
+
+fn draw_intent_preview(frame: &mut Frame, area: Rect, intent: &LauncherIntent) {
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(DETAIL_BORDER))
+        .title(" action ");
+
+    let lines = vec![
+        Line::from(Span::styled(
+            intent.label.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(intent.description.clone()),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter runs this against the selected fragment.",
+            Style::default().fg(MUTED_TEXT),
+        )),
+    ];
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn draw_launcher_footer(frame: &mut Frame, area: Rect, popup: &LauncherPopup, status: &str) {
@@ -924,6 +956,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("General"),
         Line::from("  ?           toggle this help"),
         Line::from("  Launcher    plain text finds fragments, commands, and views"),
+        Line::from("  Actions     status done, due friday, priority high, assignee alice"),
         Line::from("  Search      type DSL text, Enter opens result, Esc closes"),
         Line::from("  Commands    type a command or prefix > for command-only"),
         Line::from("  q           quit"),

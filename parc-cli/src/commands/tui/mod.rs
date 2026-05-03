@@ -390,6 +390,19 @@ impl From<FuzzyHit> for Row {
 pub(crate) enum LauncherItem {
     Fragment(Row),
     Command(CommandEntry),
+    Intent(LauncherIntent),
+}
+
+#[derive(Clone)]
+pub(crate) struct LauncherIntent {
+    pub label: String,
+    pub description: String,
+    pub action: IntentAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum IntentAction {
+    SetField { field: QuickField, value: String },
 }
 
 #[derive(Clone)]
@@ -432,14 +445,14 @@ impl LauncherPopup {
     pub(crate) fn selected_row(&self) -> Option<&Row> {
         match self.selected_item()? {
             LauncherItem::Fragment(row) => Some(row),
-            LauncherItem::Command(_) => None,
+            LauncherItem::Command(_) | LauncherItem::Intent(_) => None,
         }
     }
 
     pub(crate) fn selected_command(&self) -> Option<CommandEntry> {
         match self.selected_item()? {
             LauncherItem::Command(command) => Some(*command),
-            LauncherItem::Fragment(_) => None,
+            LauncherItem::Fragment(_) | LauncherItem::Intent(_) => None,
         }
     }
 

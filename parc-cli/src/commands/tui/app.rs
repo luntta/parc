@@ -16,8 +16,9 @@ use super::cache::FragmentCache;
 use super::command::{self, CommandAction, LauncherKind};
 use super::markdown::{ActionKind, Actionable};
 use super::{
-    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, LauncherItem,
-    LauncherPopup, Mode, OverlayKind, OverlayState, QuickField, Row, Tab,
+    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, IntentAction,
+    LauncherIntent, LauncherItem, LauncherPopup, Mode, OverlayKind, OverlayState, QuickField, Row,
+    Tab,
 };
 
 const PAGE_LINES: u16 = 10;
@@ -554,6 +555,13 @@ fn handle_launcher(
                 app.dirty = true;
                 return Ok(true);
             }
+            Some(LauncherItem::Intent(intent)) => {
+                app.launcher_input = popup.input;
+                app.mode = Mode::Normal;
+                execute_intent_action(app, intent.action, vault, config)?;
+                app.dirty = true;
+                return Ok(true);
+            }
             None => {}
         },
         KeyCode::Char(c) if !ctrl => {
@@ -854,14 +862,18 @@ fn reload_universal_results(
         Ok(rows) => {
             popup.rows = rows;
             popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
-            popup.items = ranked_universal_items(&popup.input, &popup.commands, &popup.rows);
+            let intents = launcher_intents(&popup.input, app.selected_id().is_some());
+            popup.items =
+                ranked_universal_items(&popup.input, &intents, &popup.commands, &popup.rows);
             popup.error = None;
             restore_launcher_selection(popup, selected_item);
         }
         Err(err) => {
             popup.rows.clear();
             popup.commands = command::matching_commands(&popup.input, app.selected_id().is_some());
-            popup.items = ranked_universal_items(&popup.input, &popup.commands, &popup.rows);
+            let intents = launcher_intents(&popup.input, app.selected_id().is_some());
+            popup.items =
+                ranked_universal_items(&popup.input, &intents, &popup.commands, &popup.rows);
             popup.error = Some(err.to_string());
             restore_launcher_selection(popup, selected_item);
         }
@@ -905,20 +917,23 @@ fn same_launcher_item(a: &LauncherItem, b: &LauncherItem) -> bool {
     match (a, b) {
         (LauncherItem::Fragment(a), LauncherItem::Fragment(b)) => a.id == b.id,
         (LauncherItem::Command(a), LauncherItem::Command(b)) => a.action == b.action,
+        (LauncherItem::Intent(a), LauncherItem::Intent(b)) => a.action == b.action,
         _ => false,
     }
 }
 
 fn ranked_universal_items(
     input: &str,
+    intents: &[LauncherIntent],
     commands: &[command::CommandEntry],
     rows: &[Row],
 ) -> Vec<LauncherItem> {
     let query = command::command_query(input).trim();
-    let mut scored = commands
+    let mut scored = intents
         .iter()
-        .copied()
-        .map(LauncherItem::Command)
+        .cloned()
+        .map(LauncherItem::Intent)
+        .chain(commands.iter().copied().map(LauncherItem::Command))
         .chain(rows.iter().cloned().map(LauncherItem::Fragment))
         .map(|item| (launcher_item_score(&item, query), item))
         .collect::<Vec<_>>();
@@ -926,8 +941,90 @@ fn ranked_universal_items(
     scored.into_iter().map(|(_, item)| item).collect()
 }
 
+fn launcher_intents(input: &str, has_selection: bool) -> Vec<LauncherIntent> {
+    if !has_selection {
+        return Vec::new();
+    }
+
+    let query = command::command_query(input).trim();
+    let Some((field, value)) = parse_field_intent(query) else {
+        return Vec::new();
+    };
+
+    vec![LauncherIntent {
+        label: format!("Set {} to {}", field.label(), value),
+        description: format!(
+            "Update the selected fragment's {} field to `{}`.",
+            field.key(),
+            value
+        ),
+        action: IntentAction::SetField { field, value },
+    }]
+}
+
+fn parse_field_intent(input: &str) -> Option<(QuickField, String)> {
+    let input = input.trim();
+    for (prefix, field) in [
+        ("set status ", QuickField::Status),
+        ("status ", QuickField::Status),
+        ("set due ", QuickField::Due),
+        ("due ", QuickField::Due),
+        ("deadline ", QuickField::Due),
+        ("set priority ", QuickField::Priority),
+        ("priority ", QuickField::Priority),
+        ("pri ", QuickField::Priority),
+        ("set assignee ", QuickField::Assignee),
+        ("assignee ", QuickField::Assignee),
+        ("assign ", QuickField::Assignee),
+    ] {
+        if let Some(value) = strip_ascii_prefix(input, prefix) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some((field, value.to_string()));
+            }
+        }
+    }
+    None
+}
+
+fn strip_ascii_prefix<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
+    input
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        .then(|| &input[prefix.len()..])
+}
+
+fn execute_intent_action(
+    app: &mut App,
+    action: IntentAction,
+    vault: &Path,
+    config: &Config,
+) -> Result<()> {
+    match action {
+        IntentAction::SetField { field, value } => {
+            let Some(id) = app.selected_id() else {
+                app.set_status("no selected fragment");
+                return Ok(());
+            };
+
+            match actions::set_field(vault, &id, field, &value) {
+                Ok(msg) => {
+                    app.cache.invalidate(&id);
+                    app.search.mark_stale();
+                    reload_rows(app, vault, config)?;
+                    select_row_by_id(app, &id);
+                    app.set_status(msg);
+                }
+                Err(e) => app.set_status(format!("{} update failed: {}", field.key(), e)),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn launcher_item_score(item: &LauncherItem, query: &str) -> i64 {
     match item {
+        LauncherItem::Intent(_) => 980_000,
         LauncherItem::Command(command) => command.match_score(query).unwrap_or(0),
         LauncherItem::Fragment(row) => fragment_result_score(row, query),
     }
@@ -1435,5 +1532,35 @@ mod tests {
         assert_eq!(nav.back("B".into()), Some("A".into()));
         nav.push("A".into()); // user followed a link from A
         assert_eq!(nav.forward("X".into()), None); // forward stack gone
+    }
+
+    #[test]
+    fn launcher_intents_parse_selected_field_updates() {
+        let intents = launcher_intents("status done", true);
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].label, "Set Status to done");
+        assert_eq!(
+            intents[0].action,
+            IntentAction::SetField {
+                field: QuickField::Status,
+                value: "done".into()
+            }
+        );
+
+        let intents = launcher_intents("due next friday", true);
+        assert_eq!(
+            intents[0].action,
+            IntentAction::SetField {
+                field: QuickField::Due,
+                value: "next friday".into()
+            }
+        );
+    }
+
+    #[test]
+    fn launcher_intents_require_selection_and_value() {
+        assert!(launcher_intents("status done", false).is_empty());
+        assert!(launcher_intents("status", true).is_empty());
+        assert!(launcher_intents("tui", true).is_empty());
     }
 }

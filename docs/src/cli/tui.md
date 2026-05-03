@@ -31,7 +31,7 @@ A persistent menu strip across the top selects between six tabs. Below it sits a
 
 The detail pane renders the selected fragment's body as styled Markdown — headings, lists, blockquotes, code, inline code, bold/italic, links, and `[[id]]` wiki-links are highlighted. A scrollbar appears when the body overflows the pane.
 
-`/` opens a two-pane universal launcher over the current view. Plain input searches fragments with the full DSL and also matches commands/views, so typing `review`, `due`, `archive`, or `#backend` surfaces the relevant action or fragment result. The right pane previews the highlighted fragment or command. `Enter` on a fragment opens the result set in the Search tab; `Enter` on a command runs it. `Ctrl-P` opens the same launcher with `>` prefilled for command-only filtering; typing after `>` filters commands.
+`/` opens a two-pane universal launcher over the current view. Plain input searches fragments with the full DSL and also matches commands/views, so typing `review`, `due`, `archive`, or `#backend` surfaces the relevant action or fragment result. When a fragment is selected, typed field intents such as `status done`, `due friday`, `priority high`, or `assignee alice` appear as runnable actions. The right pane previews the highlighted fragment, command, or action. `Enter` on a fragment opens the result set in the Search tab; `Enter` on a command/action runs it. `Ctrl-P` opens the same launcher with `>` prefilled for command-only filtering; typing after `>` filters commands.
 
 ## Keybindings
 
@@ -77,7 +77,7 @@ The detail pane renders the selected fragment's body as styled Markdown — head
 | `q` | Quit |
 | `Ctrl-C` | Quit from anywhere |
 
-In universal launcher mode, all printable keystrokes append to the query. The query is parsed as the full [search DSL]({{ '/search-dsl/' | url }}), so `type:todo #backend due:this-week` filters fragments as you type, while command/view matches are mixed into the same result list. Use `Shift-Tab` to move focus between results and preview, `Enter` to open a selected fragment search result in the Search tab or run a selected command, and `Esc` to close the launcher.
+In universal launcher mode, all printable keystrokes append to the query. The query is parsed as the full [search DSL]({{ '/search-dsl/' | url }}), so `type:todo #backend due:this-week` filters fragments as you type, while command/view/action matches are mixed into the same result list. Use `Shift-Tab` to move focus between results and preview, `Enter` to open a selected fragment search result in the Search tab or run a selected command/action, and `Esc` to close the launcher.
 
 If the launcher input starts with `>`, it switches to command-only mode. Command results include existing TUI actions such as edit, toggle status, archive, delete, promote, yank ID, quick field edits, capture, reload, help, and tab switching. Commands that need a selected fragment are hidden when nothing is selected.
 
