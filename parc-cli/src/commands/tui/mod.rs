@@ -405,6 +405,9 @@ pub(crate) struct LauncherIntent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum IntentAction {
     SetField { field: QuickField, value: String },
+    AddTags { tags: Vec<String> },
+    RemoveTags { tags: Vec<String> },
+    SetTags { tags: Vec<String> },
 }
 
 #[derive(Clone)]

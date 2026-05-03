@@ -975,6 +975,11 @@ fn launcher_intents(
         return Vec::new();
     };
     let query = input.strip_prefix('>').unwrap_or(input).trim_start();
+    let tag_intents = launcher_tag_intents(query, selected_row, current_rows, search_rows);
+    if !tag_intents.is_empty() {
+        return tag_intents;
+    }
+
     let Some((field, value_prefix)) = parse_field_intent(query) else {
         return Vec::new();
     };
@@ -1000,6 +1005,136 @@ fn launcher_intents(
         .take(8)
         .map(|value| build_set_field_intent(vault, selected_row, field, value))
         .collect()
+}
+
+fn launcher_tag_intents(
+    query: &str,
+    selected_row: &Row,
+    current_rows: &[Row],
+    search_rows: &[Row],
+) -> Vec<LauncherIntent> {
+    for (prefix, kind) in [
+        ("add tag ", TagIntentKind::Add),
+        ("remove tag ", TagIntentKind::Remove),
+        ("set tags ", TagIntentKind::Set),
+    ] {
+        let Some(raw_value) = strip_ascii_prefix(query, prefix) else {
+            continue;
+        };
+        return tag_intents_for_kind(kind, raw_value, selected_row, current_rows, search_rows);
+    }
+    Vec::new()
+}
+
+#[derive(Clone, Copy)]
+enum TagIntentKind {
+    Add,
+    Remove,
+    Set,
+}
+
+fn tag_intents_for_kind(
+    kind: TagIntentKind,
+    raw_value: &str,
+    selected_row: &Row,
+    current_rows: &[Row],
+    search_rows: &[Row],
+) -> Vec<LauncherIntent> {
+    let value_prefix = raw_value.trim();
+    let candidates = match kind {
+        TagIntentKind::Add => known_tags(current_rows, search_rows)
+            .into_iter()
+            .filter(|tag| !selected_row.tags.iter().any(|existing| existing == tag))
+            .collect(),
+        TagIntentKind::Remove => selected_row.tags.clone(),
+        TagIntentKind::Set => Vec::new(),
+    };
+    let suggestions = candidates
+        .into_iter()
+        .filter(|tag| {
+            value_prefix.is_empty()
+                || tag
+                    .get(..value_prefix.len().min(tag.len()))
+                    .is_some_and(|head| head.eq_ignore_ascii_case(value_prefix))
+        })
+        .collect::<Vec<_>>();
+
+    if !suggestions.is_empty() {
+        return suggestions
+            .into_iter()
+            .take(8)
+            .map(|tag| build_tag_intent(kind, vec![tag]))
+            .collect();
+    }
+
+    let tags = parse_tag_value(value_prefix);
+    if tags.is_empty() {
+        return Vec::new();
+    }
+    vec![build_tag_intent(kind, tags)]
+}
+
+fn known_tags(current_rows: &[Row], search_rows: &[Row]) -> Vec<String> {
+    let mut values = Vec::new();
+    for row in current_rows.iter().chain(search_rows) {
+        for tag in &row.tags {
+            if !values.iter().any(|value: &String| value == tag) {
+                values.push(tag.clone());
+            }
+        }
+    }
+    values
+}
+
+fn parse_tag_value(value: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    for tag in value
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .map(|tag| tag.trim().trim_start_matches('#'))
+        .filter(|tag| !tag.is_empty())
+    {
+        let tag = tag.to_string();
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
+fn build_tag_intent(kind: TagIntentKind, tags: Vec<String>) -> LauncherIntent {
+    let joined = tags.join(", ");
+    let (label, description, action) = match kind {
+        TagIntentKind::Add => (
+            format!("Add tag {}", joined),
+            format!("Add {} to the selected fragment.", tag_phrase(&tags)),
+            IntentAction::AddTags { tags },
+        ),
+        TagIntentKind::Remove => (
+            format!("Remove tag {}", joined),
+            format!("Remove {} from the selected fragment.", tag_phrase(&tags)),
+            IntentAction::RemoveTags { tags },
+        ),
+        TagIntentKind::Set => (
+            format!("Set tags to {}", joined),
+            format!("Replace the selected fragment's tags with `{}`.", joined),
+            IntentAction::SetTags { tags },
+        ),
+    };
+    LauncherIntent {
+        label,
+        description,
+        detail: None,
+        valid: true,
+        action,
+    }
+}
+
+fn tag_phrase(tags: &[String]) -> String {
+    if tags.len() == 1 {
+        format!("tag `{}`", tags[0])
+    } else {
+        format!("tags `{}`", tags.join(", "))
+    }
 }
 
 fn build_set_field_intent(
@@ -1163,7 +1298,55 @@ fn execute_intent_action(
                 Err(e) => app.set_status(format!("{} update failed: {}", field.key(), e)),
             }
         }
+        IntentAction::AddTags { tags } => {
+            apply_tag_intent(app, vault, config, |existing| {
+                for tag in tags {
+                    if !existing.contains(&tag) {
+                        existing.push(tag);
+                    }
+                }
+            })?;
+        }
+        IntentAction::RemoveTags { tags } => {
+            apply_tag_intent(app, vault, config, |existing| {
+                existing.retain(|tag| !tags.contains(tag));
+            })?;
+        }
+        IntentAction::SetTags { tags } => {
+            apply_tag_intent(app, vault, config, |existing| {
+                *existing = tags;
+            })?;
+        }
     }
+    Ok(())
+}
+
+fn apply_tag_intent(
+    app: &mut App,
+    vault: &Path,
+    config: &Config,
+    update: impl FnOnce(&mut Vec<String>),
+) -> Result<()> {
+    let Some(row) = app.selected_row() else {
+        app.set_status("no selected fragment");
+        return Ok(());
+    };
+    let id = row.id.clone();
+    let mut tags = row.tags.clone();
+    update(&mut tags);
+    let value = tags.join(" ");
+
+    match actions::set_field(vault, &id, QuickField::Tags, &value) {
+        Ok(msg) => {
+            app.cache.invalidate(&id);
+            app.search.mark_stale();
+            reload_rows(app, vault, config)?;
+            select_row_by_id(app, &id);
+            app.set_status(msg);
+        }
+        Err(e) => app.set_status(format!("tags update failed: {}", e)),
+    }
+
     Ok(())
 }
 
@@ -1784,6 +1967,55 @@ mod tests {
             .map(|intent| intent.label)
             .collect::<Vec<_>>();
         assert_eq!(labels, vec!["Set Assignee to alice"]);
+    }
+
+    #[test]
+    fn launcher_intents_handle_explicit_tag_actions() {
+        let (_tmp, vault) = test_vault();
+        let mut selected = row("todo", "selected", None);
+        selected.tags = vec!["tui".to_string()];
+        let mut tagged = row("todo", "tagged", None);
+        tagged.tags = vec!["design".to_string(), "search".to_string()];
+        let current = vec![tagged];
+
+        let intent = launcher_intents("add tag des", Some(&selected), &current, &[], &vault)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(
+            intent.action,
+            IntentAction::AddTags {
+                tags: vec!["design".into()]
+            }
+        );
+
+        let intent = launcher_intents("remove tag ", Some(&selected), &current, &[], &vault)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(
+            intent.action,
+            IntentAction::RemoveTags {
+                tags: vec!["tui".into()]
+            }
+        );
+
+        let intent = launcher_intents(
+            "set tags ui backend",
+            Some(&selected),
+            &current,
+            &[],
+            &vault,
+        )
+        .into_iter()
+        .next()
+        .unwrap();
+        assert_eq!(
+            intent.action,
+            IntentAction::SetTags {
+                tags: vec!["ui".into(), "backend".into()]
+            }
+        );
     }
 
     #[test]

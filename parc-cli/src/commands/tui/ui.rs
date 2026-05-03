@@ -974,6 +974,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  ?           toggle this help"),
         Line::from("  Launcher    plain text finds fragments, commands, and views"),
         Line::from("  Actions     status done, due friday, priority high, assignee alice"),
+        Line::from("  Tags        add tag tui, remove tag old, set tags tui backend"),
         Line::from("  Search      type DSL text, Enter opens result, Esc closes"),
         Line::from("  Commands    type a command or prefix > for command-only"),
         Line::from("  q           quit"),
