@@ -85,6 +85,7 @@ pub(super) fn load_search_rows(
 
     let mut hits = state.engine.hits(usize::MAX);
     retain_phrases(&mut hits, &query);
+    retain_visible_matches(&mut hits, &query);
 
     if let Some(limit) = query.limit {
         hits.truncate(limit);
@@ -133,6 +134,32 @@ fn retain_phrases(hits: &mut Vec<FuzzyHit>, query: &SearchQuery) {
         phrases
             .iter()
             .all(|phrase| title_lc.contains(phrase) || body_lc.contains(phrase))
+    });
+}
+
+fn retain_visible_matches(hits: &mut Vec<FuzzyHit>, query: &SearchQuery) {
+    let terms: Vec<String> = query
+        .text_terms
+        .iter()
+        .map(|term| match term {
+            TextTerm::Word(word) | TextTerm::Phrase(word) => word.to_lowercase(),
+        })
+        .filter(|term| !term.is_empty())
+        .collect();
+    if terms.is_empty() {
+        return;
+    }
+
+    hits.retain(|hit| {
+        if !hit.title_match_indices.is_empty() {
+            return true;
+        }
+
+        let title_lc = hit.item.title.to_lowercase();
+        let body_lc = hit.item.body.to_lowercase();
+        terms
+            .iter()
+            .any(|term| title_lc.contains(term) || body_lc.contains(term))
     });
 }
 
@@ -478,4 +505,56 @@ fn string_field(
         .get(key)
         .and_then(|value| value.as_str())
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parc_core::fuzzy::FuzzyItem;
+
+    fn hit(id: &str, title: &str, body: &str, title_match_indices: Vec<u32>) -> FuzzyHit {
+        FuzzyHit {
+            item: FuzzyItem {
+                id: id.to_string(),
+                title: title.to_string(),
+                body: body.to_string(),
+                fragment_type: "note".to_string(),
+                status: None,
+                priority: None,
+                due: None,
+                assignee: None,
+                tags: Vec::new(),
+                created_at: "2026-05-03T00:00:00Z".to_string(),
+                updated_at: "2026-05-03T00:00:00Z".to_string(),
+            },
+            score: 1,
+            title_match_indices,
+        }
+    }
+
+    #[test]
+    fn retain_visible_matches_drops_body_only_fuzzy_noise() {
+        let query = search::parse_query("tui").unwrap();
+        let mut hits = vec![
+            hit("exact-title", "TUI launcher", "", Vec::new()),
+            hit("exact-body", "Launcher", "mentions tui here", Vec::new()),
+            hit("title-fuzzy", "Path traversal via ID", "", vec![2, 8, 16]),
+            hit("body-fuzzy", "Unrelated", "the ugly issue", Vec::new()),
+        ];
+
+        retain_visible_matches(&mut hits, &query);
+
+        let ids = hits.into_iter().map(|hit| hit.item.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["exact-title", "exact-body", "title-fuzzy"]);
+    }
+
+    #[test]
+    fn retain_visible_matches_keeps_structured_filter_results() {
+        let query = search::parse_query("#tui").unwrap();
+        let mut hits = vec![hit("tag-only", "No visible term", "", Vec::new())];
+
+        retain_visible_matches(&mut hits, &query);
+
+        assert_eq!(hits.len(), 1);
+    }
 }

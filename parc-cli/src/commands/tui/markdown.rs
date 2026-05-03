@@ -217,7 +217,7 @@ fn render_block<'a>(
                 if indent > 0 {
                     spans.push(Span::raw(" ".repeat(indent)));
                 }
-                spans.push(Span::styled(line.to_string(), style));
+                spans.extend(highlight::spans_for_text(line, style, &[], search_terms));
                 out.push(Line::from(spans));
             }
             out.push(Line::raw(""));
@@ -249,7 +249,12 @@ fn render_block<'a>(
         }
         NodeValue::HtmlBlock(b) => {
             for line in b.literal.lines() {
-                out.push(Line::raw(line.to_string()));
+                out.push(Line::from(highlight::spans_for_text(
+                    line,
+                    Style::default(),
+                    &[],
+                    search_terms,
+                )));
             }
             out.push(Line::raw(""));
         }
@@ -391,9 +396,11 @@ fn collect_inline<'a>(
             }
         }
         NodeValue::Code(c) => {
-            out.push(Span::styled(
-                c.literal.clone(),
+            out.extend(highlight::spans_for_text(
+                &c.literal,
                 Style::default().fg(INLINE_CODE_COLOR),
+                &[],
+                search_terms,
             ));
         }
         NodeValue::Link(_) => {
@@ -499,6 +506,7 @@ fn push_with_indent(out: &mut Vec<Line<'static>>, spans: Vec<Span<'static>>, ind
 #[cfg(test)]
 mod tests {
     use super::{render_body, render_body_highlighted, ActionKind};
+    use ratatui::style::Modifier;
 
     #[test]
     fn renders_heading_and_paragraph() {
@@ -549,6 +557,24 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect();
         assert!(spans.iter().any(|span| *span == "world"));
+    }
+
+    #[test]
+    fn highlights_search_terms_in_inline_and_block_code() {
+        let rendered = render_body_highlighted(
+            "Use `TUI` here\n\n```\ntui block\n```",
+            &[String::from("tui")],
+        );
+        let highlighted: Vec<&str> = rendered
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .filter(|span| span.style.add_modifier.contains(Modifier::BOLD))
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(highlighted.contains(&"TUI"));
+        assert!(highlighted.contains(&"tui"));
     }
 
     #[test]

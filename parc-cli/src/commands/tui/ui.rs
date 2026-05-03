@@ -112,10 +112,19 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App, config: &Config) {
         .border_style(Style::default().fg(border_color))
         .title(title);
 
+    let search_terms = if app.tab == Tab::Search {
+        app.search_view_query
+            .as_deref()
+            .map(parsed_search_terms)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let (items, selected_visual_index) = list_items(
         &app.rows,
         config.id_display_length,
         app.list_state.selected(),
+        &search_terms,
     );
 
     let list = List::new(items)
@@ -131,6 +140,7 @@ fn list_items(
     rows: &[Row],
     id_len: usize,
     selected_index: Option<usize>,
+    search_terms: &[String],
 ) -> (Vec<ListItem<'static>>, Option<usize>) {
     let mut items = Vec::new();
     let mut row_to_visual = Vec::with_capacity(rows.len());
@@ -149,7 +159,7 @@ fn list_items(
         }
 
         row_to_visual.push(items.len());
-        items.push(ListItem::new(format_row(row, id_len)));
+        items.push(ListItem::new(format_row(row, id_len, search_terms)));
     }
 
     let selected_visual_index = selected_index.and_then(|idx| row_to_visual.get(idx).copied());
@@ -163,7 +173,7 @@ fn section_header(section: &str, count: usize) -> Line<'static> {
     ))
 }
 
-fn format_row(row: &Row, id_len: usize) -> Line<'static> {
+fn format_row(row: &Row, id_len: usize, search_terms: &[String]) -> Line<'static> {
     let short = short_id(&row.id, id_len).to_string();
     let status = row.status.as_deref().unwrap_or("-").to_string();
     let indent = if row.section.is_some() { "  " } else { "" };
@@ -177,7 +187,7 @@ fn format_row(row: &Row, id_len: usize) -> Line<'static> {
         &row.title,
         Style::default(),
         &row.title_match_indices,
-        &[],
+        search_terms,
     ));
     if let Some(metadata) = row_metadata(row) {
         spans.push(Span::styled(
@@ -261,8 +271,19 @@ fn draw_detail(frame: &mut Frame, area: Rect, vault: &Path, app: &mut App) {
         app.detail_body_offset = 0;
         return;
     };
+    let search_input = if app.tab == Tab::Search {
+        app.search_view_query.clone()
+    } else {
+        None
+    };
     let appendix = backlinks_appendix(app, vault, &row.id);
-    let detail = detail_lines(vault, &mut app.cache, &row, None, appendix.as_deref());
+    let detail = detail_lines(
+        vault,
+        &mut app.cache,
+        &row,
+        search_input.as_deref(),
+        appendix.as_deref(),
+    );
     app.detail_items = detail.items;
     app.detail_body_offset = detail.body_offset;
     render_detail_lines(
@@ -598,10 +619,17 @@ fn universal_result_items(popup: &LauncherPopup, config: &Config) -> Vec<ListIte
             Style::default().fg(MUTED_TEXT),
         )))]
     } else {
+        let search_terms = parsed_search_terms(&popup.input);
         popup
             .items
             .iter()
-            .map(|item| ListItem::new(format_launcher_item(item, config.id_display_length)))
+            .map(|item| {
+                ListItem::new(format_launcher_item(
+                    item,
+                    config.id_display_length,
+                    &search_terms,
+                ))
+            })
             .collect()
     }
 }
@@ -631,7 +659,11 @@ fn format_command(command: CommandEntry) -> Line<'static> {
     ])
 }
 
-fn format_launcher_item(item: &LauncherItem, id_len: usize) -> Line<'static> {
+fn format_launcher_item(
+    item: &LauncherItem,
+    id_len: usize,
+    search_terms: &[String],
+) -> Line<'static> {
     match item {
         LauncherItem::Command(command) => {
             let mut line = vec![Span::styled(
@@ -643,7 +675,7 @@ fn format_launcher_item(item: &LauncherItem, id_len: usize) -> Line<'static> {
         }
         LauncherItem::Fragment(row) => {
             let mut line = vec![Span::styled("• ", Style::default().fg(MUTED_TEXT))];
-            line.extend(format_row(row, id_len).spans);
+            line.extend(format_row(row, id_len, search_terms).spans);
             Line::from(line)
         }
     }
@@ -1096,5 +1128,28 @@ mod tests {
     fn format_backlinks_handles_empty_title() {
         let out = format_backlinks(&[bl("01XYZ", "note", "   ")]);
         assert!(out.contains("- [[01XYZ|(note)]]"));
+    }
+
+    #[test]
+    fn format_row_highlights_exact_search_terms_in_title() {
+        let row = Row {
+            id: "01ABCDEF".into(),
+            title: "TUI launcher".into(),
+            fragment_type: "note".into(),
+            status: None,
+            priority: None,
+            due: None,
+            assignee: None,
+            tags: Vec::new(),
+            updated_at: "2026-05-03T00:00:00Z".into(),
+            section: None,
+            title_match_indices: Vec::new(),
+            score: 0,
+        };
+
+        let line = format_row(&row, 8, &[String::from("tui")]);
+        assert!(line.spans.iter().any(|span| {
+            span.content.as_ref() == "TUI" && span.style.fg == Some(Color::Yellow)
+        }));
     }
 }
