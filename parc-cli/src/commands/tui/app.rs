@@ -16,6 +16,7 @@ use rusqlite::Connection;
 
 use super::cache::FragmentCache;
 use super::command::{self, CommandAction, LauncherKind};
+use super::data::VaultStamp;
 use super::markdown::{ActionKind, Actionable};
 use super::{
     actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, IntentAction,
@@ -26,7 +27,8 @@ use super::{
 const PAGE_LINES: u16 = 10;
 const HALF_PAGE_LINES: u16 = 5;
 const FRAGMENT_CACHE_CAP: usize = 64;
-const IDLE_POLL_SECS: u64 = 60;
+/// How often to check whether the vault changed outside the TUI.
+const WATCH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_LIFETIME_SECS: u64 = 4;
 const TAB_COUNT: usize = Tab::ALL.len();
 
@@ -134,6 +136,8 @@ pub(super) struct App {
     tab_states: [TabViewState; TAB_COUNT],
     /// Saves fragments (hooks, history, index) the same way the CLI does.
     pub writer: Writer,
+    /// Vault state as of the last row load; see `refresh_if_changed`.
+    vault_stamp: VaultStamp,
 }
 
 impl App {
@@ -164,6 +168,7 @@ impl App {
             index_open_failed: false,
             tab_states: std::array::from_fn(|_| TabViewState::default()),
             writer,
+            vault_stamp: VaultStamp::default(),
         }
     }
 
@@ -279,8 +284,8 @@ pub(super) fn run_loop(
     config: &Config,
     writer: Writer,
 ) -> Result<()> {
-    let initial_rows = data::load_rows(vault, Tab::Today, config)?;
-    let mut app = App::new(initial_rows, writer);
+    let mut app = start_app(vault, config, writer)?;
+    let mut next_watch = Instant::now() + WATCH_INTERVAL;
 
     loop {
         clamp_selection(&mut app);
@@ -293,12 +298,17 @@ pub(super) fn run_loop(
         }
 
         let now = Instant::now();
-        let timeout = match app.status.deadline() {
-            Some(deadline) => deadline.saturating_duration_since(now),
-            None => Duration::from_secs(IDLE_POLL_SECS),
-        };
+        let mut timeout = next_watch.saturating_duration_since(now);
+        if let Some(deadline) = app.status.deadline() {
+            timeout = timeout.min(deadline.saturating_duration_since(now));
+        }
 
-        if !event::poll(timeout)? {
+        let has_event = event::poll(timeout)?;
+        if Instant::now() >= next_watch {
+            refresh_if_changed(&mut app, vault, config);
+            next_watch = Instant::now() + WATCH_INTERVAL;
+        }
+        if !has_event {
             if app.status.is_expired() {
                 app.clear_status();
             }
@@ -343,6 +353,18 @@ pub(super) fn run_loop(
     }
 
     Ok(())
+}
+
+/// Load the first screen and record the vault's on-disk state.
+fn start_app(vault: &Path, config: &Config, writer: Writer) -> Result<App> {
+    // Make sure the index exists before stamping; otherwise creating it
+    // during the first load would look like an outside change.
+    index::open_index(vault)?;
+    let stamp = VaultStamp::read(vault);
+    let rows = data::load_rows(vault, Tab::Today, config)?;
+    let mut app = App::new(rows, writer);
+    app.vault_stamp = stamp;
+    Ok(app)
 }
 
 /// Returns `false` if the loop should exit.
@@ -1453,6 +1475,35 @@ fn finish_write(
     }
 }
 
+/// Pick up changes made outside the TUI (CLI, agents, `git pull`, editors).
+///
+/// Only runs in Normal and Help mode. Under the link/checkbox overlay a
+/// refresh could shift the labelled items under the user's cursor, and
+/// popups have their own state; the change is picked up once they close.
+fn refresh_if_changed(app: &mut App, vault: &Path, config: &Config) {
+    if !matches!(app.mode, Mode::Normal | Mode::Help) {
+        return;
+    }
+    // The new state is recorded even if the load below fails, so a broken
+    // vault doesn't re-trigger (and re-report) every tick.
+    if !note_disk_state(app, vault) {
+        return;
+    }
+    let selected = app.selected_id();
+    match load_current_rows(app, vault, config) {
+        Ok(()) => {
+            if let Some(id) = selected {
+                select_row_by_id(app, &id);
+            }
+            if matches!(app.status, Status::Idle) {
+                app.set_status("updated from disk");
+            }
+        }
+        Err(e) => app.set_status(format!("reload failed: {}", e)),
+    }
+    app.dirty = true;
+}
+
 /// `r`: re-read everything from disk, including fragments edited elsewhere.
 fn manual_reload(app: &mut App, vault: &Path, config: &Config) {
     app.cache.clear();
@@ -1712,6 +1763,28 @@ fn switch_tab(app: &mut App, tab: Tab, vault: &Path, config: &Config) {
 }
 
 fn reload_rows(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
+    note_disk_state(app, vault);
+    load_current_rows(app, vault, config)
+}
+
+/// Record the vault's on-disk state. If it moved since the last load,
+/// anything cached from disk may be stale, so drop it; returns whether it
+/// moved. Called before loading, so a change that lands mid-load is caught
+/// on the next watch tick rather than missed.
+fn note_disk_state(app: &mut App, vault: &Path) -> bool {
+    let stamp = VaultStamp::read(vault);
+    if stamp == app.vault_stamp {
+        return false;
+    }
+    app.vault_stamp = stamp;
+    app.cache.clear();
+    app.search.mark_stale();
+    app.index_db = None;
+    app.index_open_failed = false;
+    true
+}
+
+fn load_current_rows(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
     app.rows = if app.tab == Tab::Search {
         match app.search_view_query.clone() {
             Some(query) if !query.trim().is_empty() => {
@@ -2114,5 +2187,109 @@ mod tests {
         manual_reload(&mut app, &vault, &config);
 
         assert!(status_text(&app).starts_with("reload failed:"));
+    }
+
+    fn create_note(vault: &Path, title: &str) -> String {
+        let config = parc_core::config::load_config(vault).unwrap();
+        let schemas = load_schemas(vault).unwrap();
+        let frag = parc_core::fragment::new_fragment(
+            "note",
+            title,
+            schemas.resolve("note").unwrap(),
+            &config,
+        );
+        let mut writer = crate::hooks::writer(vault, parc_core::hook::HookStderr::Capture);
+        writer.create(frag).unwrap().id
+    }
+
+    #[test]
+    fn vault_stamp_tracks_creates_edits_and_deletes() {
+        let (_tmp, vault) = test_vault();
+        let empty = VaultStamp::read(&vault);
+        assert_eq!(
+            empty,
+            VaultStamp::read(&vault),
+            "stable when nothing changes"
+        );
+
+        let id = create_note(&vault, "One");
+        let created = VaultStamp::read(&vault);
+        assert_ne!(created, empty);
+
+        // In-place edit: same file count, newer mtime. Set the mtime
+        // explicitly so coarse filesystem timestamps can't hide it.
+        let path = vault.join("fragments").join(format!("{}.md", id));
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
+        assert_ne!(VaultStamp::read(&vault), created);
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(VaultStamp::read(&vault).fragment_count_for_test(), 0);
+    }
+
+    #[test]
+    fn refresh_picks_up_external_changes_once() {
+        let (_tmp, vault) = test_vault();
+        let config = parc_core::config::load_config(&vault).unwrap();
+        let writer = crate::hooks::writer(&vault, parc_core::hook::HookStderr::Capture);
+        let mut app = start_app(&vault, &config, writer).unwrap();
+        switch_tab(&mut app, Tab::List, &vault, &config);
+        assert!(app.rows.is_empty());
+
+        // Nothing changed: no reload, no status noise.
+        refresh_if_changed(&mut app, &vault, &config);
+        assert_eq!(status_text(&app), "");
+
+        // Another process (CLI, agent) adds a fragment.
+        create_note(&vault, "From outside");
+        refresh_if_changed(&mut app, &vault, &config);
+        assert_eq!(app.rows.len(), 1);
+        assert_eq!(app.rows[0].title, "From outside");
+        assert_eq!(status_text(&app), "updated from disk");
+
+        // Already seen: a second tick is a no-op.
+        app.clear_status();
+        refresh_if_changed(&mut app, &vault, &config);
+        assert_eq!(status_text(&app), "");
+    }
+
+    #[test]
+    fn own_writes_do_not_trigger_a_second_refresh() {
+        let (_tmp, vault) = test_vault();
+        let config = parc_core::config::load_config(&vault).unwrap();
+        let writer = crate::hooks::writer(&vault, parc_core::hook::HookStderr::Capture);
+        let mut app = start_app(&vault, &config, writer).unwrap();
+        switch_tab(&mut app, Tab::List, &vault, &config);
+        let id = create_note(&vault, "Mine");
+        reload_rows(&mut app, &vault, &config).unwrap();
+
+        let result = actions::archive(&mut app.writer, &id);
+        finish_write(&mut app, &vault, &config, &id, "archive", result);
+        let status = status_text(&app).to_string();
+
+        refresh_if_changed(&mut app, &vault, &config);
+        assert_eq!(status_text(&app), status, "the write's own message stays");
+    }
+
+    #[test]
+    fn refresh_waits_while_a_popup_is_open() {
+        let (_tmp, vault) = test_vault();
+        let config = parc_core::config::load_config(&vault).unwrap();
+        let writer = crate::hooks::writer(&vault, parc_core::hook::HookStderr::Capture);
+        let mut app = start_app(&vault, &config, writer).unwrap();
+        switch_tab(&mut app, Tab::List, &vault, &config);
+        reload_rows(&mut app, &vault, &config).unwrap();
+        app.mode = Mode::Help;
+        refresh_if_changed(&mut app, &vault, &config);
+
+        app.mode = Mode::Capture(new_capture_form(&vault).unwrap());
+        create_note(&vault, "Later");
+        refresh_if_changed(&mut app, &vault, &config);
+        assert!(app.rows.is_empty(), "no refresh under the capture form");
+
+        app.mode = Mode::Normal;
+        refresh_if_changed(&mut app, &vault, &config);
+        assert_eq!(app.rows.len(), 1);
     }
 }

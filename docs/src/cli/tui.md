@@ -33,6 +33,8 @@ The detail pane renders the selected fragment's body as styled Markdown — head
 
 Two in-detail actions use a vimium-style overlay: `f` follows a `[[wiki-link]]` and `x` toggles a `[ ]` / `[x]` checkbox. Each visible target gets a letter label; press the letter to act, or `Esc` to cancel. With only one target in view the action runs immediately. After following a link, `Ctrl-O` jumps back through the navigation stack and `Ctrl-I` jumps forward.
 
+The TUI watches the vault while it's open. Changes made elsewhere (a `parc` command in another terminal, an agent logging to the vault, `git pull`, an editor saving a fragment file) show up within a couple of seconds, with "updated from disk" in the status line. It holds off while a prompt, form or overlay is open and catches up when you close it. Errors never close the TUI; they appear in the status line.
+
 `/` opens a two-pane universal launcher over the current view. Plain input searches fragments with the full DSL and also matches commands/views, so typing `review`, `due`, `archive`, or `#backend` surfaces the relevant action or fragment result. When a fragment is selected, typed field intents such as `status done`, `due friday`, `priority high`, or `assignee alice` appear as runnable actions; partial inputs like `status `, `priority h`, `due tom`, or `assignee al` suggest schema-aware values. Tag actions are explicit to avoid accidental replacement: `add tag tui`, `remove tag old`, or `set tags tui backend`. The right pane previews the highlighted fragment, command, or action; field-action previews show validation errors or normalized due dates before you run them. `Enter` on a fragment opens the result set in the Search tab; `Enter` on a command/action runs it. `Ctrl-P` opens the same launcher with `>` prefilled for command-only filtering; typing after `>` filters commands.
 
 ## Keybindings
@@ -51,7 +53,7 @@ Two in-detail actions use a vimium-style overlay: `f` follows a `[[wiki-link]]` 
 | `Home` / `End` | Top / bottom of the focused pane |
 | `Ctrl-d` / `Ctrl-u` | Half-page scroll within the focused pane |
 | `Ctrl-o` / `Ctrl-i` | Navigate back / forward through followed links |
-| `r` | Reload the current tab |
+| `r` | Reload the current tab (re-reads every fragment from disk) |
 
 ### Actions on the selected fragment
 

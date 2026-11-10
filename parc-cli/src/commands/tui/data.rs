@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::SystemTime;
 
 use anyhow::Result;
 use parc_core::config::Config;
@@ -36,6 +37,49 @@ impl SearchState {
 impl Default for SearchState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A cheap fingerprint of the vault's on-disk state, used to notice changes
+/// made outside the TUI: CLI commands, agents, `git pull`, editors.
+///
+/// File count and newest mtime catch creates, deletes and in-place edits of
+/// fragment files; the index mtime catches index-only changes (`reindex`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct VaultStamp {
+    fragment_count: usize,
+    newest_fragment: Option<SystemTime>,
+    fragments_dir: Option<SystemTime>,
+    index: Option<SystemTime>,
+}
+
+impl VaultStamp {
+    pub(super) fn read(vault: &Path) -> Self {
+        let mtime = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let dir = vault.join("fragments");
+
+        let mut fragment_count = 0;
+        let mut newest_fragment = None;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.path().extension().is_some_and(|ext| ext == "md") {
+                    fragment_count += 1;
+                    let modified = entry.metadata().and_then(|m| m.modified()).ok();
+                    newest_fragment = newest_fragment.max(modified);
+                }
+            }
+        }
+
+        Self {
+            fragment_count,
+            newest_fragment,
+            fragments_dir: mtime(&dir),
+            index: mtime(&vault.join("index.db")),
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn fragment_count_for_test(&self) -> usize {
+        self.fragment_count
     }
 }
 
