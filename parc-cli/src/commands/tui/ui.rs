@@ -954,7 +954,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("Actions on selected fragment"),
         Line::from("  c           capture a new fragment"),
         Line::from("  e           edit in $EDITOR"),
-        Line::from("  t           toggle todo status (open ↔ done)"),
+        Line::from("  t           toggle status (todo open/done, risk, decision)"),
         Line::from("  s           set status"),
         Line::from("  D / P       set due date / priority"),
         Line::from("  @ / #       set assignee / tags"),

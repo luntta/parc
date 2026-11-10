@@ -74,6 +74,21 @@ Every field accepts:
 - `default: <value>` — applied when the field is omitted on creation
 - `description: <text>` — shown in `parc schema show`
 
+## One-key toggle
+
+An `enum` field can declare `toggle: [off, on]`, the two values the TUI's `t` key flips between. On a fragment whose value is `on`, `t` sets `off`; for any other value it sets `on`, so `t` finishes an in-progress todo rather than reopening it.
+
+```yaml
+fields:
+  - name: status
+    type: enum
+    values: [open, in-progress, done, cancelled]
+    default: open
+    toggle: [open, done]
+```
+
+Both values must be in `values:`, and the first field that declares `toggle:` wins. The built-in todo, risk and decision types ship with one; idea and note don't. A schema without `toggle:` whose `status` enum has both `open` and `done` toggles between those two, so todo schemas created before `toggle:` existed keep working.
+
 ## Templates
 
 The optional `template:` block is the body parc seeds the editor with for `parc new <type>` (without an inline title). Use it to encode your standard structure for that type — agenda, notes, action items.

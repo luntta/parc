@@ -7,6 +7,7 @@ fields:
     values: [open, in-progress, done, cancelled]
     required: true
     default: open
+    toggle: [open, done]
   - name: due
     type: date
     required: false

@@ -60,7 +60,7 @@ The TUI watches the vault while it's open. Changes made elsewhere (a `parc` comm
 | Key | Action |
 |-----|--------|
 | `e` | Edit in `$EDITOR` (suspends the TUI, resumes on exit) |
-| `t` | Toggle todo status (open ↔ done) — no-op for non-todos |
+| `t` | Toggle status: todo open ↔ done, risk identified ↔ resolved, decision proposed ↔ accepted. Set per type with a schema's `toggle:` key |
 | `s` | Set status |
 | `D` | Set due date |
 | `P` | Set priority |

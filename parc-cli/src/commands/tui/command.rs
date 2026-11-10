@@ -134,7 +134,7 @@ fn all_commands() -> Vec<CommandEntry> {
         },
         CommandEntry {
             label: "Toggle Status",
-            description: "Toggle the selected todo between open and done.",
+            description: "Flip the selected fragment's toggle field (todo: open/done, risk: identified/resolved, decision: proposed/accepted).",
             key: "t",
             aliases: &["todo", "done", "open", "complete"],
             requires_selection: true,

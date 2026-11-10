@@ -19,6 +19,59 @@ pub struct FieldDef {
     pub field_type: FieldType,
     pub required: bool,
     pub default: Option<String>,
+    /// `toggle: [off, on]` on an enum field: the pair of values a one-key
+    /// toggle (the TUI's `t`) flips between.
+    pub toggle: Option<(String, String)>,
+}
+
+/// Two values of one field that a one-key toggle flips between.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toggle {
+    pub field: String,
+    pub off: String,
+    pub on: String,
+}
+
+impl Toggle {
+    /// `on` goes back to `off`; any other value, or none, goes to `on`.
+    /// So for `[open, done]`, an in-progress todo is finished, not reopened.
+    pub fn next(&self, current: Option<&str>) -> &str {
+        if current == Some(self.on.as_str()) {
+            &self.off
+        } else {
+            &self.on
+        }
+    }
+}
+
+impl Schema {
+    /// The field and values a one-key toggle should flip: the first field
+    /// that declares `toggle:`. Schemas without one fall back to
+    /// `status: open <-> done` when that enum has both values, which keeps
+    /// todo schemas written before `toggle:` existed working.
+    pub fn toggle(&self) -> Option<Toggle> {
+        if let Some(field) = self.fields.iter().find(|f| f.toggle.is_some()) {
+            let (off, on) = field.toggle.clone()?;
+            return Some(Toggle {
+                field: field.name.clone(),
+                off,
+                on,
+            });
+        }
+        let status = self.fields.iter().find(|f| f.name == "status")?;
+        match &status.field_type {
+            FieldType::Enum(values)
+                if values.iter().any(|v| v == "open") && values.iter().any(|v| v == "done") =>
+            {
+                Some(Toggle {
+                    field: "status".to_string(),
+                    off: "open".to_string(),
+                    on: "done".to_string(),
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +102,38 @@ struct FieldDefFile {
     #[serde(default)]
     required: bool,
     default: Option<String>,
+    #[serde(default)]
+    toggle: Vec<String>,
+}
+
+fn parse_toggle(schema: &str, field: &FieldDefFile) -> Result<Option<(String, String)>, ParcError> {
+    if field.toggle.is_empty() {
+        return Ok(None);
+    }
+    let invalid = |why: String| {
+        ParcError::ValidationError(format!(
+            "schema '{}', field '{}': toggle {}",
+            schema, field.name, why
+        ))
+    };
+    if field.field_type != "enum" {
+        return Err(invalid("is only supported on enum fields".into()));
+    }
+    let [off, on] = field.toggle.as_slice() else {
+        return Err(invalid(format!(
+            "needs exactly two values, e.g. [open, done]; got {}",
+            field.toggle.len()
+        )));
+    };
+    for value in [off, on] {
+        if !field.values.contains(value) {
+            return Err(invalid(format!(
+                "value '{}' is not one of {:?}",
+                value, field.values
+            )));
+        }
+    }
+    Ok(Some((off.clone(), on.clone())))
 }
 
 fn parse_field_type(type_str: &str, values: Vec<String>) -> FieldType {
@@ -66,13 +151,17 @@ pub fn parse_schema(yaml: &str) -> Result<Schema, ParcError> {
     let fields = raw
         .fields
         .into_iter()
-        .map(|f| FieldDef {
-            name: f.name,
-            field_type: parse_field_type(&f.field_type, f.values),
-            required: f.required,
-            default: f.default,
+        .map(|f| {
+            let toggle = parse_toggle(&raw.name, &f)?;
+            Ok(FieldDef {
+                name: f.name,
+                field_type: parse_field_type(&f.field_type, f.values),
+                required: f.required,
+                default: f.default,
+                toggle,
+            })
         })
-        .collect();
+        .collect::<Result<_, ParcError>>()?;
     Ok(Schema {
         name: raw.name,
         alias: raw.alias,
@@ -244,6 +333,73 @@ mod tests {
         assert_eq!(schema.fields[0].name, "status");
         assert!(schema.fields[0].required);
         assert_eq!(schema.fields[0].default.as_deref(), Some("open"));
+    }
+
+    #[test]
+    fn test_builtin_toggles() {
+        let toggle = |yaml: &str| parse_schema(yaml).unwrap().toggle();
+        let pair = |t: Option<Toggle>| t.map(|t| (t.field, t.off, t.on));
+        let s = |v: &str| v.to_string();
+
+        assert_eq!(
+            pair(toggle(include_str!("builtin/schemas/todo.yml"))),
+            Some((s("status"), s("open"), s("done")))
+        );
+        assert_eq!(
+            pair(toggle(include_str!("builtin/schemas/risk.yml"))),
+            Some((s("status"), s("identified"), s("resolved")))
+        );
+        assert_eq!(
+            pair(toggle(include_str!("builtin/schemas/decision.yml"))),
+            Some((s("status"), s("proposed"), s("accepted")))
+        );
+        assert_eq!(toggle(include_str!("builtin/schemas/idea.yml")), None);
+        assert_eq!(toggle(include_str!("builtin/schemas/note.yml")), None);
+    }
+
+    #[test]
+    fn test_toggle_next() {
+        let t = Toggle {
+            field: "status".into(),
+            off: "open".into(),
+            on: "done".into(),
+        };
+        assert_eq!(t.next(Some("open")), "done");
+        assert_eq!(t.next(Some("in-progress")), "done");
+        assert_eq!(t.next(None), "done");
+        assert_eq!(t.next(Some("done")), "open");
+    }
+
+    #[test]
+    fn test_toggle_falls_back_to_open_done_without_declaration() {
+        // A todo schema copied into a vault before `toggle:` existed.
+        let yaml = "name: todo\nfields:\n  - name: status\n    type: enum\n    values: [open, in-progress, done]\n";
+        let t = parse_schema(yaml).unwrap().toggle().unwrap();
+        assert_eq!((t.off.as_str(), t.on.as_str()), ("open", "done"));
+    }
+
+    #[test]
+    fn test_toggle_on_custom_field() {
+        let yaml = "name: bug\nfields:\n  - name: state\n    type: enum\n    values: [new, fixed, wontfix]\n    toggle: [new, fixed]\n";
+        let t = parse_schema(yaml).unwrap().toggle().unwrap();
+        assert_eq!(t.field, "state");
+        assert_eq!(t.next(Some("wontfix")), "fixed");
+    }
+
+    #[test]
+    fn test_toggle_rejects_bad_declarations() {
+        let field = |extra: &str| {
+            format!(
+                "name: bug\nfields:\n  - name: state\n    type: enum\n    values: [new, fixed]\n    {}\n",
+                extra
+            )
+        };
+        let err = |yaml: String| parse_schema(&yaml).unwrap_err().to_string();
+
+        assert!(err(field("toggle: [new]")).contains("exactly two values"));
+        assert!(err(field("toggle: [new, closed]")).contains("'closed' is not one of"));
+        let not_enum = "name: x\nfields:\n  - name: owner\n    type: string\n    toggle: [a, b]\n";
+        assert!(err(not_enum.to_string()).contains("only supported on enum"));
     }
 
     #[test]

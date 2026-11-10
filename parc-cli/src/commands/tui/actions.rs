@@ -98,25 +98,34 @@ fn run_editor(writer: &mut Writer, id: &str) -> Result<String> {
     Ok(with_warnings(writer, format!("edited {}", short(&frag.id))))
 }
 
+/// Flip the field the type's schema declares with `toggle: [off, on]`
+/// (for todos, status open <-> done).
 pub(super) fn toggle_status(writer: &mut Writer, id: &str) -> Result<String> {
     let mut frag = read_fragment(writer.vault(), id)?;
-    if frag.fragment_type != "todo" {
-        return Ok(format!("{} not a todo", short(&frag.id)));
-    }
-    let cur = frag
+    let schemas = load_schemas(writer.vault())?;
+    let toggle = schemas
+        .resolve(&frag.fragment_type)
+        .and_then(|schema| schema.toggle())
+        .ok_or_else(|| {
+            anyhow!(
+                "{} has nothing to toggle (add `toggle: [a, b]` to an enum field in schemas/{}.yml)",
+                frag.fragment_type,
+                frag.fragment_type
+            )
+        })?;
+
+    let current = frag
         .extra_fields
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("open")
-        .to_string();
-    let next = if cur == "done" { "open" } else { "done" };
+        .get(&toggle.field)
+        .and_then(|v| v.as_str());
+    let next = toggle.next(current).to_string();
     frag.extra_fields
-        .insert("status".to_string(), Value::String(next.to_string()));
+        .insert(toggle.field.clone(), Value::String(next.clone()));
 
     let frag = writer.update(frag)?;
     Ok(with_warnings(
         writer,
-        format!("{} {}", short(&frag.id), next),
+        format!("{} {} {}", short(&frag.id), toggle.field, next),
     ))
 }
 
@@ -508,5 +517,73 @@ mod tests {
         assert!(toggle_checkbox(&mut test_writer(&vault), &id, 0..3).is_err());
         // Out-of-bounds.
         assert!(toggle_checkbox(&mut test_writer(&vault), &id, 1_000..1_003).is_err());
+    }
+
+    fn capture_type(writer: &mut Writer, fragment_type: &str, text: &str) -> String {
+        capture(
+            writer,
+            CaptureInput {
+                text: text.to_string(),
+                fragment_type: fragment_type.to_string(),
+                tags: String::new(),
+                status: String::new(),
+                due: String::new(),
+                priority: String::new(),
+                assignee: String::new(),
+            },
+        )
+        .unwrap()
+        .0
+    }
+
+    fn status_of(vault: &Path, id: &str) -> Option<String> {
+        read_fragment(vault, id)
+            .unwrap()
+            .extra_fields
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn toggle_follows_each_schema() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        init_vault(&vault).unwrap();
+        let mut w = test_writer(&vault);
+
+        let todo = capture_type(&mut w, "todo", "Ship it");
+        toggle_status(&mut w, &todo).unwrap();
+        assert_eq!(status_of(&vault, &todo).as_deref(), Some("done"));
+        toggle_status(&mut w, &todo).unwrap();
+        assert_eq!(status_of(&vault, &todo).as_deref(), Some("open"));
+
+        let risk = capture_type(&mut w, "risk", "Disk fills up");
+        let msg = toggle_status(&mut w, &risk).unwrap();
+        assert!(msg.ends_with("status resolved"), "{}", msg);
+        assert_eq!(status_of(&vault, &risk).as_deref(), Some("resolved"));
+
+        let idea = capture_type(&mut w, "idea", "Maybe later");
+        let err = toggle_status(&mut w, &idea).unwrap_err().to_string();
+        assert!(err.contains("idea has nothing to toggle"), "{}", err);
+        assert_eq!(
+            status_of(&vault, &idea).as_deref(),
+            Some("raw"),
+            "unchanged"
+        );
+    }
+
+    #[test]
+    fn toggle_finishes_an_in_progress_todo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        init_vault(&vault).unwrap();
+        let mut w = test_writer(&vault);
+        let todo = capture_type(&mut w, "todo", "Halfway");
+        set_field(&mut w, &todo, QuickField::Status, "in-progress").unwrap();
+
+        toggle_status(&mut w, &todo).unwrap();
+
+        assert_eq!(status_of(&vault, &todo).as_deref(), Some("done"));
     }
 }

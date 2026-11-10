@@ -7,6 +7,7 @@ fields:
     values: [identified, mitigating, accepted, resolved]
     required: true
     default: identified
+    toggle: [identified, resolved]
   - name: likelihood
     type: enum
     values: [low, medium, high]
