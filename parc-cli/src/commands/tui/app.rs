@@ -306,30 +306,37 @@ pub(super) fn run_loop(
         }
 
         let event = event::read()?;
-        let keep_going = match event {
+        let handled = match event {
             Event::Key(key) => match app.mode.clone() {
-                Mode::Normal => handle_normal(&mut app, key, terminal, vault, config)?,
+                Mode::Normal => handle_normal(&mut app, key, terminal, vault, config),
                 Mode::Confirm { action, .. } => {
-                    handle_confirm(&mut app, key, action, vault, config)?
+                    handle_confirm(&mut app, key, action, vault, config)
                 }
                 Mode::Input {
                     value,
                     action,
                     prompt,
-                } => handle_input(&mut app, key, prompt, value, action, vault, config)?,
-                Mode::Capture(form) => handle_capture(&mut app, key, form, vault, config)?,
+                } => handle_input(&mut app, key, prompt, value, action, vault, config),
+                Mode::Capture(form) => handle_capture(&mut app, key, form, vault, config),
                 Mode::Launcher(popup) => {
-                    handle_launcher(&mut app, key, popup, terminal, vault, config)?
+                    handle_launcher(&mut app, key, popup, terminal, vault, config)
                 }
-                Mode::Overlay(state) => handle_overlay(&mut app, key, state, vault, config)?,
-                Mode::Help => handle_help(&mut app, key)?,
+                Mode::Overlay(state) => handle_overlay(&mut app, key, state, vault, config),
+                Mode::Help => handle_help(&mut app, key),
             },
             Event::Resize(_, _) => {
                 app.dirty = true;
-                true
+                Ok(true)
             }
-            _ => true,
+            _ => Ok(true),
         };
+        // An error a handler didn't deal with itself is reported, not fatal:
+        // one bad fragment or a locked index shouldn't end the session.
+        let keep_going = handled.unwrap_or_else(|e| {
+            app.mode = Mode::Normal;
+            app.set_status(format!("error: {}", e));
+            true
+        });
         if !keep_going {
             break;
         }
@@ -354,28 +361,25 @@ fn handle_normal(
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => return Ok(false),
 
         (KeyCode::Tab, _) => {
-            switch_tab(app, app.tab.next(), vault, config)?;
             app.clear_status();
+            switch_tab(app, app.tab.next(), vault, config);
         }
         (KeyCode::BackTab, _) => {
             app.focus = app.focus.toggle();
             app.dirty = true;
         }
-        (KeyCode::Char('1'), _) => switch_tab(app, Tab::Today, vault, config)?,
-        (KeyCode::Char('2'), _) => switch_tab(app, Tab::List, vault, config)?,
-        (KeyCode::Char('3'), _) => switch_tab(app, Tab::Stale, vault, config)?,
-        (KeyCode::Char('4'), _) => switch_tab(app, Tab::Due, vault, config)?,
-        (KeyCode::Char('5'), _) => switch_tab(app, Tab::Review, vault, config)?,
-        (KeyCode::Char('6'), _) => switch_tab(app, Tab::Search, vault, config)?,
+        (KeyCode::Char('1'), _) => switch_tab(app, Tab::Today, vault, config),
+        (KeyCode::Char('2'), _) => switch_tab(app, Tab::List, vault, config),
+        (KeyCode::Char('3'), _) => switch_tab(app, Tab::Stale, vault, config),
+        (KeyCode::Char('4'), _) => switch_tab(app, Tab::Due, vault, config),
+        (KeyCode::Char('5'), _) => switch_tab(app, Tab::Review, vault, config),
+        (KeyCode::Char('6'), _) => switch_tab(app, Tab::Search, vault, config),
         (KeyCode::Char('/'), _) => open_launcher(app, vault, ""),
         (KeyCode::Char('p') | KeyCode::Char('P'), m) if m.contains(KeyModifiers::CONTROL) => {
             open_launcher(app, vault, ">")
         }
 
-        (KeyCode::Char('r'), _) if plain => {
-            reload_rows(app, vault, config)?;
-            app.set_status("reloaded");
-        }
+        (KeyCode::Char('r'), _) if plain => manual_reload(app, vault, config),
 
         (KeyCode::Char('?'), _) => {
             app.mode = Mode::Help;
@@ -385,17 +389,17 @@ fn handle_normal(
 
         (KeyCode::Char('e'), _) if plain => {
             if let Some(id) = app.selected_id() {
-                edit_id(app, terminal, vault, config, &id)?;
+                edit_id(app, terminal, vault, config, &id);
             }
         }
         (KeyCode::Char('t'), _) if plain => {
             if let Some(id) = app.selected_id() {
-                toggle_status_id(app, vault, config, &id)?;
+                toggle_status_id(app, vault, config, &id);
             }
         }
         (KeyCode::Char('a'), _) if plain => {
             if let Some(id) = app.selected_id() {
-                archive_id(app, vault, config, &id)?;
+                archive_id(app, vault, config, &id);
             }
         }
         (KeyCode::Char('y'), _) if plain => {
@@ -606,15 +610,10 @@ fn handle_confirm(
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
             match action {
-                ConfirmAction::Delete { id } => match actions::delete(&mut app.writer, &id) {
-                    Ok(msg) => {
-                        app.cache.invalidate(&id);
-                        app.search.mark_stale();
-                        reload_rows(app, vault, config)?;
-                        app.set_status(msg);
-                    }
-                    Err(e) => app.set_status(format!("delete failed: {}", e)),
-                },
+                ConfirmAction::Delete { id } => {
+                    let result = actions::delete(&mut app.writer, &id);
+                    finish_write(app, vault, config, &id, "delete", result);
+                }
             }
             app.mode = Mode::Normal;
             app.dirty = true;
@@ -651,28 +650,14 @@ fn handle_input(
                         app.mode = Mode::Normal;
                         app.set_status("cancelled");
                     } else {
-                        match actions::promote(&mut app.writer, &id, &trimmed) {
-                            Ok(msg) => {
-                                app.cache.invalidate(&id);
-                                app.search.mark_stale();
-                                reload_rows(app, vault, config)?;
-                                app.set_status(msg);
-                            }
-                            Err(e) => app.set_status(format!("promote failed: {}", e)),
-                        }
+                        let result = actions::promote(&mut app.writer, &id, &trimmed);
+                        finish_write(app, vault, config, &id, "promote", result);
                     }
                 }
                 InputAction::SetField { id, field } => {
-                    match actions::set_field(&mut app.writer, &id, field, &trimmed) {
-                        Ok(msg) => {
-                            app.cache.invalidate(&id);
-                            app.search.mark_stale();
-                            reload_rows(app, vault, config)?;
-                            select_row_by_id(app, &id);
-                            app.set_status(msg);
-                        }
-                        Err(e) => app.set_status(format!("{} update failed: {}", field.key(), e)),
-                    }
+                    let result = actions::set_field(&mut app.writer, &id, field, &trimmed);
+                    let what = format!("{} update", field.key());
+                    finish_write(app, vault, config, &id, &what, result);
                 }
             }
             app.mode = Mode::Normal;
@@ -770,12 +755,11 @@ fn submit_capture(app: &mut App, form: &CaptureForm, vault: &Path, config: &Conf
         priority: form.priority.clone(),
         assignee: form.assignee.clone(),
     };
+    // Only a failed save keeps the form open; once the fragment exists, a
+    // later reload problem must not invite a duplicate submit.
     let (id, msg) = actions::capture(&mut app.writer, input)?;
     app.mode = Mode::Normal;
-    app.search.mark_stale();
-    reload_rows(app, vault, config)?;
-    select_row_by_id(app, &id);
-    app.set_status(msg);
+    finish_write(app, vault, config, &id, "capture", Ok(msg));
     Ok(())
 }
 
@@ -1296,16 +1280,9 @@ fn execute_intent_action(
                 return Ok(());
             };
 
-            match actions::set_field(&mut app.writer, &id, field, &value) {
-                Ok(msg) => {
-                    app.cache.invalidate(&id);
-                    app.search.mark_stale();
-                    reload_rows(app, vault, config)?;
-                    select_row_by_id(app, &id);
-                    app.set_status(msg);
-                }
-                Err(e) => app.set_status(format!("{} update failed: {}", field.key(), e)),
-            }
+            let result = actions::set_field(&mut app.writer, &id, field, &value);
+            let what = format!("{} update", field.key());
+            finish_write(app, vault, config, &id, &what, result);
         }
         IntentAction::AddTags { tags } => {
             apply_tag_intent(app, vault, config, |existing| {
@@ -1345,17 +1322,8 @@ fn apply_tag_intent(
     update(&mut tags);
     let value = tags.join(" ");
 
-    match actions::set_field(&mut app.writer, &id, QuickField::Tags, &value) {
-        Ok(msg) => {
-            app.cache.invalidate(&id);
-            app.search.mark_stale();
-            reload_rows(app, vault, config)?;
-            select_row_by_id(app, &id);
-            app.set_status(msg);
-        }
-        Err(e) => app.set_status(format!("tags update failed: {}", e)),
-    }
-
+    let result = actions::set_field(&mut app.writer, &id, QuickField::Tags, &value);
+    finish_write(app, vault, config, &id, "tags update", result);
     Ok(())
 }
 
@@ -1397,17 +1365,17 @@ fn execute_command_action(
     match action {
         CommandAction::Edit => {
             if let Some(id) = app.selected_id() {
-                edit_id(app, terminal, vault, config, &id)?;
+                edit_id(app, terminal, vault, config, &id);
             }
         }
         CommandAction::ToggleStatus => {
             if let Some(id) = app.selected_id() {
-                toggle_status_id(app, vault, config, &id)?;
+                toggle_status_id(app, vault, config, &id);
             }
         }
         CommandAction::Archive => {
             if let Some(id) = app.selected_id() {
-                archive_id(app, vault, config, &id)?;
+                archive_id(app, vault, config, &id);
             }
         }
         CommandAction::Delete => {
@@ -1427,66 +1395,72 @@ fn execute_command_action(
         }
         CommandAction::SetField(field) => start_field_input(app, field),
         CommandAction::Capture => open_capture_form(app, vault),
-        CommandAction::Reload => {
-            reload_rows(app, vault, config)?;
-            app.set_status("reloaded");
-        }
+        CommandAction::Reload => manual_reload(app, vault, config),
         CommandAction::Help => {
             app.mode = Mode::Help;
             app.dirty = true;
         }
         CommandAction::SwitchTab(tab) => {
-            switch_tab(app, tab, vault, config)?;
             app.clear_status();
+            switch_tab(app, tab, vault, config);
         }
     }
 
     Ok(())
 }
 
-fn edit_id(
+fn edit_id(app: &mut App, terminal: &mut Term, vault: &Path, config: &Config, id: &str) {
+    let result = actions::edit(terminal, &mut app.writer, id);
+    finish_write(app, vault, config, id, "edit", result);
+}
+
+fn toggle_status_id(app: &mut App, vault: &Path, config: &Config, id: &str) {
+    let result = actions::toggle_status(&mut app.writer, id);
+    finish_write(app, vault, config, id, "toggle", result);
+}
+
+fn archive_id(app: &mut App, vault: &Path, config: &Config, id: &str) {
+    let result = actions::archive(&mut app.writer, id);
+    finish_write(app, vault, config, id, "archive", result);
+}
+
+/// Finish any action that saved a fragment. On success: drop cached copies,
+/// reload the list, keep `id` selected if it's still listed, and show `msg`.
+/// On failure: show "<what> failed: <error>". Never propagates an error.
+fn finish_write(
     app: &mut App,
-    terminal: &mut Term,
     vault: &Path,
     config: &Config,
     id: &str,
-) -> Result<()> {
-    match actions::edit(terminal, &mut app.writer, id) {
-        Ok(msg) => {
-            app.cache.invalidate(id);
-            app.search.mark_stale();
-            reload_rows(app, vault, config)?;
+    what: &str,
+    result: Result<String>,
+) {
+    let msg = match result {
+        Ok(msg) => msg,
+        Err(e) => {
+            app.set_status(format!("{} failed: {}", what, e));
+            return;
+        }
+    };
+    app.cache.invalidate(id);
+    app.search.mark_stale();
+    match reload_rows(app, vault, config) {
+        Ok(()) => {
+            select_row_by_id(app, id);
             app.set_status(msg);
         }
-        Err(e) => app.set_status(format!("edit failed: {}", e)),
+        Err(e) => app.set_status(format!("{}, but reload failed: {}", msg, e)),
     }
-    Ok(())
 }
 
-fn toggle_status_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> Result<()> {
-    match actions::toggle_status(&mut app.writer, id) {
-        Ok(msg) => {
-            app.cache.invalidate(id);
-            app.search.mark_stale();
-            reload_rows(app, vault, config)?;
-            app.set_status(msg);
-        }
-        Err(e) => app.set_status(format!("toggle failed: {}", e)),
+/// `r`: re-read everything from disk, including fragments edited elsewhere.
+fn manual_reload(app: &mut App, vault: &Path, config: &Config) {
+    app.cache.clear();
+    app.search.mark_stale();
+    match reload_rows(app, vault, config) {
+        Ok(()) => app.set_status("reloaded"),
+        Err(e) => app.set_status(format!("reload failed: {}", e)),
     }
-    Ok(())
-}
-
-fn archive_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> Result<()> {
-    match actions::archive(&mut app.writer, id) {
-        Ok(msg) => {
-            app.cache.invalidate(id);
-            app.search.mark_stale();
-            reload_rows(app, vault, config)?;
-            app.set_status(msg);
-        }
-        Err(e) => app.set_status(format!("archive failed: {}", e)),
-    }
-    Ok(())
 }
 
 fn yank_id(app: &mut App, id: &str) {
@@ -1582,18 +1556,8 @@ fn invoke_actionable(
     };
     match (kind, &item.kind) {
         (OverlayKind::ToggleCheckbox, ActionKind::Checkbox { .. }) => {
-            match actions::toggle_checkbox(&mut app.writer, &id, item.source_range.clone()) {
-                Ok(msg) => {
-                    app.cache.invalidate(&id);
-                    app.search.mark_stale();
-                    if let Err(e) = reload_rows(app, vault, config) {
-                        app.set_status(format!("toggle ok but reload failed: {}", e));
-                        return;
-                    }
-                    app.set_status(msg);
-                }
-                Err(e) => app.set_status(format!("toggle failed: {}", e)),
-            }
+            let result = actions::toggle_checkbox(&mut app.writer, &id, item.source_range.clone());
+            finish_write(app, vault, config, &id, "toggle", result);
         }
         (OverlayKind::FollowLink, ActionKind::WikiLink { target, .. }) => {
             follow_link_action(app, vault, config, target);
@@ -1674,7 +1638,7 @@ fn jump_to_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> Result<
         return Ok(());
     }
     if app.tab != Tab::List {
-        switch_tab(app, Tab::List, vault, config)?;
+        switch_tab(app, Tab::List, vault, config);
     }
     if app.rows.iter().any(|row| row.id == id) {
         select_row_by_id(app, id);
@@ -1731,17 +1695,20 @@ fn handle_help(app: &mut App, key: KeyEvent) -> Result<bool> {
     Ok(true)
 }
 
-fn switch_tab(app: &mut App, tab: Tab, vault: &Path, config: &Config) -> Result<()> {
+fn switch_tab(app: &mut App, tab: Tab, vault: &Path, config: &Config) {
     if app.tab == tab {
-        return Ok(());
+        return;
     }
 
     app.save_tab_state();
     app.tab = tab;
-    reload_rows(app, vault, config)?;
+    if let Err(e) = reload_rows(app, vault, config) {
+        // Don't leave the previous tab's rows under the new tab's heading.
+        app.rows.clear();
+        app.set_status(format!("could not load tab: {}", e));
+    }
     app.restore_tab_state();
     app.dirty = true;
-    Ok(())
 }
 
 fn reload_rows(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
@@ -2062,5 +2029,90 @@ mod tests {
             .unwrap();
         assert!(!intent.valid);
         assert!(intent.detail.as_deref().unwrap().contains("Allowed values"));
+    }
+
+    fn test_app(vault: &Path) -> App {
+        let writer = crate::hooks::writer(vault, parc_core::hook::HookStderr::Capture);
+        App::new(Vec::new(), writer)
+    }
+
+    fn status_text(app: &App) -> &str {
+        match &app.status {
+            Status::Active { text, .. } => text,
+            Status::Idle => "",
+        }
+    }
+
+    /// Make every index read fail, as a corrupted or foreign index.db would.
+    fn break_index(vault: &Path) {
+        std::fs::write(vault.join("index.db"), b"definitely not sqlite").unwrap();
+    }
+
+    #[test]
+    fn finish_write_reports_failed_action() {
+        let (_tmp, vault) = test_vault();
+        let config = parc_core::config::load_config(&vault).unwrap();
+        let mut app = test_app(&vault);
+
+        finish_write(
+            &mut app,
+            &vault,
+            &config,
+            "ID",
+            "edit",
+            Err(anyhow::anyhow!("boom")),
+        );
+
+        assert_eq!(status_text(&app), "edit failed: boom");
+    }
+
+    #[test]
+    fn finish_write_survives_failed_reload() {
+        let (_tmp, vault) = test_vault();
+        let config = parc_core::config::load_config(&vault).unwrap();
+        let mut app = test_app(&vault);
+        break_index(&vault);
+
+        finish_write(
+            &mut app,
+            &vault,
+            &config,
+            "ID",
+            "edit",
+            Ok("edited ID".into()),
+        );
+
+        assert!(
+            status_text(&app).starts_with("edited ID, but reload failed:"),
+            "{}",
+            status_text(&app)
+        );
+    }
+
+    #[test]
+    fn switch_tab_survives_failed_load() {
+        let (_tmp, vault) = test_vault();
+        let config = parc_core::config::load_config(&vault).unwrap();
+        let mut app = test_app(&vault);
+        app.rows = vec![row("note", "From Today", None)];
+        break_index(&vault);
+
+        switch_tab(&mut app, Tab::List, &vault, &config);
+
+        assert_eq!(app.tab, Tab::List);
+        assert!(app.rows.is_empty(), "old tab's rows must not linger");
+        assert!(status_text(&app).starts_with("could not load tab:"));
+    }
+
+    #[test]
+    fn manual_reload_reports_failure() {
+        let (_tmp, vault) = test_vault();
+        let config = parc_core::config::load_config(&vault).unwrap();
+        let mut app = test_app(&vault);
+        break_index(&vault);
+
+        manual_reload(&mut app, &vault, &config);
+
+        assert!(status_text(&app).starts_with("reload failed:"));
     }
 }

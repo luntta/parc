@@ -38,4 +38,9 @@ impl FragmentCache {
             self.order.retain(|x| x != id);
         }
     }
+
+    pub(super) fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
 }
