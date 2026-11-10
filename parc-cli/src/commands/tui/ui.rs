@@ -323,6 +323,10 @@ fn draw_overlay_labels(
         .add_modifier(Modifier::BOLD);
 
     for (label, item_idx) in &state.labels {
+        // Once a first letter is typed, only labels it leads to stay up.
+        if !label.starts_with(&state.typed) {
+            continue;
+        }
         let Some(item) = items.get(*item_idx) else {
             continue;
         };

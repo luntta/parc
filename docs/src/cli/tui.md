@@ -31,7 +31,7 @@ A persistent menu strip across the top selects between six tabs. Below it sits a
 
 The detail pane renders the selected fragment's body as styled Markdown — headings, lists, blockquotes, code, inline code, bold/italic, links, and `[[id]]` wiki-links are highlighted. A scrollbar appears when the body overflows the pane. When the fragment has incoming links, a `## Backlinks` section is appended automatically.
 
-Two in-detail actions use a vimium-style overlay: `f` follows a `[[wiki-link]]` and `x` toggles a `[ ]` / `[x]` checkbox. Each visible target gets a letter label; press the letter to act, or `Esc` to cancel. With only one target in view the action runs immediately. After following a link, `Ctrl-O` jumps back through the navigation stack and `Ctrl-I` jumps forward.
+Two in-detail actions use a vimium-style overlay: `f` follows a `[[wiki-link]]` and `x` toggles a `[ ]` / `[x]` checkbox. Each visible target gets a letter label; press the letter to act, or `Esc` to cancel. With more than 26 targets in view, the lower ones get two-letter labels (`za`, `zb`, …): the first letter narrows the badges and `Backspace` undoes it. With only one target in view the action runs immediately. After following a link, `Ctrl-O` jumps back through the navigation stack and `Ctrl-I` jumps forward.
 
 The TUI watches the vault while it's open. Changes made elsewhere (a `parc` command in another terminal, an agent logging to the vault, `git pull`, an editor saving a fragment file) show up within a couple of seconds, with "updated from disk" in the status line. It holds off while a prompt, form or overlay is open and catches up when you close it. Errors never close the TUI; they appear in the status line.
 

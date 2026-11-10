@@ -830,13 +830,16 @@ fn open_overlay(app: &mut App, kind: OverlayKind, vault: &Path, config: &Config)
         return;
     }
 
-    let labels: Vec<(char, usize)> = visible
+    let labels = overlay_labels(visible.len())
         .into_iter()
-        .zip(LABEL_ALPHABET.chars())
-        .map(|(idx, ch)| (ch, idx))
+        .zip(visible)
         .collect();
 
-    app.mode = Mode::Overlay(OverlayState { kind, labels });
+    app.mode = Mode::Overlay(OverlayState {
+        kind,
+        labels,
+        typed: String::new(),
+    });
     app.dirty = true;
 }
 
@@ -854,20 +857,34 @@ fn handle_overlay(
             app.mode = Mode::Normal;
             app.set_status("cancelled");
         }
+        KeyCode::Backspace => {
+            let mut state = state;
+            state.typed.pop();
+            app.mode = Mode::Overlay(state);
+            app.dirty = true;
+        }
         KeyCode::Char(ch) => {
-            let target = state
+            let mut state = state;
+            let typed = format!("{}{}", state.typed, ch.to_ascii_lowercase());
+            let exact = state
                 .labels
                 .iter()
-                .find(|(label, _)| *label == ch.to_ascii_lowercase())
+                .find(|(label, _)| *label == typed)
                 .map(|(_, idx)| *idx);
-            match target {
-                Some(idx) => {
-                    app.mode = Mode::Normal;
-                    invoke_actionable(app, state.kind, idx, vault, config);
+            if let Some(idx) = exact {
+                app.mode = Mode::Normal;
+                invoke_actionable(app, state.kind, idx, vault, config);
+            } else {
+                // Keep a key that leads somewhere; ignore one that doesn't.
+                if state
+                    .labels
+                    .iter()
+                    .any(|(label, _)| label.starts_with(&typed))
+                {
+                    state.typed = typed;
+                    app.dirty = true;
                 }
-                None => {
-                    app.mode = Mode::Overlay(state);
-                }
+                app.mode = Mode::Overlay(state);
             }
         }
         _ => {
@@ -991,6 +1008,30 @@ fn short_id(id: &str) -> &str {
 }
 
 const LABEL_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
+/// Two-letter labels cover up to 26 × 26 targets.
+const MAX_LABELS: usize = 26 * 26;
+
+/// Prefix-free overlay labels for `n` targets, as short as possible. Single
+/// letters while they last; beyond 26, just enough trailing letters become
+/// prefixes for two-letter labels, so 27 targets get `a`..`y`, `za`, `zb`.
+/// Targets nearest the top keep the one-key labels.
+fn overlay_labels(n: usize) -> Vec<String> {
+    let alphabet: Vec<char> = LABEL_ALPHABET.chars().collect();
+    let k = alphabet.len();
+    let n = n.min(MAX_LABELS);
+    if n <= k {
+        return alphabet[..n].iter().map(char::to_string).collect();
+    }
+    // With p prefix letters there are (k - p) singles and p * k doubles.
+    let prefixes = (1..=k).find(|&p| (k - p) + p * k >= n).unwrap_or(k);
+    let singles = alphabet[..k - prefixes].iter().map(char::to_string);
+    let doubles = alphabet[k - prefixes..].iter().flat_map(|first| {
+        alphabet
+            .iter()
+            .map(move |second| format!("{}{}", first, second))
+    });
+    singles.chain(doubles).take(n).collect()
+}
 
 /// Returns indices into `items` that (a) match the overlay kind and
 /// (b) sit in the currently visible viewport.
@@ -1016,7 +1057,7 @@ fn visible_actionables(
             line >= top && line < bottom
         })
         .map(|(idx, _)| idx)
-        .take(LABEL_ALPHABET.len())
+        .take(MAX_LABELS)
         .collect()
 }
 
@@ -1177,10 +1218,74 @@ mod tests {
     }
 
     #[test]
-    fn visible_filter_caps_at_alphabet_size() {
+    fn visible_filter_keeps_more_than_26() {
         let items: Vec<Actionable> = (0..40).map(link).collect();
         let visible = visible_actionables(&items, 0, 0, 100, OverlayKind::FollowLink);
-        assert_eq!(visible.len(), LABEL_ALPHABET.len());
+        assert_eq!(visible.len(), 40);
+
+        let items: Vec<Actionable> = (0..1000).map(link).collect();
+        let visible = visible_actionables(&items, 0, 0, 2000, OverlayKind::FollowLink);
+        assert_eq!(visible.len(), MAX_LABELS);
+    }
+
+    #[test]
+    fn overlay_labels_stay_short_and_prefix_free() {
+        assert_eq!(overlay_labels(3), vec!["a", "b", "c"]);
+        assert_eq!(overlay_labels(26).last().unwrap(), "z");
+
+        let labels = overlay_labels(27);
+        assert_eq!(labels[..25].concat(), "abcdefghijklmnopqrstuvwxy");
+        assert_eq!(labels[25..], ["za".to_string(), "zb".to_string()]);
+
+        for n in [0, 1, 26, 27, 51, 52, 100, 400, MAX_LABELS, MAX_LABELS + 5] {
+            let labels = overlay_labels(n);
+            assert_eq!(labels.len(), n.min(MAX_LABELS), "n = {}", n);
+            for (i, a) in labels.iter().enumerate() {
+                for (j, b) in labels.iter().enumerate() {
+                    assert!(i == j || !b.starts_with(a.as_str()), "{} prefixes {}", a, b);
+                }
+            }
+        }
+    }
+
+    fn key(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn overlay_accepts_two_letter_labels() {
+        let (_tmp, vault) = test_vault();
+        let config = parc_core::config::load_config(&vault).unwrap();
+        let mut app = test_app(&vault);
+        app.rows = vec![row("note", "page", None)];
+        app.select(Some(0));
+        app.detail_items = (0..30).map(link).collect();
+        let labels = overlay_labels(30).into_iter().zip(0..30).collect();
+        let state = OverlayState {
+            kind: OverlayKind::FollowLink,
+            labels,
+            typed: String::new(),
+        };
+
+        // 'z' is a prefix: wait for the second letter.
+        handle_overlay(&mut app, key('z'), state, &vault, &config).unwrap();
+        let Mode::Overlay(state) = app.mode.clone() else {
+            panic!("overlay closed after a prefix");
+        };
+        assert_eq!(state.typed, "z");
+
+        // A key that leads nowhere is ignored.
+        handle_overlay(&mut app, key('1'), state, &vault, &config).unwrap();
+        let Mode::Overlay(state) = app.mode.clone() else {
+            panic!("overlay closed on a dead key");
+        };
+        assert_eq!(state.typed, "z");
+
+        // 'zb' is the 27th target (index 26); following it fails because
+        // the test link points nowhere, which proves which one was invoked.
+        handle_overlay(&mut app, key('b'), state, &vault, &config).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(status_text(&app).contains("ID26"), "{}", status_text(&app));
     }
 
     #[test]

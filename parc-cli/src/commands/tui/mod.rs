@@ -42,12 +42,15 @@ pub(crate) enum Mode {
 }
 
 /// Vimium-style overlay over the detail pane: visible actionables get a
-/// single-letter label; the next keypress invokes the matching item.
+/// short label (one letter, or two when more than 26 are in view); typing a
+/// full label invokes that item.
 #[derive(Clone)]
 pub(crate) struct OverlayState {
     pub kind: OverlayKind,
-    /// (label-key, index into `App.detail_items`)
-    pub labels: Vec<(char, usize)>,
+    /// (label, index into `App.detail_items`). Labels are prefix-free.
+    pub labels: Vec<(String, usize)>,
+    /// Letters typed so far toward a two-letter label.
+    pub typed: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
