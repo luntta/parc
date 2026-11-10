@@ -355,6 +355,32 @@ pub(super) fn run_loop(
     Ok(())
 }
 
+/// Move the list selection or scroll the detail pane, whichever is focused.
+fn move_focused(app: &mut App, delta: i32) {
+    match app.focus {
+        Focus::List => app.move_list(delta),
+        Focus::Detail => app.scroll_detail(delta),
+    }
+}
+
+/// Jump to the top or bottom of the focused pane.
+fn jump_focused(app: &mut App, to_end: bool) {
+    match app.focus {
+        Focus::List => {
+            let target = match (app.rows.len(), to_end) {
+                (0, _) => None,
+                (_, false) => Some(0),
+                (len, true) => Some(len - 1),
+            };
+            app.select(target);
+        }
+        Focus::Detail => {
+            app.detail_scroll = if to_end { app.detail_max_scroll } else { 0 };
+            app.dirty = true;
+        }
+    }
+}
+
 /// Load the first screen and record the vault's on-disk state.
 fn start_app(vault: &Path, config: &Config, writer: Writer) -> Result<App> {
     // Make sure the index exists before stamping; otherwise creating it
@@ -454,51 +480,18 @@ fn handle_normal(
         (KeyCode::Char('o'), _) if ctrl => nav_back(app, vault, config)?,
         (KeyCode::Char('i'), _) if ctrl => nav_forward(app, vault, config)?,
 
-        (KeyCode::Down, _) => match app.focus {
-            Focus::List => app.move_list(1),
-            Focus::Detail => app.scroll_detail(1),
-        },
-        (KeyCode::Up, _) => match app.focus {
-            Focus::List => app.move_list(-1),
-            Focus::Detail => app.scroll_detail(-1),
-        },
-        (KeyCode::PageDown, _) => match app.focus {
-            Focus::List => app.move_list(PAGE_LINES as i32),
-            Focus::Detail => app.scroll_detail(PAGE_LINES as i32),
-        },
-        (KeyCode::PageUp, _) => match app.focus {
-            Focus::List => app.move_list(-(PAGE_LINES as i32)),
-            Focus::Detail => app.scroll_detail(-(PAGE_LINES as i32)),
-        },
-        (KeyCode::Char('d'), _) if ctrl => match app.focus {
-            Focus::List => app.move_list(HALF_PAGE_LINES as i32),
-            Focus::Detail => app.scroll_detail(HALF_PAGE_LINES as i32),
-        },
-        (KeyCode::Char('u'), _) if ctrl => match app.focus {
-            Focus::List => app.move_list(-(HALF_PAGE_LINES as i32)),
-            Focus::Detail => app.scroll_detail(-(HALF_PAGE_LINES as i32)),
-        },
-        (KeyCode::Home, _) => match app.focus {
-            Focus::List => app.select(if app.rows.is_empty() { None } else { Some(0) }),
-            Focus::Detail => {
-                app.detail_scroll = 0;
-                app.dirty = true;
-            }
-        },
-        (KeyCode::End, _) => match app.focus {
-            Focus::List => {
-                let last = app.rows.len().saturating_sub(1);
-                app.select(if app.rows.is_empty() {
-                    None
-                } else {
-                    Some(last)
-                });
-            }
-            Focus::Detail => {
-                app.detail_scroll = app.detail_max_scroll;
-                app.dirty = true;
-            }
-        },
+        (KeyCode::Down, _) => move_focused(app, 1),
+        (KeyCode::Char('j'), _) if plain => move_focused(app, 1),
+        (KeyCode::Up, _) => move_focused(app, -1),
+        (KeyCode::Char('k'), _) if plain => move_focused(app, -1),
+        (KeyCode::PageDown, _) => move_focused(app, PAGE_LINES as i32),
+        (KeyCode::PageUp, _) => move_focused(app, -(PAGE_LINES as i32)),
+        (KeyCode::Char('d'), _) if ctrl => move_focused(app, HALF_PAGE_LINES as i32),
+        (KeyCode::Char('u'), _) if ctrl => move_focused(app, -(HALF_PAGE_LINES as i32)),
+        (KeyCode::Home, _) => jump_focused(app, false),
+        (KeyCode::Char('g'), _) if plain => jump_focused(app, false),
+        // Terminals differ on whether `G` arrives with SHIFT set.
+        (KeyCode::End, _) | (KeyCode::Char('G'), _) => jump_focused(app, true),
 
         _ => {}
     }
@@ -2291,5 +2284,37 @@ mod tests {
         app.mode = Mode::Normal;
         refresh_if_changed(&mut app, &vault, &config);
         assert_eq!(app.rows.len(), 1);
+    }
+
+    #[test]
+    fn jump_and_move_follow_the_focused_pane() {
+        let (_tmp, vault) = test_vault();
+        let mut app = test_app(&vault);
+        app.rows = vec![
+            row("note", "a", None),
+            row("note", "b", None),
+            row("note", "c", None),
+        ];
+        app.select(Some(0));
+
+        jump_focused(&mut app, true);
+        assert_eq!(app.list_state.selected(), Some(2));
+        move_focused(&mut app, -1);
+        assert_eq!(app.list_state.selected(), Some(1));
+        jump_focused(&mut app, false);
+        assert_eq!(app.list_state.selected(), Some(0));
+
+        app.focus = Focus::Detail;
+        app.detail_max_scroll = 40;
+        jump_focused(&mut app, true);
+        assert_eq!(app.detail_scroll, 40);
+        assert_eq!(app.list_state.selected(), Some(0), "list untouched");
+        jump_focused(&mut app, false);
+        assert_eq!(app.detail_scroll, 0);
+
+        app.focus = Focus::List;
+        app.rows.clear();
+        jump_focused(&mut app, true);
+        assert_eq!(app.list_state.selected(), None);
     }
 }

@@ -925,10 +925,10 @@ fn footer_context(app: &App) -> String {
 fn footer_commands(focus: Focus) -> &'static str {
     match focus {
         Focus::List => {
-            "/ launcher  Ctrl-P commands  Tab tabs  S-tab detail  arrows move  c capture  e edit  ? help"
+            "/ launcher  Ctrl-P commands  Tab tabs  S-tab detail  j/k move  c capture  e edit  ? help"
         }
         Focus::Detail => {
-            "/ launcher  Ctrl-P commands  Tab tabs  S-tab list  arrows scroll  f follow  x toggle  e edit  ? help"
+            "/ launcher  Ctrl-P commands  Tab tabs  S-tab list  j/k scroll  f follow  x toggle  e edit  ? help"
         }
     }
 }
@@ -946,9 +946,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  Shift-Tab   toggle pane focus (list / detail)"),
         Line::from("  /           open universal launcher"),
         Line::from("  Ctrl-P      open launcher command-only"),
-        Line::from("  ↓ / ↑       move within focused pane"),
+        Line::from("  j / k, ↓ ↑  move within focused pane"),
         Line::from("  PgDn/PgUp   page within focused pane"),
-        Line::from("  Home / End  top / bottom of focused pane"),
+        Line::from("  g / G       top / bottom of focused pane (also Home / End)"),
         Line::from("  Ctrl-d/u    half-page scroll"),
         Line::from(""),
         Line::from("Actions on selected fragment"),

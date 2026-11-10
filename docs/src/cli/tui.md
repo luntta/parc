@@ -48,9 +48,9 @@ The TUI watches the vault while it's open. Changes made elsewhere (a `parc` comm
 | `Shift-Tab` | Toggle pane focus (list ↔ detail) |
 | `/` | Open the universal launcher |
 | `Ctrl-P` | Open the launcher command-only |
-| `↓` / `↑` | Move within the focused pane |
+| `j` / `k` or `↓` / `↑` | Move within the focused pane |
 | `PgDn` / `PgUp` | Page within the focused pane |
-| `Home` / `End` | Top / bottom of the focused pane |
+| `g` / `G` or `Home` / `End` | Top / bottom of the focused pane |
 | `Ctrl-d` / `Ctrl-u` | Half-page scroll within the focused pane |
 | `Ctrl-o` / `Ctrl-i` | Navigate back / forward through followed links |
 | `r` | Reload the current tab (re-reads every fragment from disk) |
