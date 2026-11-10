@@ -9,19 +9,19 @@ Library-first design: `parc-core` (library) + thin consumer binaries.
 ```
 parc/
 ├── parc-core/       # Library crate — no terminal I/O, returns Result<T, ParcError>
-├── parc-cli/        # CLI binary — handles terminal I/O, $EDITOR, formatting
-├── parc-server/     # JSON-RPC server binary (stdio / Unix socket)
-└── parc-gui/        # Tauri desktop app (TypeScript + web components)
+├── parc-cli/        # CLI binary + terminal UI (`parc tui`) — terminal I/O, $EDITOR, formatting
+└── parc-server/     # JSON-RPC server binary (stdio / Unix socket)
 ```
 
 Rules for `parc-core`:
 - No `println!`, no TTY assumptions
 - All operations return structured `Result<T, ParcError>`
 - Takes `VaultPath` as input, never assumes a location
+- Every fragment write goes through `ops::Writer` (validate → pre-hooks → write + history → index → post-hooks). Frontends never call `create_fragment`/`write_fragment` + index themselves, or hooks drift between CLI, TUI and server
 
 ## Key Dependencies
 
-Rust. Key crates: `clap` (derive), `serde`/`serde_yaml`/`serde_json`, `rusqlite` (bundled, FTS5), `ulid`, `comrak`, `termimad`, `chrono`, `thiserror`/`anyhow`, `similar` (diffing), `regex`, `toml` (plugin manifests), `wasmtime` (optional, feature-gated `wasm-plugins`), `tokio` (CLI + server), `assert_cmd`/`tempfile` (testing).
+Rust. Key crates: `clap` (derive), `ratatui`/`crossterm` (TUI), `serde`/`serde_yaml_ng`/`serde_json`, `rusqlite` (bundled, FTS5), `ulid`, `comrak`, `termimad`, `chrono`, `thiserror`/`anyhow`, `similar` (diffing), `regex`, `toml` (plugin manifests), `wasmtime` (optional, feature-gated `wasm-plugins`), `tokio` (CLI + server), `assert_cmd`/`tempfile` (testing).
 
 ## Core Concepts
 

@@ -2,9 +2,8 @@
 **/*.rs.bk
 /parc-core/tests/fixtures/plugins/echo-plugin/Cargo.lock
 
-# Frontend
+# Node (docs site)
 node_modules/
-parc-gui/ui/dist/
 
 # Docs site
 docs/_site/
