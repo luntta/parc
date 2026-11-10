@@ -508,6 +508,9 @@ impl LauncherPopup {
 
 pub fn run(vault: &Path) -> Result<()> {
     let config = load_config(vault)?;
+    // Built before the alternate screen so plugin-load warnings stay readable.
+    // Hook stderr is captured so it can't draw over the TUI.
+    let writer = crate::hooks::writer(vault, parc_core::hook::HookStderr::Capture);
     let mut stdout = io::stdout();
 
     terminal::enable_raw_mode()?;
@@ -515,7 +518,7 @@ pub fn run(vault: &Path) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = app::run_loop(&mut terminal, vault, &config);
+    let result = app::run_loop(&mut terminal, vault, &config, writer);
 
     execute!(terminal.backend_mut(), Show, LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;

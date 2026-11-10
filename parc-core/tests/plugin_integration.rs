@@ -169,8 +169,9 @@ fn test_plugin_manager_dispatch_post_event() {
         body: "test body".into(),
     };
 
-    // Should not panic — post events don't return errors
-    manager.dispatch_post_event(parc_core::hook::HookEvent::PostCreate, &fragment);
+    // Post events never fail the operation; problems come back as warnings.
+    let warnings = manager.dispatch_post_event(parc_core::hook::HookEvent::PostCreate, &fragment);
+    assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
 }
 
 #[test]

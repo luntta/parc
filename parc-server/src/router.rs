@@ -64,7 +64,15 @@ pub fn extract_params<T: DeserializeOwned>(params: Value) -> Result<T, RpcError>
 }
 
 pub fn map_parc_error(e: parc_core::ParcError) -> RpcError {
-    RpcError::internal_error(&e.to_string())
+    use parc_core::ParcError;
+    match e {
+        // The request was well-formed but its content was rejected (schema
+        // validation, unknown type, or a pre-hook veto).
+        ParcError::ValidationError(_) | ParcError::SchemaNotFound(_) => {
+            RpcError::invalid_params(&e.to_string())
+        }
+        _ => RpcError::internal_error(&e.to_string()),
+    }
 }
 
 #[cfg(test)]

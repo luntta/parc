@@ -352,19 +352,15 @@ pub fn write_fragment(vault: &Path, fragment: &Fragment) -> Result<(), ParcError
     Ok(())
 }
 
-/// Rewrite a fragment as another schema type while preserving its content.
-pub fn promote_fragment(
-    vault: &Path,
-    id_or_prefix: &str,
-    new_type: &str,
+/// Rewrite a fragment as another schema type while preserving its content:
+/// sets the type, applies `overrides`, fills in schema defaults for missing
+/// fields, and validates the result. Does not touch disk; save the result with
+/// [`crate::ops::Writer::update`].
+pub fn apply_promotion(
+    fragment: &mut Fragment,
+    schema: &Schema,
     overrides: BTreeMap<String, Value>,
-) -> Result<Fragment, ParcError> {
-    let schemas = crate::schema::load_schemas(vault)?;
-    let schema = schemas
-        .resolve(new_type)
-        .ok_or_else(|| ParcError::SchemaNotFound(new_type.to_string()))?;
-
-    let mut fragment = read_fragment(vault, id_or_prefix)?;
+) -> Result<(), ParcError> {
     fragment.fragment_type = schema.name.clone();
 
     for (key, value) in overrides {
@@ -381,11 +377,7 @@ pub fn promote_fragment(
         }
     }
 
-    validate_fragment(&fragment, schema)?;
-    fragment.updated_at = Utc::now();
-    write_fragment(vault, &fragment)?;
-
-    Ok(fragment)
+    validate_fragment(fragment, schema)
 }
 
 /// Soft-delete: move fragment file to trash/.
@@ -626,40 +618,58 @@ mod tests {
     }
 
     #[test]
-    fn test_promote_fragment_preserves_content_and_applies_defaults() {
+    fn test_apply_promotion_preserves_content_and_applies_defaults() {
         let tmp = tempfile::TempDir::new().unwrap();
         let vault = tmp.path().join(".parc");
         crate::vault::init_vault(&vault).unwrap();
         let config = crate::config::load_config(&vault).unwrap();
         let schemas = crate::schema::load_schemas(&vault).unwrap();
         let note_schema = schemas.resolve("note").unwrap();
+        let todo_schema = schemas.resolve("todo").unwrap();
 
         let mut fragment = new_fragment("note", "Capture", note_schema, &config);
         fragment.tags = vec!["backend".to_string()];
         fragment.links = vec!["01JQ7V3XKP5GQZ2N8R6T1WBMVH".to_string()];
         fragment.body = "Look into connection pooling".to_string();
-        create_fragment(&vault, &fragment).unwrap();
 
         let mut overrides = BTreeMap::new();
         overrides.insert("priority".to_string(), Value::String("high".to_string()));
 
-        let promoted = promote_fragment(&vault, &fragment.id[..8], "todo", overrides).unwrap();
+        apply_promotion(&mut fragment, todo_schema, overrides).unwrap();
 
-        assert_eq!(promoted.fragment_type, "todo");
-        assert_eq!(promoted.title, "Capture");
-        assert_eq!(promoted.tags, vec!["backend"]);
-        assert_eq!(promoted.links, vec!["01JQ7V3XKP5GQZ2N8R6T1WBMVH"]);
-        assert_eq!(promoted.body.trim(), "Look into connection pooling");
+        assert_eq!(fragment.fragment_type, "todo");
+        assert_eq!(fragment.title, "Capture");
+        assert_eq!(fragment.tags, vec!["backend"]);
+        assert_eq!(fragment.links, vec!["01JQ7V3XKP5GQZ2N8R6T1WBMVH"]);
+        assert_eq!(fragment.body.trim(), "Look into connection pooling");
         assert_eq!(
-            promoted.extra_fields.get("status"),
+            fragment.extra_fields.get("status"),
             Some(&Value::String("open".to_string()))
         );
         assert_eq!(
-            promoted.extra_fields.get("priority"),
+            fragment.extra_fields.get("priority"),
             Some(&Value::String("high".to_string()))
         );
+    }
 
-        let read_back = read_fragment(&vault, &fragment.id).unwrap();
-        assert_eq!(read_back.fragment_type, "todo");
+    #[test]
+    fn test_apply_promotion_rejects_invalid_override() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+        let config = crate::config::load_config(&vault).unwrap();
+        let schemas = crate::schema::load_schemas(&vault).unwrap();
+
+        let mut fragment =
+            new_fragment("note", "Capture", schemas.resolve("note").unwrap(), &config);
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "priority".to_string(),
+            Value::String("urgent!!".to_string()),
+        );
+
+        assert!(
+            apply_promotion(&mut fragment, schemas.resolve("todo").unwrap(), overrides).is_err()
+        );
     }
 }

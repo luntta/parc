@@ -77,6 +77,8 @@ Plugins have no filesystem access beyond what parc gives them through the `parc_
 
 A plugin returning an error from a `pre-*` hook aborts the operation and propagates the error to the user.
 
+Hooks fire for every write, whichever way it arrives: `parc` commands (`new`, `edit`, `set`, `archive`, `promote`, `link`/`unlink`, `delete`), actions in `parc tui` (including checkbox toggles), and the JSON-RPC server. Linking two fragments is an update to both, so `pre-update`/`post-update` run once for each side that changed.
+
 ## Extending the CLI
 
 A plugin that declares `extend_cli = ["weekly-review"]` exposes itself as `parc weekly-review`. parc dispatches the subcommand and any arguments to the plugin's `cli_dispatch(args: Vec<String>)` function.

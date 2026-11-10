@@ -7,6 +7,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use parc_core::config::Config;
 use parc_core::date;
 use parc_core::index;
+use parc_core::ops::Writer;
 use parc_core::schema::{load_schemas, FieldType};
 use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::ListState;
@@ -131,10 +132,12 @@ pub(super) struct App {
     /// message on every redraw.
     index_open_failed: bool,
     tab_states: [TabViewState; TAB_COUNT],
+    /// Saves fragments (hooks, history, index) the same way the CLI does.
+    pub writer: Writer,
 }
 
 impl App {
-    fn new(rows: Vec<super::Row>) -> Self {
+    fn new(rows: Vec<super::Row>, writer: Writer) -> Self {
         let mut list_state = ListState::default();
         if !rows.is_empty() {
             list_state.select(Some(0));
@@ -160,6 +163,7 @@ impl App {
             index_db: None,
             index_open_failed: false,
             tab_states: std::array::from_fn(|_| TabViewState::default()),
+            writer,
         }
     }
 
@@ -269,9 +273,14 @@ impl App {
     }
 }
 
-pub(super) fn run_loop(terminal: &mut Term, vault: &Path, config: &Config) -> Result<()> {
+pub(super) fn run_loop(
+    terminal: &mut Term,
+    vault: &Path,
+    config: &Config,
+    writer: Writer,
+) -> Result<()> {
     let initial_rows = data::load_rows(vault, Tab::Today, config)?;
-    let mut app = App::new(initial_rows);
+    let mut app = App::new(initial_rows, writer);
 
     loop {
         clamp_selection(&mut app);
@@ -597,7 +606,7 @@ fn handle_confirm(
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
             match action {
-                ConfirmAction::Delete { id } => match actions::delete(vault, &id) {
+                ConfirmAction::Delete { id } => match actions::delete(&mut app.writer, &id) {
                     Ok(msg) => {
                         app.cache.invalidate(&id);
                         app.search.mark_stale();
@@ -642,7 +651,7 @@ fn handle_input(
                         app.mode = Mode::Normal;
                         app.set_status("cancelled");
                     } else {
-                        match actions::promote(vault, &id, &trimmed) {
+                        match actions::promote(&mut app.writer, &id, &trimmed) {
                             Ok(msg) => {
                                 app.cache.invalidate(&id);
                                 app.search.mark_stale();
@@ -654,7 +663,7 @@ fn handle_input(
                     }
                 }
                 InputAction::SetField { id, field } => {
-                    match actions::set_field(vault, &id, field, &trimmed) {
+                    match actions::set_field(&mut app.writer, &id, field, &trimmed) {
                         Ok(msg) => {
                             app.cache.invalidate(&id);
                             app.search.mark_stale();
@@ -761,7 +770,7 @@ fn submit_capture(app: &mut App, form: &CaptureForm, vault: &Path, config: &Conf
         priority: form.priority.clone(),
         assignee: form.assignee.clone(),
     };
-    let (id, msg) = actions::capture(vault, input)?;
+    let (id, msg) = actions::capture(&mut app.writer, input)?;
     app.mode = Mode::Normal;
     app.search.mark_stale();
     reload_rows(app, vault, config)?;
@@ -1287,7 +1296,7 @@ fn execute_intent_action(
                 return Ok(());
             };
 
-            match actions::set_field(vault, &id, field, &value) {
+            match actions::set_field(&mut app.writer, &id, field, &value) {
                 Ok(msg) => {
                     app.cache.invalidate(&id);
                     app.search.mark_stale();
@@ -1336,7 +1345,7 @@ fn apply_tag_intent(
     update(&mut tags);
     let value = tags.join(" ");
 
-    match actions::set_field(vault, &id, QuickField::Tags, &value) {
+    match actions::set_field(&mut app.writer, &id, QuickField::Tags, &value) {
         Ok(msg) => {
             app.cache.invalidate(&id);
             app.search.mark_stale();
@@ -1442,7 +1451,7 @@ fn edit_id(
     config: &Config,
     id: &str,
 ) -> Result<()> {
-    match actions::edit(terminal, vault, id) {
+    match actions::edit(terminal, &mut app.writer, id) {
         Ok(msg) => {
             app.cache.invalidate(id);
             app.search.mark_stale();
@@ -1455,7 +1464,7 @@ fn edit_id(
 }
 
 fn toggle_status_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> Result<()> {
-    match actions::toggle_status(vault, id) {
+    match actions::toggle_status(&mut app.writer, id) {
         Ok(msg) => {
             app.cache.invalidate(id);
             app.search.mark_stale();
@@ -1468,7 +1477,7 @@ fn toggle_status_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> R
 }
 
 fn archive_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> Result<()> {
-    match actions::archive(vault, id) {
+    match actions::archive(&mut app.writer, id) {
         Ok(msg) => {
             app.cache.invalidate(id);
             app.search.mark_stale();
@@ -1573,7 +1582,7 @@ fn invoke_actionable(
     };
     match (kind, &item.kind) {
         (OverlayKind::ToggleCheckbox, ActionKind::Checkbox { .. }) => {
-            match actions::toggle_checkbox(vault, &id, item.source_range.clone()) {
+            match actions::toggle_checkbox(&mut app.writer, &id, item.source_range.clone()) {
                 Ok(msg) => {
                     app.cache.invalidate(&id);
                     app.search.mark_stale();

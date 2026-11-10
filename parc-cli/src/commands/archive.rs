@@ -1,28 +1,14 @@
 use std::path::Path;
 
 use anyhow::Result;
-use chrono::Utc;
-use parc_core::fragment::{read_fragment, write_fragment};
-use parc_core::index;
-use serde_json::Value;
+
+use crate::hooks::{cli_writer, report_warnings};
 
 pub fn run(vault: &Path, id: &str, undo: bool, json: bool) -> Result<()> {
-    let mut fragment = read_fragment(vault, id)?;
-    let full_id = fragment.id.clone();
-
-    if undo {
-        fragment.extra_fields.remove("archived");
-    } else {
-        fragment
-            .extra_fields
-            .insert("archived".to_string(), Value::Bool(true));
-    }
-
-    fragment.updated_at = Utc::now();
-    write_fragment(vault, &fragment)?;
-
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &fragment, vault)?;
+    let mut writer = cli_writer(vault);
+    let fragment = writer.set_archived(id, !undo)?;
+    report_warnings(&mut writer);
+    let full_id = fragment.id;
 
     if json {
         let json_val = serde_json::json!({

@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
-use chrono::Utc;
 use parc_core::fragment;
-use parc_core::index;
+use parc_core::schema::load_schemas;
+use parc_core::ParcError;
 use serde_json::Value;
+
+use crate::hooks::{cli_writer, report_warnings};
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -36,29 +38,27 @@ pub fn run(
         overrides.insert("assignee".to_string(), Value::String(a));
     }
 
-    let mut promoted = fragment::promote_fragment(vault, id, new_type, overrides)?;
+    let schemas = load_schemas(vault)?;
+    let schema = schemas
+        .resolve(new_type)
+        .ok_or_else(|| ParcError::SchemaNotFound(new_type.to_string()))?;
+    let mut promoted = fragment::read_fragment(vault, id)?;
+    fragment::apply_promotion(&mut promoted, schema, overrides)?;
 
-    let mut changed = false;
     for tag in tags {
         if !promoted.tags.contains(&tag) {
             promoted.tags.push(tag);
-            changed = true;
         }
     }
     for link in links {
         if !promoted.links.contains(&link) {
             promoted.links.push(link);
-            changed = true;
         }
     }
 
-    if changed {
-        promoted.updated_at = Utc::now();
-        fragment::write_fragment(vault, &promoted)?;
-    }
-
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &promoted, vault)?;
+    let mut writer = cli_writer(vault);
+    let promoted = writer.update(promoted)?;
+    report_warnings(&mut writer);
 
     if json {
         let json_val = serde_json::json!({

@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -11,7 +10,7 @@ use parc_core::schema::load_schemas;
 use parc_core::search::{self, Filter, SearchQuery, SortOrder};
 
 use crate::jsonrpc::RpcError;
-use crate::methods::validation::validate_fragment_for_write;
+use crate::methods::write;
 use crate::router::{extract_params, map_parc_error};
 
 fn fragment_to_json(f: &Fragment) -> Value {
@@ -100,14 +99,9 @@ pub fn create(vault: &Path, params: Value) -> Result<Value, RpcError> {
             .insert("assignee".to_string(), Value::String(assignee));
     }
 
-    fragment::validate_fragment(&frag, schema)
-        .map_err(|e| RpcError::invalid_params(&e.to_string()))?;
-    fragment::create_fragment(vault, &frag).map_err(map_parc_error)?;
-
-    let conn = index::open_index(vault).map_err(map_parc_error)?;
-    index::index_fragment_auto(&conn, &frag, vault).map_err(map_parc_error)?;
-
-    Ok(fragment_to_json(&frag))
+    let mut writer = write::writer(vault);
+    let frag = writer.create(frag).map_err(map_parc_error)?;
+    Ok(write::with_warnings(fragment_to_json(&frag), &mut writer))
 }
 
 #[derive(Deserialize)]
@@ -169,14 +163,9 @@ pub fn update(vault: &Path, params: Value) -> Result<Value, RpcError> {
             .insert("assignee".to_string(), Value::String(assignee));
     }
 
-    frag.updated_at = Utc::now();
-    validate_fragment_for_write(vault, &frag)?;
-    fragment::write_fragment(vault, &frag).map_err(map_parc_error)?;
-
-    let conn = index::open_index(vault).map_err(map_parc_error)?;
-    index::index_fragment_auto(&conn, &frag, vault).map_err(map_parc_error)?;
-
-    Ok(fragment_to_json(&frag))
+    let mut writer = write::writer(vault);
+    let frag = writer.update(frag).map_err(map_parc_error)?;
+    Ok(write::with_warnings(fragment_to_json(&frag), &mut writer))
 }
 
 #[derive(Deserialize)]
@@ -186,15 +175,13 @@ pub struct DeleteParams {
 
 pub fn delete(vault: &Path, params: Value) -> Result<Value, RpcError> {
     let p: DeleteParams = extract_params(params)?;
-    let full_id = fragment::delete_fragment(vault, &p.id).map_err(map_parc_error)?;
-
-    let conn = index::open_index(vault).map_err(map_parc_error)?;
-    index::remove_from_index(&conn, &full_id).map_err(map_parc_error)?;
-
-    Ok(serde_json::json!({
-        "id": full_id,
+    let mut writer = write::writer(vault);
+    let deleted = writer.delete(&p.id).map_err(map_parc_error)?;
+    let result = serde_json::json!({
+        "id": deleted.id,
         "deleted": true,
-    }))
+    });
+    Ok(write::with_warnings(result, &mut writer))
 }
 
 #[derive(Deserialize)]

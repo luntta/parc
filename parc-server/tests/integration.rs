@@ -652,3 +652,70 @@ fn test_socket_is_owner_only() {
     let _ = child.wait();
     assert_eq!(mode, 0o600, "socket mode is {:o}, expected 0600", mode);
 }
+
+// ── Writes run vault hooks like the CLI does ─────────────────────────
+
+#[cfg(unix)]
+#[test]
+fn test_update_runs_hooks_and_reports_warnings() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut h = ServerHarness::new();
+    let resp = h.send_rpc(rpc(
+        1,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Hooked" }),
+    ));
+    let id = result_of(&resp)["id"].as_str().unwrap().to_string();
+
+    std::fs::write(h.vault_path.join("config.yml"), "hooks:\n  enabled: true\n").unwrap();
+    let hooks_dir = h.vault_path.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+    let marker = h.vault_path.join("pre-update-fired");
+    let pre = hooks_dir.join("pre-update");
+    std::fs::write(
+        &pre,
+        "#!/bin/sh\ntouch \"$(dirname \"$0\")/../pre-update-fired\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&pre, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let post = hooks_dir.join("post-update");
+    std::fs::write(&post, "#!/bin/sh\necho 'post broke' >&2\nexit 2\n").unwrap();
+    std::fs::set_permissions(&post, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let resp = h.send_rpc(rpc(
+        2,
+        "fragment.update",
+        serde_json::json!({ "id": &id, "title": "Hooked again" }),
+    ));
+    let result = result_of(&resp);
+
+    assert_eq!(result["title"], "Hooked again");
+    assert!(marker.exists(), "pre-update hook did not run");
+    let warnings = result["warnings"].as_array().expect("warnings array");
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].as_str().unwrap().contains("post broke"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_pre_hook_veto_is_invalid_params() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut h = ServerHarness::new();
+    std::fs::write(h.vault_path.join("config.yml"), "hooks:\n  enabled: true\n").unwrap();
+    let hooks_dir = h.vault_path.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+    let pre = hooks_dir.join("pre-create");
+    std::fs::write(&pre, "#!/bin/sh\necho 'no new notes' >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&pre, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let resp = h.send_rpc(rpc(
+        1,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Blocked" }),
+    ));
+    let err = error_of(&resp);
+    assert_eq!(err["code"], -32602);
+    assert!(err["message"].as_str().unwrap().contains("no new notes"));
+}

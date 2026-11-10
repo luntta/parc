@@ -3,13 +3,11 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use parc_core::config::{get_editor, load_config};
 use parc_core::fragment::{self, parse_fragment, serialize_fragment, validate_fragment};
-use parc_core::hook::{self, HookEvent};
-use parc_core::index;
 use parc_core::schema::{load_schemas, load_template};
 use parc_core::secure_fs;
 use serde_json::Value;
 
-use crate::hooks::CliHookRunner;
+use crate::hooks::{cli_writer, report_warnings};
 use crate::render::sanitize_terminal_text;
 
 #[allow(clippy::too_many_arguments)]
@@ -78,92 +76,24 @@ pub fn run(
     // Decide whether to open editor (--body skips editor)
     let should_open_editor = body.is_none() && (!schema.editor_skip || title.is_none());
 
-    let runner = CliHookRunner;
-
-    #[cfg(feature = "wasm-plugins")]
-    let mut plugin_manager = parc_core::plugin::manager::PluginManager::load_all(vault, &config)
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: failed to load plugins: {}", e);
-            parc_core::plugin::manager::PluginManager::empty().unwrap()
-        });
-
-    if should_open_editor {
+    let fragment = if should_open_editor {
         // Prepare template content
         let template = load_template(vault, resolved_type).unwrap_or_default();
 
         // If we have a template, parse it and merge with our fragment data
         let editor_content = build_editor_content(&fragment, &template);
 
-        let fragment = run_editor_loop(vault, &editor_content, schema, &config)?;
-
-        // Run pre-create hooks
-        #[cfg(feature = "wasm-plugins")]
-        let fragment = hook::run_pre_hooks_with_plugins(
-            &runner,
-            vault,
-            HookEvent::PreCreate,
-            &fragment,
-            &mut plugin_manager,
-        )?;
-        #[cfg(not(feature = "wasm-plugins"))]
-        let fragment = hook::run_pre_hooks(&runner, vault, HookEvent::PreCreate, &fragment)?;
-
-        fragment::create_fragment(vault, &fragment)?;
-
-        // Index
-        let conn = index::open_index(vault)?;
-        index::index_fragment_auto(&conn, &fragment, vault)?;
-
-        // Run post-create hooks
-        #[cfg(feature = "wasm-plugins")]
-        hook::run_post_hooks_with_plugins(
-            &runner,
-            vault,
-            HookEvent::PostCreate,
-            &fragment,
-            &mut plugin_manager,
-        );
-        #[cfg(not(feature = "wasm-plugins"))]
-        hook::run_post_hooks(&runner, vault, HookEvent::PostCreate, &fragment);
-
-        print_result(&fragment, json)?;
+        run_editor_loop(vault, &editor_content, schema, &config)?
     } else {
-        // Skip editor — create directly
         validate_fragment(&fragment, schema)?;
+        fragment
+    };
 
-        // Run pre-create hooks
-        #[cfg(feature = "wasm-plugins")]
-        let fragment = hook::run_pre_hooks_with_plugins(
-            &runner,
-            vault,
-            HookEvent::PreCreate,
-            &fragment,
-            &mut plugin_manager,
-        )?;
-        #[cfg(not(feature = "wasm-plugins"))]
-        let fragment = hook::run_pre_hooks(&runner, vault, HookEvent::PreCreate, &fragment)?;
+    let mut writer = cli_writer(vault);
+    let fragment = writer.create(fragment)?;
+    report_warnings(&mut writer);
 
-        fragment::create_fragment(vault, &fragment)?;
-
-        let conn = index::open_index(vault)?;
-        index::index_fragment_auto(&conn, &fragment, vault)?;
-
-        // Run post-create hooks
-        #[cfg(feature = "wasm-plugins")]
-        hook::run_post_hooks_with_plugins(
-            &runner,
-            vault,
-            HookEvent::PostCreate,
-            &fragment,
-            &mut plugin_manager,
-        );
-        #[cfg(not(feature = "wasm-plugins"))]
-        hook::run_post_hooks(&runner, vault, HookEvent::PostCreate, &fragment);
-
-        print_result(&fragment, json)?;
-    }
-
-    Ok(())
+    print_result(&fragment, json)
 }
 
 fn build_editor_content(fragment: &fragment::Fragment, template: &str) -> String {

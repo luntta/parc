@@ -105,9 +105,11 @@ impl PluginManager {
         Ok(current)
     }
 
-    /// Dispatch a post-hook event. Errors from individual plugins are logged but not propagated.
-    pub fn dispatch_post_event(&mut self, event: HookEvent, fragment: &Fragment) {
+    /// Dispatch a post-hook event. Errors from individual plugins don't fail
+    /// the operation; they are returned as warnings.
+    pub fn dispatch_post_event(&mut self, event: HookEvent, fragment: &Fragment) -> Vec<String> {
         let event_str = event.prefix();
+        let mut warnings = Vec::new();
 
         for plugin in &mut self.plugins {
             if !plugin.manifest.capabilities.allows_hook(event_str) {
@@ -120,12 +122,14 @@ impl PluginManager {
             };
 
             if let Err(e) = plugin.call_event(event_str, &frag_json) {
-                eprintln!(
-                    "Warning: plugin '{}' post-event failed: {}",
+                warnings.push(format!(
+                    "plugin '{}' post-event failed: {}",
                     plugin.manifest.plugin.name, e
-                );
+                ));
             }
         }
+
+        warnings
     }
 
     /// Run validation across all plugins with matching validate capability.

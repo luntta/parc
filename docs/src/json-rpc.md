@@ -71,10 +71,14 @@ Batch requests are supported — send a JSON array of requests, receive a JSON a
 | `-32700` | Parse error | Invalid JSON |
 | `-32600` | Invalid Request | Missing `jsonrpc: "2.0"` or malformed structure |
 | `-32601` | Method not found | Unknown method name |
-| `-32602` | Invalid params | Missing or wrong parameter types, unknown schema type |
+| `-32602` | Invalid params | Missing or wrong parameter types, unknown schema type, a value the schema rejects, or a `pre-*` hook that refused the write |
 | `-32603` | Internal error | Core library error (fragment not found, index error, etc.) |
 
 Internal errors include `data` with the error message string.
+
+## Hooks and warnings
+
+Write methods (`fragment.create`, `fragment.update`, `fragment.delete`, `fragment.link`, `fragment.unlink`) save through the same path as the CLI and TUI, so the vault's lifecycle hooks run exactly as they would for `parc` commands. A failing `post-*` hook doesn't fail the request; its message is added to the result object as `"warnings": ["..."]`. The field is omitted when there is nothing to report.
 
 ## Methods
 

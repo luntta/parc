@@ -4,25 +4,20 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{anyhow, Result};
-use chrono::Utc;
 use crossterm::cursor::{Hide, Show};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use parc_core::config::Config;
 use parc_core::config::{get_editor, load_config};
 use parc_core::fragment::{
-    self, delete_fragment as core_delete, parse_fragment, read_fragment, serialize_fragment,
-    validate_fragment, write_fragment,
+    self, parse_fragment, read_fragment, serialize_fragment, validate_fragment,
 };
-use parc_core::hook::{self, HookEvent};
-use parc_core::index;
+use parc_core::ops::Writer;
 use parc_core::schema::load_schemas;
 use parc_core::secure_fs;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use serde_json::Value;
-
-use crate::hooks::CliHookRunner;
 
 use super::QuickField;
 
@@ -40,16 +35,26 @@ fn short(id: &str) -> &str {
     &id[..8.min(id.len())]
 }
 
+/// Append any hook warnings the writer collected to a status message.
+fn with_warnings(writer: &mut Writer, msg: String) -> String {
+    let warnings = writer.take_warnings();
+    match warnings.as_slice() {
+        [] => msg,
+        [one] => format!("{} (warning: {})", msg, one),
+        [first, rest @ ..] => format!("{} (warning: {}; +{} more)", msg, first, rest.len()),
+    }
+}
+
 pub(super) fn edit(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    vault: &Path,
+    writer: &mut Writer,
     id: &str,
 ) -> Result<String> {
     let mut stdout = io::stdout();
     execute!(stdout, Show, LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
 
-    let result = run_editor(vault, id);
+    let result = run_editor(writer, id);
 
     terminal::enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, Hide)?;
@@ -58,10 +63,11 @@ pub(super) fn edit(
     result
 }
 
-fn run_editor(vault: &Path, id: &str) -> Result<String> {
+fn run_editor(writer: &mut Writer, id: &str) -> Result<String> {
+    let vault = writer.vault().to_path_buf();
+    let vault = vault.as_path();
     let config = load_config(vault)?;
     let schemas = load_schemas(vault)?;
-    let runner = CliHookRunner;
     let original = read_fragment(vault, id)?;
     let content = serialize_fragment(&original);
     let editor = get_editor(&config);
@@ -84,23 +90,16 @@ fn run_editor(vault: &Path, id: &str) -> Result<String> {
         return Err(anyhow!("aborted: empty content"));
     }
 
-    let mut frag = parse_fragment(&edited)?;
+    let frag = parse_fragment(&edited)?;
     if let Some(s) = schemas.resolve(&frag.fragment_type) {
         validate_fragment(&frag, s)?;
     }
-    frag.updated_at = Utc::now();
-
-    let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
-    write_fragment(vault, &frag)?;
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &frag, vault)?;
-    hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
-
-    Ok(format!("edited {}", short(&frag.id)))
+    let frag = writer.update(frag)?;
+    Ok(with_warnings(writer, format!("edited {}", short(&frag.id))))
 }
 
-pub(super) fn toggle_status(vault: &Path, id: &str) -> Result<String> {
-    let mut frag = read_fragment(vault, id)?;
+pub(super) fn toggle_status(writer: &mut Writer, id: &str) -> Result<String> {
+    let mut frag = read_fragment(writer.vault(), id)?;
     if frag.fragment_type != "todo" {
         return Ok(format!("{} not a todo", short(&frag.id)));
     }
@@ -113,16 +112,12 @@ pub(super) fn toggle_status(vault: &Path, id: &str) -> Result<String> {
     let next = if cur == "done" { "open" } else { "done" };
     frag.extra_fields
         .insert("status".to_string(), Value::String(next.to_string()));
-    frag.updated_at = Utc::now();
 
-    let runner = CliHookRunner;
-    let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
-    write_fragment(vault, &frag)?;
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &frag, vault)?;
-    hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
-
-    Ok(format!("{} {}", short(&frag.id), next))
+    let frag = writer.update(frag)?;
+    Ok(with_warnings(
+        writer,
+        format!("{} {}", short(&frag.id), next),
+    ))
 }
 
 /// Resolve a `[[target]]` wiki-link to a full fragment ID. The target may be
@@ -137,11 +132,11 @@ pub(super) fn follow_link(vault: &Path, target: &str) -> Result<String> {
 /// The range must point at exactly the 3-byte bracket literal — no offset
 /// shift, so the rest of the body is untouched.
 pub(super) fn toggle_checkbox(
-    vault: &Path,
+    writer: &mut Writer,
     id: &str,
     source_range: std::ops::Range<usize>,
 ) -> Result<String> {
-    let mut frag = read_fragment(vault, id)?;
+    let mut frag = read_fragment(writer.vault(), id)?;
     let bytes = frag.body.as_bytes();
     if source_range.end > bytes.len() || source_range.end - source_range.start != 3 {
         return Err(anyhow!("checkbox source range out of bounds"));
@@ -157,16 +152,9 @@ pub(super) fn toggle_checkbox(
         }
     };
     frag.body.replace_range(source_range.clone(), next);
-    frag.updated_at = Utc::now();
 
-    let runner = CliHookRunner;
-    let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
-    write_fragment(vault, &frag)?;
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &frag, vault)?;
-    hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
-
-    Ok(format!(
+    let frag = writer.update(frag)?;
+    let msg = format!(
         "{} checkbox {}",
         short(&frag.id),
         if next == "[x]" {
@@ -174,44 +162,31 @@ pub(super) fn toggle_checkbox(
         } else {
             "unchecked"
         }
-    ))
+    );
+    Ok(with_warnings(writer, msg))
 }
 
-pub(super) fn archive(vault: &Path, id: &str) -> Result<String> {
-    let mut frag = read_fragment(vault, id)?;
-    let full_id = frag.id.clone();
-    let already = frag
+pub(super) fn archive(writer: &mut Writer, id: &str) -> Result<String> {
+    let already = read_fragment(writer.vault(), id)?
         .extra_fields
         .get("archived")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if already {
-        frag.extra_fields.remove("archived");
+    let frag = writer.set_archived(id, !already)?;
+    let msg = if already {
+        format!("unarchived {}", short(&frag.id))
     } else {
-        frag.extra_fields
-            .insert("archived".to_string(), Value::Bool(true));
-    }
-    frag.updated_at = Utc::now();
-    write_fragment(vault, &frag)?;
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &frag, vault)?;
-
-    Ok(if already {
-        format!("unarchived {}", short(&full_id))
-    } else {
-        format!("archived {}", short(&full_id))
-    })
+        format!("archived {}", short(&frag.id))
+    };
+    Ok(with_warnings(writer, msg))
 }
 
-pub(super) fn delete(vault: &Path, id: &str) -> Result<String> {
-    let frag = read_fragment(vault, id)?;
-    let runner = CliHookRunner;
-    let _ = hook::run_pre_hooks(&runner, vault, HookEvent::PreDelete, &frag)?;
-    let full_id = core_delete(vault, &frag.id)?;
-    let conn = index::open_index(vault)?;
-    index::remove_from_index(&conn, &full_id)?;
-    hook::run_post_hooks(&runner, vault, HookEvent::PostDelete, &frag);
-    Ok(format!("deleted {} (trash)", short(&full_id)))
+pub(super) fn delete(writer: &mut Writer, id: &str) -> Result<String> {
+    let frag = writer.delete(id)?;
+    Ok(with_warnings(
+        writer,
+        format!("deleted {} (trash)", short(&frag.id)),
+    ))
 }
 
 pub(super) fn yank(id: &str) -> Result<String> {
@@ -223,20 +198,23 @@ pub(super) fn yank(id: &str) -> Result<String> {
     Ok(format!("copied {} to clipboard", short(id)))
 }
 
-pub(super) fn promote(vault: &Path, id: &str, new_type: &str) -> Result<String> {
-    let promoted = fragment::promote_fragment(vault, id, new_type, BTreeMap::new())?;
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &promoted, vault)?;
-    Ok(format!(
+pub(super) fn promote(writer: &mut Writer, id: &str, new_type: &str) -> Result<String> {
+    let promoted = writer.promote(id, new_type, BTreeMap::new())?;
+    let msg = format!(
         "promoted {} to {}",
         short(&promoted.id),
         promoted.fragment_type
-    ))
+    );
+    Ok(with_warnings(writer, msg))
 }
 
-pub(super) fn set_field(vault: &Path, id: &str, field: QuickField, value: &str) -> Result<String> {
-    let schemas = load_schemas(vault)?;
-    let mut frag = read_fragment(vault, id)?;
+pub(super) fn set_field(
+    writer: &mut Writer,
+    id: &str,
+    field: QuickField,
+    value: &str,
+) -> Result<String> {
+    let mut frag = read_fragment(writer.vault(), id)?;
     let trimmed = value.trim();
 
     match field {
@@ -255,23 +233,16 @@ pub(super) fn set_field(vault: &Path, id: &str, field: QuickField, value: &str) 
         }
     }
 
-    if let Some(schema) = schemas.resolve(&frag.fragment_type) {
-        validate_fragment(&frag, schema)?;
-    }
-
-    frag.updated_at = Utc::now();
-
-    let runner = CliHookRunner;
-    let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreUpdate, &frag)?;
-    write_fragment(vault, &frag)?;
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &frag, vault)?;
-    hook::run_post_hooks(&runner, vault, HookEvent::PostUpdate, &frag);
-
-    Ok(format!("updated {} {}", short(&frag.id), field.key()))
+    let frag = writer.update(frag)?;
+    Ok(with_warnings(
+        writer,
+        format!("updated {} {}", short(&frag.id), field.key()),
+    ))
 }
 
-pub(super) fn capture(vault: &Path, input: CaptureInput) -> Result<(String, String)> {
+pub(super) fn capture(writer: &mut Writer, input: CaptureInput) -> Result<(String, String)> {
+    let vault = writer.vault().to_path_buf();
+    let vault = vault.as_path();
     let raw = input.text.trim_end_matches(['\r', '\n']);
     if raw.trim().is_empty() {
         return Err(anyhow!("capture text is empty"));
@@ -290,18 +261,9 @@ pub(super) fn capture(vault: &Path, input: CaptureInput) -> Result<(String, Stri
     apply_capture_fields(&mut frag, input)?;
     validate_fragment(&frag, schema)?;
 
-    let runner = CliHookRunner;
-    let frag = hook::run_pre_hooks(&runner, vault, HookEvent::PreCreate, &frag)?;
-    fragment::create_fragment(vault, &frag)?;
-
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &frag, vault)?;
-    hook::run_post_hooks(&runner, vault, HookEvent::PostCreate, &frag);
-
-    Ok((
-        frag.id.clone(),
-        format!("captured {} {}", short(&frag.id), frag.fragment_type),
-    ))
+    let frag = writer.create(frag)?;
+    let msg = format!("captured {} {}", short(&frag.id), frag.fragment_type);
+    Ok((frag.id, with_warnings(writer, msg)))
 }
 
 fn parse_tag_list(input: &str) -> Vec<String> {
@@ -372,7 +334,12 @@ fn set_optional_string(
 mod tests {
     use super::*;
     use parc_core::fragment::read_fragment;
+    use parc_core::hook::HookStderr;
     use parc_core::vault::init_vault;
+
+    fn test_writer(vault: &Path) -> Writer {
+        crate::hooks::writer(vault, HookStderr::Capture)
+    }
 
     #[test]
     fn capture_creates_fragment_with_metadata() {
@@ -381,7 +348,7 @@ mod tests {
         init_vault(&vault).unwrap();
 
         let (id, msg) = capture(
-            &vault,
+            &mut test_writer(&vault),
             CaptureInput {
                 text: "Ship TUI capture".to_string(),
                 fragment_type: "todo".to_string(),
@@ -423,7 +390,7 @@ mod tests {
         init_vault(&vault).unwrap();
 
         let (id, _) = capture(
-            &vault,
+            &mut test_writer(&vault),
             CaptureInput {
                 text: "Review quick edits".to_string(),
                 fragment_type: "todo".to_string(),
@@ -436,10 +403,22 @@ mod tests {
         )
         .unwrap();
 
-        set_field(&vault, &id, QuickField::Due, "2026-03-01").unwrap();
-        set_field(&vault, &id, QuickField::Priority, "medium").unwrap();
-        set_field(&vault, &id, QuickField::Assignee, "raine").unwrap();
-        set_field(&vault, &id, QuickField::Tags, "ui #quick ui").unwrap();
+        set_field(&mut test_writer(&vault), &id, QuickField::Due, "2026-03-01").unwrap();
+        set_field(
+            &mut test_writer(&vault),
+            &id,
+            QuickField::Priority,
+            "medium",
+        )
+        .unwrap();
+        set_field(&mut test_writer(&vault), &id, QuickField::Assignee, "raine").unwrap();
+        set_field(
+            &mut test_writer(&vault),
+            &id,
+            QuickField::Tags,
+            "ui #quick ui",
+        )
+        .unwrap();
 
         let fragment = read_fragment(&vault, &id).unwrap();
         assert_eq!(
@@ -462,7 +441,7 @@ mod tests {
         );
         assert_eq!(fragment.tags, vec!["ui".to_string(), "quick".to_string()]);
 
-        set_field(&vault, &id, QuickField::Due, "").unwrap();
+        set_field(&mut test_writer(&vault), &id, QuickField::Due, "").unwrap();
         let fragment = read_fragment(&vault, &id).unwrap();
         assert!(!fragment.extra_fields.contains_key("due"));
     }
@@ -474,7 +453,7 @@ mod tests {
         init_vault(&vault).unwrap();
 
         let (id, _) = capture(
-            &vault,
+            &mut test_writer(&vault),
             CaptureInput {
                 text: "task list\n\n- [ ] one\n- [ ] two\n".to_string(),
                 fragment_type: "note".to_string(),
@@ -494,12 +473,12 @@ mod tests {
         let (second_start, _) = occurrences.next().unwrap();
         let range = second_start..second_start + 3;
 
-        let msg = toggle_checkbox(&vault, &id, range.clone()).unwrap();
+        let msg = toggle_checkbox(&mut test_writer(&vault), &id, range.clone()).unwrap();
         assert!(msg.contains("checked"));
         let frag = read_fragment(&vault, &id).unwrap();
         assert_eq!(&frag.body[range.clone()], "[x]");
 
-        let msg = toggle_checkbox(&vault, &id, range.clone()).unwrap();
+        let msg = toggle_checkbox(&mut test_writer(&vault), &id, range.clone()).unwrap();
         assert!(msg.contains("unchecked"));
         let frag = read_fragment(&vault, &id).unwrap();
         assert_eq!(&frag.body[range], "[ ]");
@@ -512,7 +491,7 @@ mod tests {
         init_vault(&vault).unwrap();
 
         let (id, _) = capture(
-            &vault,
+            &mut test_writer(&vault),
             CaptureInput {
                 text: "no checkboxes here".to_string(),
                 fragment_type: "note".to_string(),
@@ -526,8 +505,8 @@ mod tests {
         .unwrap();
 
         // Range that doesn't point at `[ ]`.
-        assert!(toggle_checkbox(&vault, &id, 0..3).is_err());
+        assert!(toggle_checkbox(&mut test_writer(&vault), &id, 0..3).is_err());
         // Out-of-bounds.
-        assert!(toggle_checkbox(&vault, &id, 1_000..1_003).is_err());
+        assert!(toggle_checkbox(&mut test_writer(&vault), &id, 1_000..1_003).is_err());
     }
 }

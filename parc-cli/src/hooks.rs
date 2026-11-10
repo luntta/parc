@@ -1,93 +1,41 @@
-use std::process::Command;
+use std::path::Path;
 
-use parc_core::error::ParcError;
-use parc_core::fragment::Fragment;
-use parc_core::hook::{HookRunner, HookScript};
+use parc_core::hook::{HookStderr, ScriptRunner};
+use parc_core::ops::Writer;
 
-pub struct CliHookRunner;
+use crate::render::sanitize_terminal_text;
 
-impl HookRunner for CliHookRunner {
-    fn run_pre_hook(
-        &self,
-        script: &HookScript,
-        fragment: &Fragment,
-    ) -> Result<Option<Fragment>, ParcError> {
-        let json = serde_json::to_string(fragment).map_err(ParcError::Json)?;
+/// A fragment writer for one-shot CLI commands: hook scripts write straight
+/// to the terminal, and WASM plugins are loaded when the feature is enabled.
+pub fn cli_writer(vault: &Path) -> Writer {
+    writer(vault, HookStderr::Inherit)
+}
 
-        let output = Command::new(&script.path)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                if let Some(ref mut stdin) = child.stdin {
-                    stdin.write_all(json.as_bytes())?;
-                }
-                child.wait_with_output()
-            })
-            .map_err(|e| {
-                ParcError::Io(std::io::Error::new(
-                    e.kind(),
-                    format!("hook '{}': {}", script.path.display(), e),
-                ))
-            })?;
+/// Build a writer with the given hook stderr handling (the TUI captures it).
+pub fn writer(vault: &Path, stderr: HookStderr) -> Writer {
+    let writer = Writer::new(vault, ScriptRunner::new(stderr));
 
-        if !output.status.success() {
-            return Err(ParcError::ValidationError(format!(
-                "pre-hook '{}' failed (exit {})",
-                script.path.display(),
-                output.status.code().unwrap_or(-1)
-            )));
+    #[cfg(feature = "wasm-plugins")]
+    let writer = {
+        use parc_core::plugin::manager::PluginManager;
+        let plugins = parc_core::config::load_config(vault)
+            .and_then(|config| PluginManager::load_all(vault, &config))
+            .or_else(|e| {
+                eprintln!("Warning: failed to load plugins: {}", e);
+                PluginManager::empty()
+            });
+        match plugins {
+            Ok(plugins) => writer.with_plugins(plugins),
+            Err(_) => writer,
         }
+    };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stdout = stdout.trim();
-        if stdout.is_empty() {
-            return Ok(None);
-        }
+    writer
+}
 
-        // Try to parse stdout as modified fragment JSON
-        let modified: Fragment = serde_json::from_str(stdout).map_err(|e| {
-            ParcError::ParseError(format!(
-                "pre-hook '{}' produced invalid JSON: {}",
-                script.path.display(),
-                e
-            ))
-        })?;
-        Ok(Some(modified))
-    }
-
-    fn run_post_hook(&self, script: &HookScript, fragment: &Fragment) -> Result<(), ParcError> {
-        let json = serde_json::to_string(fragment).map_err(ParcError::Json)?;
-
-        let output = Command::new(&script.path)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                if let Some(ref mut stdin) = child.stdin {
-                    stdin.write_all(json.as_bytes())?;
-                }
-                child.wait_with_output()
-            })
-            .map_err(|e| {
-                ParcError::Io(std::io::Error::new(
-                    e.kind(),
-                    format!("hook '{}': {}", script.path.display(), e),
-                ))
-            })?;
-
-        if !output.status.success() {
-            eprintln!(
-                "warning: post-hook '{}' failed (exit {})",
-                script.path.display(),
-                output.status.code().unwrap_or(-1)
-            );
-        }
-
-        Ok(())
+/// Print any warnings the writer collected (e.g. failed post-hooks).
+pub fn report_warnings(writer: &mut Writer) {
+    for warning in writer.take_warnings() {
+        eprintln!("warning: {}", sanitize_terminal_text(&warning));
     }
 }

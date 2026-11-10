@@ -26,6 +26,8 @@ Rules:
 - Takes a `VaultPath` as input — never assumes a location, never reads `$HOME`
 - No global state — every operation takes the vault and config it needs
 
+Every change to a fragment goes through `parc_core::ops::Writer`, which runs the same sequence for every frontend: schema validation, `pre-*` hooks, the file write (with its history snapshot), the index update, then `post-*` hooks. Hook warnings are collected on the writer for the frontend to show.
+
 This is what makes the CLI/TUI and server so thin. Neither re-implements business logic; they just translate between their respective transports and `parc-core`.
 
 ### parc-cli

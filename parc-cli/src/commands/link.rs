@@ -1,51 +1,28 @@
 use std::path::Path;
 
-use anyhow::{bail, Result};
-use chrono::Utc;
-use parc_core::fragment::{read_fragment, write_fragment};
-use parc_core::index;
+use anyhow::Result;
+
+use crate::hooks::{cli_writer, report_warnings};
 
 pub fn run(vault: &Path, id_a: &str, id_b: &str, json: bool) -> Result<()> {
-    let mut frag_a = read_fragment(vault, id_a)?;
-    let mut frag_b = read_fragment(vault, id_b)?;
+    let mut writer = cli_writer(vault);
+    let change = writer.link(id_a, id_b)?;
+    report_warnings(&mut writer);
 
-    if frag_a.id == frag_b.id {
-        bail!("Cannot link a fragment to itself.");
-    }
-
-    let a_has_b = frag_a.links.contains(&frag_b.id);
-    let b_has_a = frag_b.links.contains(&frag_a.id);
-
-    if a_has_b && b_has_a {
+    if !change.changed {
         println!("Already linked.");
         return Ok(());
     }
 
-    if !a_has_b {
-        frag_a.links.push(frag_b.id.clone());
-        frag_a.updated_at = Utc::now();
-        write_fragment(vault, &frag_a)?;
-    }
-
-    if !b_has_a {
-        frag_b.links.push(frag_a.id.clone());
-        frag_b.updated_at = Utc::now();
-        write_fragment(vault, &frag_b)?;
-    }
-
-    let conn = index::open_index(vault)?;
-    index::index_fragment_auto(&conn, &frag_a, vault)?;
-    index::index_fragment_auto(&conn, &frag_b, vault)?;
-
     if json {
         let json_val = serde_json::json!({
-            "id_a": frag_a.id,
-            "id_b": frag_b.id,
+            "id_a": change.a,
+            "id_b": change.b,
             "linked": true,
         });
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        println!("Linked {} \u{2194} {}", &frag_a.id[..8], &frag_b.id[..8]);
+        println!("Linked {} \u{2194} {}", &change.a[..8], &change.b[..8]);
     }
     Ok(())
 }

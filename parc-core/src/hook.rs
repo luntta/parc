@@ -145,7 +145,8 @@ fn is_safe_type_filter(fragment_type: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// Trait for executing hook scripts. Core defines the interface; CLI provides implementation.
+/// Trait for executing hook scripts. Core defines the interface and ships
+/// [`ScriptRunner`], which runs hooks as child processes.
 pub trait HookRunner {
     /// Run a pre-hook. Returns Ok(Some(fragment)) if the hook modified the fragment,
     /// Ok(None) if the hook ran successfully without modifications,
@@ -156,8 +157,140 @@ pub trait HookRunner {
         fragment: &Fragment,
     ) -> Result<Option<Fragment>, ParcError>;
 
-    /// Run a post-hook. Non-zero exit logs a warning but doesn't fail.
+    /// Run a post-hook. An Err is reported to the caller as a warning; it never
+    /// undoes the write that already happened.
     fn run_post_hook(&self, script: &HookScript, fragment: &Fragment) -> Result<(), ParcError>;
+}
+
+/// Where a hook's stderr goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HookStderr {
+    /// Pass through to this process's stderr (interactive CLI).
+    #[default]
+    Inherit,
+    /// Capture it and include it in error and warning messages. Use this when
+    /// stderr is not free for the hook to write to, e.g. under a full-screen
+    /// TUI or in a server.
+    Capture,
+}
+
+/// Runs hook scripts as child processes. The fragment is passed as JSON on
+/// stdin; a pre-hook may print a modified fragment as JSON on stdout.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScriptRunner {
+    stderr: HookStderr,
+}
+
+impl ScriptRunner {
+    pub fn new(stderr: HookStderr) -> Self {
+        Self { stderr }
+    }
+
+    fn run(
+        &self,
+        script: &HookScript,
+        fragment: &Fragment,
+        capture_stdout: bool,
+    ) -> Result<std::process::Output, ParcError> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let json = serde_json::to_vec(fragment)?;
+        let io_err = |e: std::io::Error| {
+            ParcError::Io(std::io::Error::new(
+                e.kind(),
+                format!("hook '{}': {}", script.path.display(), e),
+            ))
+        };
+
+        let mut child = Command::new(&script.path)
+            .stdin(Stdio::piped())
+            .stdout(if capture_stdout {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stderr(match self.stderr {
+                HookStderr::Inherit => Stdio::inherit(),
+                HookStderr::Capture => Stdio::piped(),
+            })
+            .spawn()
+            .map_err(io_err)?;
+
+        // Feed stdin from a separate thread so a hook that writes a lot of
+        // output before reading its input cannot deadlock on a full pipe.
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        let writer = std::thread::spawn(move || {
+            // A hook may exit without reading stdin; a broken pipe is fine.
+            let _ = stdin.write_all(&json);
+        });
+        let output = child.wait_with_output().map_err(io_err)?;
+        let _ = writer.join();
+        Ok(output)
+    }
+
+    fn failure_message(
+        &self,
+        kind: &str,
+        script: &HookScript,
+        output: &std::process::Output,
+    ) -> String {
+        let mut msg = format!(
+            "{} '{}' failed (exit {})",
+            kind,
+            script.path.display(),
+            output.status.code().unwrap_or(-1)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if !stderr.is_empty() {
+            msg.push_str(": ");
+            msg.push_str(stderr);
+        }
+        msg
+    }
+}
+
+impl HookRunner for ScriptRunner {
+    fn run_pre_hook(
+        &self,
+        script: &HookScript,
+        fragment: &Fragment,
+    ) -> Result<Option<Fragment>, ParcError> {
+        let output = self.run(script, fragment, true)?;
+        if !output.status.success() {
+            return Err(ParcError::ValidationError(
+                self.failure_message("pre-hook", script, &output),
+            ));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = stdout.trim();
+        if stdout.is_empty() {
+            return Ok(None);
+        }
+
+        let modified: Fragment = serde_json::from_str(stdout).map_err(|e| {
+            ParcError::ParseError(format!(
+                "pre-hook '{}' produced invalid JSON: {}",
+                script.path.display(),
+                e
+            ))
+        })?;
+        Ok(Some(modified))
+    }
+
+    fn run_post_hook(&self, script: &HookScript, fragment: &Fragment) -> Result<(), ParcError> {
+        let output = self.run(script, fragment, false)?;
+        if !output.status.success() {
+            return Err(ParcError::ValidationError(self.failure_message(
+                "post-hook",
+                script,
+                &output,
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Run all pre-hooks for an event. Returns the (possibly modified) fragment.
@@ -172,32 +305,31 @@ pub fn run_pre_hooks(
     let mut current = fragment.clone();
 
     for hook in &hooks {
-        match runner.run_pre_hook(hook, &current)? {
-            Some(modified) => current = modified,
-            None => {}
+        if let Some(modified) = runner.run_pre_hook(hook, &current)? {
+            current = modified;
         }
     }
 
     Ok(current)
 }
 
-/// Run all post-hooks for an event. Warnings are printed to stderr by the runner.
+/// Run all post-hooks for an event. Post-hooks cannot fail the operation;
+/// problems are returned as warnings for the caller to surface.
 pub fn run_post_hooks(
     runner: &dyn HookRunner,
     vault: &Path,
     event: HookEvent,
     fragment: &Fragment,
-) {
+) -> Vec<String> {
     let hooks = match trusted_hooks(vault, event, &fragment.fragment_type) {
         Ok(hooks) => hooks,
-        Err(e) => {
-            eprintln!("warning: skipping hooks for {}: {}", event.prefix(), e);
-            return;
-        }
+        Err(e) => return vec![format!("skipping hooks for {}: {}", event.prefix(), e)],
     };
-    for hook in &hooks {
-        let _ = runner.run_post_hook(hook, fragment);
-    }
+    hooks
+        .iter()
+        .filter_map(|hook| runner.run_post_hook(hook, fragment).err())
+        .map(|e| e.to_string())
+        .collect()
 }
 
 /// Run pre-hooks (Tier 1 scripts + Tier 2 WASM plugins).
@@ -217,7 +349,7 @@ pub fn run_pre_hooks_with_plugins(
     Ok(current)
 }
 
-/// Run post-hooks (Tier 1 scripts + Tier 2 WASM plugins).
+/// Run post-hooks (Tier 1 scripts + Tier 2 WASM plugins). Returns warnings.
 #[cfg(feature = "wasm-plugins")]
 pub fn run_post_hooks_with_plugins(
     runner: &dyn HookRunner,
@@ -225,11 +357,12 @@ pub fn run_post_hooks_with_plugins(
     event: HookEvent,
     fragment: &Fragment,
     plugins: &mut crate::plugin::manager::PluginManager,
-) {
+) -> Vec<String> {
     // Tier 1: script hooks
-    run_post_hooks(runner, vault, event, fragment);
+    let mut warnings = run_post_hooks(runner, vault, event, fragment);
     // Tier 2: WASM plugins
-    plugins.dispatch_post_event(event, fragment);
+    warnings.extend(plugins.dispatch_post_event(event, fragment));
+    warnings
 }
 
 #[cfg(test)]

@@ -857,7 +857,92 @@ fn test_link_self_error() {
         .current_dir(tmp.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Cannot link a fragment to itself"));
+        .stderr(predicate::str::contains("cannot link a fragment to itself"));
+}
+
+/// Enable hooks and install a generic hook per event that logs its own name.
+#[cfg(unix)]
+fn install_logging_hooks(vault: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(vault.join("config.yml"), "hooks:\n  enabled: true\n").unwrap();
+    let hooks_dir = vault.join("hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+    for event in ["pre-update", "post-update", "pre-delete", "post-delete"] {
+        let path = hooks_dir.join(event);
+        std::fs::write(
+            &path,
+            "#!/bin/sh\necho \"$(basename \"$0\")\" >> \"$(dirname \"$0\")/../hook.log\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    vault.join("hook.log")
+}
+
+#[cfg(unix)]
+#[test]
+fn test_hooks_fire_for_archive_link_and_delete() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    let vault = tmp.path().join(".parc");
+    let id_a = create_fragment_directly(&tmp, "note", "A", "Body");
+    let id_b = create_fragment_directly(&tmp, "note", "B", "Body");
+    let log = install_logging_hooks(&vault);
+
+    for args in [
+        vec!["archive", id_a.as_str()],
+        vec!["link", id_a.as_str(), id_b.as_str()],
+        vec!["delete", id_b.as_str()],
+    ] {
+        parc()
+            .args(&args)
+            .current_dir(tmp.path())
+            .assert()
+            .success();
+    }
+
+    let log = std::fs::read_to_string(log).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            // archive A
+            "pre-update",
+            "post-update",
+            // link: A and B both change
+            "pre-update",
+            "post-update",
+            "pre-update",
+            "post-update",
+            // delete B
+            "pre-delete",
+            "post-delete",
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_failing_post_hook_warns_but_succeeds() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    let vault = tmp.path().join(".parc");
+    let id = create_fragment_directly(&tmp, "todo", "Task", "Body");
+    std::fs::write(vault.join("config.yml"), "hooks:\n  enabled: true\n").unwrap();
+    let hook = vault.join("hooks").join("post-update");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nexit 7\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    parc()
+        .args(["set", &id[..8], "status", "done"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("warning: ").and(predicate::str::contains("exit 7")));
 }
 
 #[test]
