@@ -4,7 +4,7 @@ title: JSON-RPC server
 eyebrow: Reference · §05
 ---
 
-`parc-server` is a JSON-RPC 2.0 server that wraps the `parc-core` library, enabling any non-Rust application to interact with parc programmatically. Twenty methods cover the full core API: fragment CRUD, search, links, attachments, vault inspection, schemas, tags, and history.
+`parc-server` is a JSON-RPC 2.0 server that wraps the `parc-core` library, enabling any non-Rust application to interact with parc programmatically. Twenty-four methods cover the full core API: fragment CRUD, archive and trash, search, links, attachments, vault inspection, schemas, tags, and history.
 
 ## Transport
 
@@ -73,6 +73,7 @@ Batch requests are supported — send a JSON array of requests, receive a JSON a
 | `-32601` | Method not found | Unknown method name |
 | `-32602` | Invalid params | Missing or wrong parameter types, unknown schema type, a value the schema rejects, or a `pre-*` hook that refused the write |
 | `-32603` | Internal error | Core library error (fragment not found, index error, etc.) |
+| `-32010` | Conflict | `fragment.update` or `fragment.archive` named an `expected_revision` (or `expected_updated_at`) the fragment on disk no longer has. `data.updated_at` is the current one |
 
 Internal errors include `data` with the error message string.
 
@@ -97,6 +98,7 @@ Create a new fragment.
 | `priority` | string | no | Priority level |
 | `due` | string | no | Due date (ISO 8601 or relative: `today`, `tomorrow`, etc.) |
 | `assignee` | string | no | Assignee |
+| `fields` | object | no | Any field the type's schema declares, by name: `{"impact": "high"}`. See below |
 
 Returns the full fragment object.
 
@@ -111,6 +113,8 @@ Retrieve a fragment by ID. Prefix matching supported.
 **Params:** `{ "id": "<id-or-prefix>" }`
 
 Returns the full fragment object with `body`, `tags`, `links`, `attachments`, and any extra fields.
+
+Every fragment object returned by `fragment.get`, `fragment.create`, `fragment.update`, `fragment.archive` and `trash.restore` also carries `revision`: a fingerprint of the file's exact contents, which changes with every save. Send it back as `expected_revision` to make an update conditional.
 
 ### fragment.update
 
@@ -127,8 +131,19 @@ Update an existing fragment. Only provided fields are changed.
 | `priority` | string | no | New priority |
 | `due` | string | no | New due date |
 | `assignee` | string | no | New assignee |
+| `fields` | object | no | Schema fields by name; `null` removes an optional field |
+| `expected_revision` | string | no | The `revision` your copy was read at. If the file has changed since, the update is refused with `-32010` and nothing changes |
+| `expected_updated_at` | string | no | The same check by `updated_at`, at whole-second precision: it can't see a second save within the same second. Prefer `expected_revision` |
 
 Returns the updated fragment object.
+
+`fields` works for every type, including custom ones: names must be fields the type's schema declares, enum values must be listed in the schema, and `date` fields take the same values as `due`. A required field can't be cleared. The named parameters (`status`, `due`, …) still work and apply first.
+
+`expected_revision` lets an editor avoid overwriting a change made by another client since it loaded the fragment: send back the `revision` from `fragment.get` or from your previous write's result.
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"fragment.update","params":{"id":"01JQ7V3X","fields":{"status":"done","due":null},"expected_revision":"5d1c0b2e9f3a7c41"}}
+```
 
 ### fragment.delete
 
@@ -137,6 +152,22 @@ Soft-delete a fragment (moves to trash).
 **Params:** `{ "id": "<id-or-prefix>" }`
 
 **Result:** `{ "id": "<full-id>", "deleted": true }`
+
+### trash.restore
+
+Move a fragment back out of the trash and index it again: the undo of `fragment.delete`. Like `history.restore`, it runs no hooks.
+
+**Params:** `{ "id": "<id-or-prefix>" }` (matched against trashed fragments only)
+
+**Result:** The restored fragment object, with `revision`.
+
+### fragment.archive
+
+Archive or unarchive a fragment. Archived fragments stay in the vault but leave default searches; `is:archived` or `is:all` finds them.
+
+**Params:** `{ "id": "<id-or-prefix>", "archived": true|false, "expected_revision": "<optional>" }`
+
+**Result:** The updated fragment object (`"archived": true` while archived).
 
 ### fragment.list
 
@@ -162,7 +193,9 @@ Search using the full DSL query language.
 | `limit` | number | no | Max results |
 | `sort` | string | no | Sort order |
 
-Returns an array of search result objects with `id`, `type`, `title`, `status`, `tags`, `updated_at`, `snippet`.
+Returns an array of search result objects with `id`, `type`, `title`, `status`, `tags`, `updated_at`, `snippet`, `archived`.
+
+Words are matched as text even when they contain punctuation (`half-baked`, `parc_core::ops`); a word ending in `*` matches by prefix.
 
 ### fragment.link
 
@@ -228,6 +261,14 @@ Rebuild the search index from fragment files.
 
 **Result:** `{ "indexed": <count> }`
 
+### vault.links
+
+Every link in the index, for drawing the vault as a graph in one request. Links stored as ID prefixes are resolved; links to missing or ambiguous targets are left out.
+
+**Params:** `{}`
+
+**Result:** Array of `{ "source": "<full-id>", "target": "<full-id>" }`. Direction is the direction written; `fragment.link` writes both.
+
 ### vault.doctor
 
 Run vault health diagnostics.
@@ -244,7 +285,9 @@ List all registered fragment types.
 
 **Params:** `{}`
 
-**Result:** Array of `{ "name", "alias", "fields": [...] }`.
+**Result:** Array of `{ "name", "alias", "editor_skip", "fields": [...], "toggle" }`.
+
+Each field is `{ "name", "kind", "values", "required", "default", "toggle", "type" }`: `kind` is `string`, `date`, `enum` or `list`; `values` lists an enum's values; `toggle` is the field's `[off, on]` pair if it declares one. The schema's `toggle` is `{ "field", "off", "on" }` for the one-key toggle (the TUI's `t`), or `null`. `type` is an older spelling of the field type kept for existing clients.
 
 ### schema.get
 
@@ -252,7 +295,7 @@ Get a specific schema definition.
 
 **Params:** `{ "type": "<type-name-or-alias>" }`
 
-**Result:** `{ "name", "alias", "editor_skip", "fields": [...] }`
+**Result:** `{ "name", "alias", "editor_skip", "fields": [...], "toggle" }`, as in `schema.list`.
 
 ### tags.list
 
@@ -276,7 +319,7 @@ Retrieve a specific historical version.
 
 **Params:** `{ "id": "<id-or-prefix>", "timestamp": "<iso-8601>" }`
 
-**Result:** Fragment content at that version.
+**Result:** The fragment as it was at that version, in the same shape as `fragment.get` (schema fields included, no `revision`).
 
 ### history.restore
 

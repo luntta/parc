@@ -58,5 +58,6 @@ fn hit_to_result(hit: &FuzzyHit) -> SearchResult {
         tags: hit.item.tags.clone(),
         updated_at: hit.item.updated_at.clone(),
         snippet: None,
+        archived: false,
     }
 }

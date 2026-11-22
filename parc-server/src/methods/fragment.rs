@@ -1,19 +1,80 @@
 use std::path::Path;
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use parc_core::config::load_config;
 use parc_core::fragment::{self, Fragment};
 use parc_core::index;
-use parc_core::schema::load_schemas;
+use parc_core::schema::{load_schemas, FieldType, Schema};
 use parc_core::search::{self, Filter, SearchQuery, SortOrder};
 
 use crate::jsonrpc::RpcError;
 use crate::methods::write;
 use crate::router::{extract_params, map_parc_error};
 
-fn fragment_to_json(f: &Fragment) -> Value {
+/// Set schema fields by name, e.g. `{"status": "done", "due": null}`. Only
+/// fields the type's schema declares are accepted; `null` removes an optional
+/// field. Enum values are checked when the writer validates the fragment.
+fn apply_fields(
+    frag: &mut Fragment,
+    schema: Option<&Schema>,
+    fields: Map<String, Value>,
+) -> Result<(), RpcError> {
+    for (name, value) in fields {
+        let def = schema
+            .and_then(|s| s.fields.iter().find(|f| f.name == name))
+            .ok_or_else(|| {
+                RpcError::invalid_params(&format!(
+                    "unknown field '{}' for type '{}'",
+                    name, frag.fragment_type
+                ))
+            })?;
+        let value = match (value, &def.field_type) {
+            (Value::Null, _) if def.required => {
+                return Err(RpcError::invalid_params(&format!(
+                    "field '{}' is required",
+                    name
+                )))
+            }
+            (Value::Null, _) => {
+                frag.extra_fields.remove(&name);
+                continue;
+            }
+            (Value::String(s), FieldType::Date) => Value::String(
+                parc_core::date::resolve_due_date(&s)
+                    .map_err(|e| RpcError::invalid_params(&e.to_string()))?,
+            ),
+            (Value::Array(items), FieldType::ListOfStrings)
+                if items.iter().all(Value::is_string) =>
+            {
+                Value::Array(items)
+            }
+            (Value::String(s), FieldType::String | FieldType::Enum(_)) => Value::String(s),
+            _ => {
+                return Err(RpcError::invalid_params(&format!(
+                    "field '{}' expects {}",
+                    name,
+                    match def.field_type {
+                        FieldType::ListOfStrings => "a list of strings",
+                        _ => "a string",
+                    }
+                )))
+            }
+        };
+        frag.extra_fields.insert(name, value);
+    }
+    Ok(())
+}
+
+/// The fragment as saved, with the `revision` of its file for `expected_revision`.
+pub(crate) fn saved_json(vault: &Path, f: &Fragment) -> Result<Value, RpcError> {
+    let mut value = fragment_to_json(f);
+    value["revision"] = Value::String(fragment::revision(vault, &f.id).map_err(map_parc_error)?);
+    Ok(value)
+}
+
+pub(crate) fn fragment_to_json(f: &Fragment) -> Value {
     let mut obj = serde_json::json!({
         "id": f.id,
         "type": f.fragment_type,
@@ -54,6 +115,9 @@ pub struct CreateParams {
     pub priority: Option<String>,
     pub status: Option<String>,
     pub assignee: Option<String>,
+    /// Any schema field by name; see [`apply_fields`].
+    #[serde(default)]
+    pub fields: Map<String, Value>,
 }
 
 pub fn create(vault: &Path, params: Value) -> Result<Value, RpcError> {
@@ -98,10 +162,11 @@ pub fn create(vault: &Path, params: Value) -> Result<Value, RpcError> {
         frag.extra_fields
             .insert("assignee".to_string(), Value::String(assignee));
     }
+    apply_fields(&mut frag, Some(schema), p.fields)?;
 
     let mut writer = write::writer(vault);
     let frag = writer.create(frag).map_err(map_parc_error)?;
-    Ok(write::with_warnings(fragment_to_json(&frag), &mut writer))
+    Ok(write::with_warnings(saved_json(vault, &frag)?, &mut writer))
 }
 
 #[derive(Deserialize)]
@@ -112,7 +177,7 @@ pub struct GetParams {
 pub fn get(vault: &Path, params: Value) -> Result<Value, RpcError> {
     let p: GetParams = extract_params(params)?;
     let frag = fragment::read_fragment(vault, &p.id).map_err(map_parc_error)?;
-    Ok(fragment_to_json(&frag))
+    saved_json(vault, &frag)
 }
 
 #[derive(Deserialize)]
@@ -126,11 +191,34 @@ pub struct UpdateParams {
     pub priority: Option<String>,
     pub status: Option<String>,
     pub assignee: Option<String>,
+    /// Any schema field by name; see [`apply_fields`].
+    #[serde(default)]
+    pub fields: Map<String, Value>,
+    /// The `updated_at` the client's copy was read at. When the fragment has
+    /// been saved since, the update is refused with a conflict error.
+    pub expected_updated_at: Option<String>,
+    /// The `revision` the client's copy was read at; like `expected_updated_at`
+    /// but exact, so it also catches a save within the same second.
+    pub expected_revision: Option<String>,
 }
 
 pub fn update(vault: &Path, params: Value) -> Result<Value, RpcError> {
     let p: UpdateParams = extract_params(params)?;
     let mut frag = fragment::read_fragment(vault, &p.id).map_err(map_parc_error)?;
+
+    if let Some(expected) = &p.expected_updated_at {
+        let expected = chrono::DateTime::parse_from_rfc3339(expected)
+            .map_err(|e| RpcError::invalid_params(&format!("expected_updated_at: {}", e)))?;
+        // Files store whole seconds, so that is the precision to compare at.
+        if expected.timestamp() != frag.updated_at.timestamp() {
+            return Err(RpcError::conflict(&frag.updated_at.to_rfc3339()));
+        }
+    }
+    if let Some(expected) = &p.expected_revision {
+        if *expected != fragment::revision(vault, &frag.id).map_err(map_parc_error)? {
+            return Err(RpcError::conflict(&frag.updated_at.to_rfc3339()));
+        }
+    }
 
     if let Some(title) = p.title {
         frag.title = title;
@@ -162,10 +250,39 @@ pub fn update(vault: &Path, params: Value) -> Result<Value, RpcError> {
         frag.extra_fields
             .insert("assignee".to_string(), Value::String(assignee));
     }
+    if !p.fields.is_empty() {
+        let schemas = load_schemas(vault).map_err(map_parc_error)?;
+        let schema = schemas.resolve(&frag.fragment_type).cloned();
+        apply_fields(&mut frag, schema.as_ref(), p.fields)?;
+    }
 
     let mut writer = write::writer(vault);
     let frag = writer.update(frag).map_err(map_parc_error)?;
-    Ok(write::with_warnings(fragment_to_json(&frag), &mut writer))
+    Ok(write::with_warnings(saved_json(vault, &frag)?, &mut writer))
+}
+
+#[derive(Deserialize)]
+pub struct ArchiveParams {
+    pub id: String,
+    pub archived: bool,
+    /// As in `fragment.update`: refuse if the file changed since this revision.
+    pub expected_revision: Option<String>,
+}
+
+/// Archive or unarchive: archived fragments leave default searches but stay in the vault.
+pub fn archive(vault: &Path, params: Value) -> Result<Value, RpcError> {
+    let p: ArchiveParams = extract_params(params)?;
+    if let Some(expected) = &p.expected_revision {
+        if *expected != fragment::revision(vault, &p.id).map_err(map_parc_error)? {
+            let current = fragment::read_fragment(vault, &p.id).map_err(map_parc_error)?;
+            return Err(RpcError::conflict(&current.updated_at.to_rfc3339()));
+        }
+    }
+    let mut writer = write::writer(vault);
+    let frag = writer
+        .set_archived(&p.id, p.archived)
+        .map_err(map_parc_error)?;
+    Ok(write::with_warnings(saved_json(vault, &frag)?, &mut writer))
 }
 
 #[derive(Deserialize)]
@@ -273,6 +390,7 @@ pub fn search(vault: &Path, params: Value) -> Result<Value, RpcError> {
                 "tags": r.tags,
                 "updated_at": r.updated_at,
                 "snippet": r.snippet,
+                "archived": r.archived,
             })
         })
         .collect();

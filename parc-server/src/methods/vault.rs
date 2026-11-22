@@ -19,6 +19,19 @@ pub fn info(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
     }))
 }
 
+/// Every link in the index as `{ "source", "target" }` full IDs, for drawing
+/// the whole vault as a graph without one request per fragment.
+pub fn links(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
+    let conn = index::open_index(vault_path).map_err(map_parc_error)?;
+    let edges = index::all_links(&conn).map_err(map_parc_error)?;
+    Ok(Value::Array(
+        edges
+            .into_iter()
+            .map(|(source, target)| serde_json::json!({ "source": source, "target": target }))
+            .collect(),
+    ))
+}
+
 pub fn reindex(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
     let count = index::reindex(vault_path).map_err(map_parc_error)?;
 

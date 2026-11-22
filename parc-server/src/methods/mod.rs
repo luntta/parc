@@ -4,5 +4,6 @@ pub mod history;
 pub mod link;
 pub mod schema;
 pub mod tags;
+pub mod trash;
 pub mod vault;
 pub mod write;

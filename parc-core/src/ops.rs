@@ -103,6 +103,54 @@ impl Writer {
         Ok(fragment)
     }
 
+    /// Move a fragment back from the trash and index it. Runs no hooks: there is no
+    /// restore event, matching history restore. `id_or_prefix` matches trashed IDs only.
+    pub fn restore_from_trash(&mut self, id_or_prefix: &str) -> Result<Fragment, ParcError> {
+        let upper = id_or_prefix.to_uppercase();
+        let trash = self.vault.join("trash");
+        let mut matches = Vec::new();
+        if trash.is_dir() {
+            for entry in std::fs::read_dir(&trash)? {
+                let path = entry?.path();
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if path.extension().is_some_and(|e| e == "md")
+                    && stem.starts_with(&upper)
+                    && fragment::validate_id(stem).is_ok()
+                {
+                    matches.push(stem.to_string());
+                }
+            }
+        }
+        let id = match matches.as_slice() {
+            [id] => id.clone(),
+            [] => {
+                return Err(ParcError::FragmentNotFound(format!(
+                    "{} (not in the trash)",
+                    id_or_prefix
+                )))
+            }
+            _ => {
+                return Err(ParcError::AmbiguousId(
+                    id_or_prefix.to_string(),
+                    matches.len(),
+                ))
+            }
+        };
+        let dest = self.vault.join("fragments").join(format!("{}.md", id));
+        if dest.exists() {
+            return Err(ParcError::ValidationError(format!(
+                "fragment {} already exists outside the trash",
+                id
+            )));
+        }
+        crate::secure_fs::rename_private_file(&trash.join(format!("{}.md", id)), &dest)?;
+        let fragment = fragment::read_fragment(&self.vault, &id)?;
+        self.index(&fragment)?;
+        Ok(fragment)
+    }
+
     pub fn set_archived(
         &mut self,
         id_or_prefix: &str,

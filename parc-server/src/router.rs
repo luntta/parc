@@ -24,6 +24,8 @@ impl Router {
             "fragment.get" => methods::fragment::get(vault, params),
             "fragment.update" => methods::fragment::update(vault, params),
             "fragment.delete" => methods::fragment::delete(vault, params),
+            "fragment.archive" => methods::fragment::archive(vault, params),
+            "trash.restore" => methods::trash::restore(vault, params),
             "fragment.list" => methods::fragment::list(vault, params),
             "fragment.search" => methods::fragment::search(vault, params),
 
@@ -39,6 +41,7 @@ impl Router {
 
             // Vault methods
             "vault.info" => methods::vault::info(vault, params),
+            "vault.links" => methods::vault::links(vault, params),
             "vault.reindex" => methods::vault::reindex(vault, params),
             "vault.doctor" => methods::vault::doctor(vault, params),
 

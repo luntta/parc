@@ -113,6 +113,9 @@ pub struct SearchResult {
     pub tags: Vec<String>,
     pub updated_at: String,
     pub snippet: Option<String>,
+    /// Serialized only when true: fuzzy hits don't carry it, so absent means "not known to be archived".
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
 }
 
 // ── Parser ─────────────────────────────────────────────────────────────
@@ -592,17 +595,17 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
         param_idx += 1;
         if has_tag_joins {
             // Can't use snippet() with additional JOINs
-            "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet \
+            "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived \
              FROM fragments f \
              JOIN fragments_fts ON fragments_fts.id = f.id"
                 .to_string()
         } else {
-            "SELECT f.id, f.type, f.title, f.status, f.updated_at, snippet(fragments_fts, 2, '»', '«', '…', 20) as snippet \
+            "SELECT f.id, f.type, f.title, f.status, f.updated_at, snippet(fragments_fts, 2, '»', '«', '…', 20) as snippet, f.archived \
              FROM fragments f \
              JOIN fragments_fts ON fragments_fts.id = f.id".to_string()
         }
     } else {
-        "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet \
+        "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived \
          FROM fragments f"
             .to_string()
     };
@@ -657,12 +660,28 @@ fn sql_order_clause(sort: SortOrder) -> &'static str {
     }
 }
 
+/// Words go to FTS5 as barewords only when they are plain words (letters, digits, `_`,
+/// optionally ending in `*` for a prefix search). Anything else, such as `half-baked`,
+/// `parc_core::ops` or a half-typed `status:`, is quoted, so FTS5 reads it as text
+/// rather than as query syntax and fails or matches a column.
 fn build_fts_expression(terms: &[TextTerm]) -> String {
+    let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
     let parts: Vec<String> = terms
         .iter()
         .map(|t| match t {
-            TextTerm::Word(w) => w.clone(),
-            TextTerm::Phrase(p) => format!("\"{}\"", p),
+            TextTerm::Word(w) => {
+                let stem = w.strip_suffix('*').unwrap_or(w);
+                let bare = !stem.is_empty()
+                    && stem
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || !c.is_ascii());
+                if bare && !matches!(stem, "AND" | "OR" | "NOT" | "NEAR") {
+                    w.clone()
+                } else {
+                    quote(w)
+                }
+            }
+            TextTerm::Phrase(p) => quote(p),
         })
         .collect();
     parts.join(" ")
@@ -744,6 +763,7 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchResult
             tags: Vec::new(),
             updated_at: row.get(4)?,
             snippet: row.get(5)?,
+            archived: row.get::<_, i64>(6)? != 0,
         })
     })?;
 
@@ -1651,6 +1671,29 @@ mod tests {
         for &i in indices {
             assert!(i < hits[0].item.title.chars().count() as u32);
         }
+    }
+
+    #[test]
+    fn text_with_query_syntax_is_searched_as_text() {
+        let (_tmp, conn) = setup_test_vault();
+        index_simple(&conn, "half-baked parc_core::ops idea", "note", "", vec![]);
+        for q in [
+            "half-baked",
+            "parc_core::ops",
+            "status:",
+            "idea status:",
+            "say \"hi\"",
+            "NOT",
+            "ide*",
+        ] {
+            let query = parse_query(q).unwrap();
+            let found = search(&conn, &query);
+            assert!(found.is_ok(), "{:?} failed: {:?}", q, found.err());
+        }
+        let hits = search(&conn, &parse_query("half-baked").unwrap()).unwrap();
+        assert_eq!(hits.len(), 1);
+        let hits = search(&conn, &parse_query("ide*").unwrap()).unwrap();
+        assert_eq!(hits.len(), 1);
     }
 
     #[test]

@@ -2,8 +2,6 @@ use std::path::Path;
 
 use anyhow::Result;
 use parc_core::fragment;
-use parc_core::index;
-use parc_core::secure_fs;
 
 use crate::render::sanitize_terminal_text;
 
@@ -152,44 +150,17 @@ fn run_purge(vault: &Path, id: Option<&str>, json: bool) -> Result<()> {
 }
 
 fn run_restore(vault: &Path, id: &str, json: bool) -> Result<()> {
-    let upper = id.to_uppercase();
-    let trash_dir = vault.join("trash");
-    let fragments_dir = vault.join("fragments");
-
-    if !trash_dir.is_dir() {
-        anyhow::bail!("fragment '{}' not found in trash", id);
+    let mut writer = crate::hooks::cli_writer(vault);
+    let frag = writer.restore_from_trash(id)?;
+    if json {
+        let json_val = serde_json::json!({
+            "restored": frag.id,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_val)?);
+    } else {
+        println!("Restored {}", &frag.id[..8.min(frag.id.len())]);
     }
-
-    for entry in std::fs::read_dir(&trash_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            if stem.starts_with(&upper) {
-                if fragment::validate_id(stem).is_err() {
-                    continue;
-                }
-                let dest = fragments_dir.join(format!("{}.md", stem));
-                secure_fs::rename_private_file(&path, &dest)?;
-
-                // Re-index
-                let frag = fragment::read_fragment(vault, stem)?;
-                let conn = index::open_index(vault)?;
-                index::index_fragment_auto(&conn, &frag, vault)?;
-
-                if json {
-                    let json_val = serde_json::json!({
-                        "restored": stem,
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json_val)?);
-                } else {
-                    println!("Restored {}", &stem[..8.min(stem.len())]);
-                }
-                return Ok(());
-            }
-        }
-    }
-
-    anyhow::bail!("fragment '{}' not found in trash", id);
+    Ok(())
 }
 
 #[cfg(test)]

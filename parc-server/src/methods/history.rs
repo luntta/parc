@@ -43,16 +43,8 @@ pub fn get(vault: &Path, params: Value) -> Result<Value, RpcError> {
     let p: GetParams = extract_params(params)?;
     let full_id = fragment::resolve_id(vault, &p.id).map_err(map_parc_error)?;
     let frag = hist::read_version(vault, &full_id, &p.timestamp).map_err(map_parc_error)?;
-
-    Ok(serde_json::json!({
-        "id": frag.id,
-        "type": frag.fragment_type,
-        "title": frag.title,
-        "tags": frag.tags,
-        "body": frag.body,
-        "created_at": frag.created_at.to_rfc3339(),
-        "updated_at": frag.updated_at.to_rfc3339(),
-    }))
+    // The same shape as fragment.get, schema fields included, so versions can be compared field by field.
+    Ok(crate::methods::fragment::fragment_to_json(&frag))
 }
 
 #[derive(Deserialize)]

@@ -287,6 +287,45 @@ pub fn get_backlinks(conn: &Connection, target_id: &str) -> Result<Vec<BacklinkI
     Ok(results)
 }
 
+/// Every indexed link as `(source, target)` full IDs, for drawing a whole-vault
+/// graph. Frontmatter links can be stored as ID prefixes; a prefix resolves when
+/// exactly one indexed fragment starts with it. Links to nothing (a deleted or
+/// ambiguous target) and links to self are left out.
+pub fn all_links(conn: &Connection) -> Result<Vec<(String, String)>, ParcError> {
+    let ids = conn
+        .prepare("SELECT id FROM fragments")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let known: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+
+    let pairs = conn
+        .prepare("SELECT source_id, target_id FROM fragment_links ORDER BY source_id, target_id")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut edges = Vec::with_capacity(pairs.len());
+    for (source, target) in pairs {
+        let upper = target.to_uppercase();
+        let resolved = if known.contains(upper.as_str()) {
+            Some(upper)
+        } else {
+            let mut matches = ids.iter().filter(|id| id.starts_with(&upper));
+            match (matches.next(), matches.next()) {
+                (Some(id), None) => Some(id.clone()),
+                _ => None,
+            }
+        };
+        if let Some(target) = resolved {
+            if target != source {
+                edges.push((source, target));
+            }
+        }
+    }
+    Ok(edges)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +431,36 @@ mod tests {
         assert_eq!(backlinks.len(), 1);
         assert_eq!(backlinks[0].source_id, frag_b.id);
         assert_eq!(backlinks[0].source_title, "Fragment B");
+    }
+
+    #[test]
+    fn test_all_links_resolves_prefixes_and_drops_dangling() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+        let conn = init_index(&vault).unwrap();
+
+        let a = make_fragment("A", "");
+        let b = make_fragment("B", "");
+        let c = make_fragment("C", "");
+        index_fragment(&conn, &a, &[], &[]).unwrap();
+        // b links to a by full ID; c by a lowercase frontmatter prefix, to a
+        // fragment that no longer exists, and to itself.
+        index_fragment(&conn, &b, &[], &[a.id.clone()]).unwrap();
+        let prefix = a.id[..16].to_lowercase();
+        index_fragment(
+            &conn,
+            &c,
+            &[],
+            &[prefix, "01ZZZZZZZZZZZZZZZZZZZZZZZZ".into(), c.id.clone()],
+        )
+        .unwrap();
+
+        let mut edges = all_links(&conn).unwrap();
+        edges.sort();
+        let mut expected = vec![(b.id.clone(), a.id.clone()), (c.id.clone(), a.id.clone())];
+        expected.sort();
+        assert_eq!(edges, expected);
     }
 
     #[test]

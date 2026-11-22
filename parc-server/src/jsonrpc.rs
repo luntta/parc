@@ -48,6 +48,9 @@ impl Response {
     }
 }
 
+/// Server-defined code (JSON-RPC reserves -32000..-32099 for these).
+pub const CONFLICT: i64 = -32010;
+
 impl RpcError {
     pub fn parse_error() -> Self {
         RpcError {
@@ -78,6 +81,16 @@ impl RpcError {
             code: -32602,
             message: format!("Invalid params: {}", msg),
             data: None,
+        }
+    }
+
+    /// A write that named the `updated_at` it was based on, when the fragment
+    /// has been saved since. `data.updated_at` is the fragment's current one.
+    pub fn conflict(current_updated_at: &str) -> Self {
+        RpcError {
+            code: CONFLICT,
+            message: "Conflict: the fragment changed since it was read".to_string(),
+            data: Some(serde_json::json!({ "updated_at": current_updated_at })),
         }
     }
 

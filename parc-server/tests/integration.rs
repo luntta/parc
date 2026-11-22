@@ -719,3 +719,234 @@ fn test_pre_hook_veto_is_invalid_params() {
     assert_eq!(err["code"], -32602);
     assert!(err["message"].as_str().unwrap().contains("no new notes"));
 }
+
+// ── Schema fields, stale writes and the vault link list ─────────────
+
+#[test]
+fn test_fields_map_sets_and_clears_schema_fields() {
+    let mut h = ServerHarness::new();
+
+    let resp = h.send_rpc(rpc(
+        1,
+        "fragment.create",
+        serde_json::json!({
+            "type": "risk",
+            "title": "Disk fills",
+            "fields": { "impact": "high", "likelihood": "low" },
+        }),
+    ));
+    let result = result_of(&resp);
+    assert_eq!(result["impact"], "high");
+    assert_eq!(result["status"], "identified");
+    let id = result["id"].as_str().unwrap().to_string();
+
+    // null clears an optional field; others are set alongside.
+    let resp = h.send_rpc(rpc(
+        2,
+        "fragment.update",
+        serde_json::json!({ "id": &id, "fields": { "likelihood": null, "status": "mitigating" } }),
+    ));
+    let result = result_of(&resp);
+    assert!(result.get("likelihood").is_none());
+    assert_eq!(result["status"], "mitigating");
+    assert_eq!(result["impact"], "high");
+
+    // Required fields cannot be cleared, unknown fields are named, and
+    // enum values are still checked.
+    for (n, fields, needle) in [
+        (3, serde_json::json!({ "status": null }), "required"),
+        (
+            4,
+            serde_json::json!({ "due": "today" }),
+            "unknown field 'due'",
+        ),
+        (5, serde_json::json!({ "impact": "huge" }), "invalid value"),
+    ] {
+        let resp = h.send_rpc(rpc(
+            n,
+            "fragment.update",
+            serde_json::json!({ "id": &id, "fields": fields }),
+        ));
+        let err = error_of(&resp);
+        assert_eq!(err["code"], -32602);
+        assert!(
+            err["message"].as_str().unwrap().contains(needle),
+            "{} not in {}",
+            needle,
+            err["message"]
+        );
+    }
+}
+
+#[test]
+fn test_update_refuses_stale_expected_updated_at() {
+    let mut h = ServerHarness::new();
+
+    let resp = h.send_rpc(rpc(
+        1,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Shared", "body": "v1" }),
+    ));
+    let id = result_of(&resp)["id"].as_str().unwrap().to_string();
+    let resp = h.send_rpc(rpc(2, "fragment.get", serde_json::json!({ "id": &id })));
+    let read_at = result_of(&resp)["updated_at"].as_str().unwrap().to_string();
+
+    // The copy that was read can be saved...
+    let resp = h.send_rpc(rpc(
+        3,
+        "fragment.update",
+        serde_json::json!({ "id": &id, "body": "v2", "expected_updated_at": &read_at }),
+    ));
+    let saved_at = result_of(&resp)["updated_at"].as_str().unwrap().to_string();
+
+    // ...and saved again from the timestamp the save returned...
+    let resp = h.send_rpc(rpc(
+        4,
+        "fragment.update",
+        serde_json::json!({ "id": &id, "body": "v3", "expected_updated_at": &saved_at }),
+    ));
+    assert_eq!(result_of(&resp)["body"], "v3");
+
+    // ...but a copy older than the file is refused and changes nothing.
+    let resp = h.send_rpc(rpc(
+        5,
+        "fragment.update",
+        serde_json::json!({ "id": &id, "body": "stale", "expected_updated_at": "2020-01-01T00:00:00Z" }),
+    ));
+    let err = error_of(&resp);
+    assert_eq!(err["code"], -32010);
+    assert!(err["data"]["updated_at"].is_string());
+    let resp = h.send_rpc(rpc(6, "fragment.get", serde_json::json!({ "id": &id })));
+    assert_eq!(result_of(&resp)["body"].as_str().unwrap().trim(), "v3");
+}
+
+#[test]
+fn test_schema_list_describes_enum_values_and_toggle() {
+    let mut h = ServerHarness::new();
+    let resp = h.send_rpc(rpc(1, "schema.list", serde_json::json!({})));
+    let schemas = result_of(&resp).as_array().unwrap();
+    let todo = schemas.iter().find(|s| s["name"] == "todo").unwrap();
+    let status = todo["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "status")
+        .unwrap();
+    assert_eq!(status["kind"], "enum");
+    assert_eq!(status["values"][0], "open");
+    assert_eq!(status["toggle"], serde_json::json!(["open", "done"]));
+    assert_eq!(
+        todo["toggle"],
+        serde_json::json!({ "field": "status", "off": "open", "on": "done" })
+    );
+    let note = schemas.iter().find(|s| s["name"] == "note").unwrap();
+    assert!(note["toggle"].is_null());
+}
+
+#[test]
+fn test_vault_links_lists_resolved_edges() {
+    let mut h = ServerHarness::new();
+    let resp = h.send_rpc(rpc(
+        1,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Target" }),
+    ));
+    let target = result_of(&resp)["id"].as_str().unwrap().to_string();
+    let resp = h.send_rpc(rpc(
+        2,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Source", "body": format!("See [[{}]].", &target[..10]) }),
+    ));
+    let source = result_of(&resp)["id"].as_str().unwrap().to_string();
+
+    let resp = h.send_rpc(rpc(3, "vault.links", serde_json::json!({})));
+    assert_eq!(
+        result_of(&resp),
+        &serde_json::json!([{ "source": source, "target": target }])
+    );
+}
+
+#[test]
+fn test_revision_catches_a_save_in_the_same_second() {
+    let mut h = ServerHarness::new();
+    let resp = h.send_rpc(rpc(
+        1,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Fast", "body": "v1" }),
+    ));
+    let created = result_of(&resp).clone();
+    let id = created["id"].as_str().unwrap().to_string();
+    let resp = h.send_rpc(rpc(2, "fragment.get", serde_json::json!({ "id": &id })));
+    assert_eq!(result_of(&resp)["revision"], created["revision"]);
+
+    // Another client saves within the same second: the timestamp can't tell, the revision can.
+    let resp = h.send_rpc(rpc(
+        3,
+        "fragment.update",
+        serde_json::json!({ "id": &id, "body": "theirs" }),
+    ));
+    let theirs = result_of(&resp).clone();
+    assert_ne!(theirs["revision"], created["revision"]);
+    let resp = h.send_rpc(rpc(
+        4,
+        "fragment.update",
+        serde_json::json!({ "id": &id, "body": "mine", "expected_revision": created["revision"] }),
+    ));
+    assert_eq!(error_of(&resp)["code"], -32010);
+    let resp = h.send_rpc(rpc(
+        5,
+        "fragment.update",
+        serde_json::json!({ "id": &id, "body": "mine", "expected_revision": theirs["revision"] }),
+    ));
+    assert_eq!(result_of(&resp)["body"], "mine");
+}
+
+#[test]
+fn test_archive_and_trash_restore() {
+    let mut h = ServerHarness::new();
+    let resp = h.send_rpc(rpc(
+        1,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Keep me" }),
+    ));
+    let id = result_of(&resp)["id"].as_str().unwrap().to_string();
+
+    let resp = h.send_rpc(rpc(
+        2,
+        "fragment.archive",
+        serde_json::json!({ "id": &id, "archived": true }),
+    ));
+    assert_eq!(result_of(&resp)["archived"], true);
+    let resp = h.send_rpc(rpc(
+        3,
+        "fragment.search",
+        serde_json::json!({ "query": "is:all" }),
+    ));
+    assert_eq!(result_of(&resp)[0]["archived"], true);
+    let resp = h.send_rpc(rpc(
+        4,
+        "fragment.search",
+        serde_json::json!({ "query": "Keep" }),
+    ));
+    assert!(result_of(&resp).as_array().unwrap().is_empty());
+    let resp = h.send_rpc(rpc(
+        5,
+        "fragment.archive",
+        serde_json::json!({ "id": &id, "archived": false }),
+    ));
+    assert!(result_of(&resp).get("archived").is_none());
+
+    h.send_rpc(rpc(6, "fragment.delete", serde_json::json!({ "id": &id })));
+    let resp = h.send_rpc(rpc(7, "fragment.get", serde_json::json!({ "id": &id })));
+    assert!(resp.get("error").is_some());
+    let resp = h.send_rpc(rpc(8, "trash.restore", serde_json::json!({ "id": &id })));
+    assert_eq!(result_of(&resp)["title"], "Keep me");
+    let resp = h.send_rpc(rpc(
+        9,
+        "fragment.search",
+        serde_json::json!({ "query": "Keep" }),
+    ));
+    assert_eq!(result_of(&resp)[0]["id"], id.as_str());
+    let resp = h.send_rpc(rpc(10, "trash.restore", serde_json::json!({ "id": &id })));
+    assert!(resp.get("error").is_some());
+}

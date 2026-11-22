@@ -44,7 +44,7 @@ Every CLI command is a thin function that calls `parc-core` and formats the resu
 
 ### parc-server
 
-The `parc-server` binary, also reachable as `parc server`. A JSON-RPC 2.0 server with two transports: newline-delimited JSON over stdio, or the same protocol over a Unix domain socket. Twenty methods covering the full core API — see [JSON-RPC server]({{ '/json-rpc/' | url }}).
+The `parc-server` binary, also reachable as `parc server`. A JSON-RPC 2.0 server with two transports: newline-delimited JSON over stdio, or the same protocol over a Unix domain socket. Twenty-four methods covering the full core API — see [JSON-RPC server]({{ '/json-rpc/' | url }}).
 
 The server is built on `tokio`. Each request handler is a thin wrapper around a `parc-core` call. Errors from `parc-core` are mapped to JSON-RPC error codes.
 

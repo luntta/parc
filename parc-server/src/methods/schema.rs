@@ -3,40 +3,51 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::Value;
 
-use parc_core::schema::load_schemas;
+use parc_core::schema::{load_schemas, FieldType, Schema};
 
 use crate::jsonrpc::RpcError;
 use crate::router::{extract_params, map_parc_error};
 
-pub fn list(vault: &Path, _params: Value) -> Result<Value, RpcError> {
-    let registry = load_schemas(vault).map_err(map_parc_error)?;
-    let schemas = registry.list();
-
-    let items: Vec<Value> = schemas
+/// A schema as clients see it. `type` keeps its original debug spelling for
+/// existing clients; `kind`, `values` and `toggle` are what a form needs.
+fn schema_to_json(s: &Schema) -> Value {
+    let fields: Vec<Value> = s
+        .fields
         .iter()
-        .map(|s| {
-            let fields: Vec<Value> = s
-                .fields
-                .iter()
-                .map(|f| {
-                    serde_json::json!({
-                        "name": f.name,
-                        "type": format!("{:?}", f.field_type),
-                        "required": f.required,
-                        "default": f.default,
-                    })
-                })
-                .collect();
-
+        .map(|f| {
+            let (kind, values) = match &f.field_type {
+                FieldType::String => ("string", None),
+                FieldType::Date => ("date", None),
+                FieldType::Enum(values) => ("enum", Some(values.clone())),
+                FieldType::ListOfStrings => ("list", None),
+            };
             serde_json::json!({
-                "name": s.name,
-                "alias": s.alias,
-                "fields": fields,
+                "name": f.name,
+                "type": format!("{:?}", f.field_type),
+                "kind": kind,
+                "values": values,
+                "required": f.required,
+                "default": f.default,
+                "toggle": f.toggle.as_ref().map(|(off, on)| [off, on]),
             })
         })
         .collect();
 
-    Ok(Value::Array(items))
+    serde_json::json!({
+        "name": s.name,
+        "alias": s.alias,
+        "editor_skip": s.editor_skip,
+        "fields": fields,
+        // The one-key toggle (the TUI's `t`), including the status open/done fallback.
+        "toggle": s.toggle().map(|t| serde_json::json!({ "field": t.field, "off": t.off, "on": t.on })),
+    })
+}
+
+pub fn list(vault: &Path, _params: Value) -> Result<Value, RpcError> {
+    let registry = load_schemas(vault).map_err(map_parc_error)?;
+    Ok(Value::Array(
+        registry.list().iter().map(|s| schema_to_json(s)).collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -53,23 +64,5 @@ pub fn get(vault: &Path, params: Value) -> Result<Value, RpcError> {
         .resolve(&p.type_name)
         .ok_or_else(|| RpcError::invalid_params(&format!("unknown type: {}", p.type_name)))?;
 
-    let fields: Vec<Value> = schema
-        .fields
-        .iter()
-        .map(|f| {
-            serde_json::json!({
-                "name": f.name,
-                "type": format!("{:?}", f.field_type),
-                "required": f.required,
-                "default": f.default,
-            })
-        })
-        .collect();
-
-    Ok(serde_json::json!({
-        "name": schema.name,
-        "alias": schema.alias,
-        "editor_skip": schema.editor_skip,
-        "fields": fields,
-    }))
+    Ok(schema_to_json(schema))
 }

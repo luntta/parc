@@ -389,6 +389,19 @@ pub fn delete_fragment(vault: &Path, id_or_prefix: &str) -> Result<String, ParcE
     Ok(full_id)
 }
 
+/// A fingerprint of a fragment file's exact bytes. It changes with every save, even two
+/// within the same second (which `updated_at`, kept to whole seconds, cannot tell apart),
+/// so a client can name the version it read and have a stale write refused.
+pub fn revision(vault: &Path, id_or_prefix: &str) -> Result<String, ParcError> {
+    let full_id = resolve_id(vault, id_or_prefix)?;
+    let bytes = std::fs::read(vault.join("fragments").join(format!("{}.md", full_id)))?;
+    // FNV-1a: stable across builds and platforms, unlike std's hasher. Not a security boundary.
+    let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    Ok(format!("{:016x}", hash))
+}
+
 /// List all fragment IDs in the vault.
 pub fn list_fragment_ids(vault: &Path) -> Result<Vec<String>, ParcError> {
     let fragments_dir = vault.join("fragments");
