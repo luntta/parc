@@ -318,6 +318,23 @@ fn split_frontmatter(content: &str) -> Result<(String, String), ParcError> {
 
 // --- CRUD operations ---
 
+/// Parse the contents of `fragments/<file_stem>.md`. Beyond [`parse_fragment`],
+/// the file must be UTF-8 and its frontmatter `id` must match its name: a copy
+/// such as `<id>.sync-conflict-….md` carries the original's ID and would
+/// otherwise shadow the original.
+pub fn parse_fragment_file(file_stem: &str, bytes: &[u8]) -> Result<Fragment, ParcError> {
+    let content = std::str::from_utf8(bytes)
+        .map_err(|_| ParcError::ParseError("the file is not UTF-8 text".into()))?;
+    let fragment = parse_fragment(content)?;
+    if fragment.id != file_stem {
+        return Err(ParcError::ValidationError(format!(
+            "its frontmatter id ({}) does not match the file name",
+            fragment.id
+        )));
+    }
+    Ok(fragment)
+}
+
 /// Write a new fragment to disk. Returns the fragment ID.
 pub fn create_fragment(vault: &Path, fragment: &Fragment) -> Result<String, ParcError> {
     validate_id(&fragment.id)?;
@@ -395,11 +412,16 @@ pub fn delete_fragment(vault: &Path, id_or_prefix: &str) -> Result<String, ParcE
 pub fn revision(vault: &Path, id_or_prefix: &str) -> Result<String, ParcError> {
     let full_id = resolve_id(vault, id_or_prefix)?;
     let bytes = std::fs::read(vault.join("fragments").join(format!("{}.md", full_id)))?;
+    Ok(content_revision(&bytes))
+}
+
+/// The revision of a fragment file's bytes, as [`revision`] reports it.
+pub fn content_revision(bytes: &[u8]) -> String {
     // FNV-1a: stable across builds and platforms, unlike std's hasher. Not a security boundary.
     let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
         (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
     });
-    Ok(format!("{:016x}", hash))
+    format!("{:016x}", hash)
 }
 
 /// List all fragment IDs in the vault.

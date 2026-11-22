@@ -384,9 +384,6 @@ fn jump_focused(app: &mut App, to_end: bool) {
 
 /// Load the first screen and record the vault's on-disk state.
 fn start_app(vault: &Path, config: &Config, writer: Writer) -> Result<App> {
-    // Make sure the index exists before stamping; otherwise creating it
-    // during the first load would look like an outside change.
-    index::open_index(vault)?;
     let stamp = VaultStamp::read(vault);
     let rows = data::load_rows(vault, Tab::Today, config)?;
     let mut app = App::new(rows, writer);
@@ -1338,9 +1335,11 @@ mod tests {
         }
     }
 
-    /// Make every index read fail, as a corrupted or foreign index.db would.
+    /// Make every index read fail. (A damaged index.db is rebuilt on open, so
+    /// put something there that can't be opened as a file at all.)
     fn break_index(vault: &Path) {
-        std::fs::write(vault.join("index.db"), b"definitely not sqlite").unwrap();
+        let _ = std::fs::remove_file(vault.join("index.db"));
+        std::fs::create_dir(vault.join("index.db")).unwrap();
     }
 
     #[test]

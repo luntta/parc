@@ -33,7 +33,7 @@ Rust. Key crates: `clap` (derive), `ratatui`/`crossterm` (TUI), `serde`/`serde_y
 - **Tags**: merged from frontmatter `tags:` list + inline `#hashtags` in body. Case-insensitive
 - **Attachments**: stored in `<vault>/attachments/<fragment-id>/`, referenced via `![[attach:filename]]`
 - **History**: snapshot-on-save to `<vault>/history/<fragment-id>/`
-- **Index**: SQLite + FTS5, derived and rebuildable from Markdown source files
+- **Index**: SQLite + FTS5, a cache of the Markdown files. `index::open_index` syncs it with `fragments/` first (mtime/size per file, content hash for racy entries); an index whose stamp (hash of `SCHEMA_SQL` + `INDEX_VERSION`) differs is dropped and rebuilt, so bump `INDEX_VERSION` only when stored data changes without the schema text changing
 
 ## Vault Layout
 
@@ -93,4 +93,4 @@ Parsed in `parc-core` into `SearchQuery` AST, compiled to FTS5 MATCH + SQL WHERE
 
 - PRD: `planning/parc-prd.md`
 - Git-ignored in vault: `index.db`, `trash/`, `server.sock`
-- Collaboration model: git as transport, `parc reindex` after pull
+- Collaboration model: git as transport. The index syncs itself with `fragments/` on every `index::open_index` (only changed files are re-read), so no reindex after pull

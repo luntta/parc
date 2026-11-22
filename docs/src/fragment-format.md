@@ -117,4 +117,4 @@ After indexing, this fragment is reachable via:
 
 ## Validation
 
-parc validates every fragment against its type's schema on save and on `parc reindex`. Invalid fragments are surfaced by `parc doctor` and excluded from search results until fixed.
+parc validates every fragment against its type's schema when it saves one; `parc doctor` reports schema violations in files edited by hand. A file parc can't read as a fragment at all (broken frontmatter, not UTF-8, or an `id` that doesn't match the file name) is left out of the index, and so out of listings and search, until it's fixed. The CLI warns about such a file the first time it sees it, and `parc doctor` lists every one.

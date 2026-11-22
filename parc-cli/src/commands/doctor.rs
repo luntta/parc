@@ -71,6 +71,11 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     "plugin_name": plugin_name,
                     "detail": detail,
                 }),
+                DoctorFinding::UnreadableFragment { file_name, reason } => serde_json::json!({
+                    "type": "unreadable_fragment",
+                    "file": format!("fragments/{}", file_name),
+                    "reason": reason,
+                }),
             })
             .collect();
 
@@ -162,6 +167,13 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                         "\u{2717} Plugin '{}': {}",
                         sanitize_terminal_text(plugin_name),
                         sanitize_terminal_text(detail)
+                    );
+                }
+                DoctorFinding::UnreadableFragment { file_name, reason } => {
+                    println!(
+                        "\u{2717} fragments/{} is not indexed: {}",
+                        sanitize_terminal_text(file_name),
+                        sanitize_terminal_text(reason)
                     );
                 }
             }

@@ -523,6 +523,7 @@ fn main() -> anyhow::Result<()> {
             if !cli.no_tui && io::stdout().is_terminal() {
                 commands::tui::run(&vault)
             } else {
+                sync_index(&vault);
                 commands::today::run(&vault, false)
             }
         }
@@ -551,6 +552,14 @@ fn main() -> anyhow::Result<()> {
         Some(command) => {
             // All other commands: resolve vault once, pass to command
             let vault = resolve_cli_vault(cli.vault.as_deref(), cli.global_vault)?;
+            // These report unindexed files themselves, or (the server) sync
+            // on every request.
+            if !matches!(
+                command,
+                Commands::Reindex { .. } | Commands::Doctor { .. } | Commands::Server { .. }
+            ) {
+                sync_index(&vault);
+            }
             match command {
                 Commands::Capture {
                     text,
@@ -759,6 +768,24 @@ where
     }
     normalized.extend(rest);
     normalized
+}
+
+/// Bring the index up to date with the fragment files before a command runs,
+/// and warn about files it can't index: they are left out of every listing and
+/// search until fixed, and each is reported only by the sync that first sees
+/// it. Commands open the index themselves, so a failure here is left for them
+/// to report if they need it.
+fn sync_index(vault: &std::path::Path) {
+    let Ok((_, report)) = parc_core::index::open_index_with_report(vault) else {
+        return;
+    };
+    for problem in &report.problems {
+        eprintln!(
+            "warning: fragments/{} is not indexed: {}",
+            render::sanitize_terminal_text(&problem.file_name),
+            render::sanitize_terminal_text(&problem.reason)
+        );
+    }
 }
 
 fn resolve_cli_vault(explicit: Option<&std::path::Path>, global: bool) -> anyhow::Result<PathBuf> {

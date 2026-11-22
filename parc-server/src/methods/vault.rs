@@ -32,11 +32,20 @@ pub fn links(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
     ))
 }
 
+/// Rebuild the index from scratch. Every method already reads an index synced
+/// with the files, so this is only for recovery; `problems` lists the files
+/// that could not be indexed.
 pub fn reindex(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
-    let count = index::reindex(vault_path).map_err(map_parc_error)?;
+    let report = index::reindex(vault_path).map_err(map_parc_error)?;
+    let problems: Vec<Value> = report
+        .problems
+        .iter()
+        .map(|p| serde_json::json!({ "file": format!("fragments/{}", p.file_name), "reason": p.reason }))
+        .collect();
 
     Ok(serde_json::json!({
-        "indexed": count,
+        "indexed": report.added,
+        "problems": problems,
     }))
 }
 
@@ -99,6 +108,11 @@ pub fn doctor(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
                 "type": "plugin_issue",
                 "plugin_name": plugin_name,
                 "detail": detail,
+            }),
+            doctor::DoctorFinding::UnreadableFragment { file_name, reason } => serde_json::json!({
+                "type": "unreadable_fragment",
+                "file": format!("fragments/{}", file_name),
+                "reason": reason,
             }),
         })
         .collect();

@@ -49,7 +49,7 @@ This means a project-local vault automatically shadows your global one whenever 
 
 Local vaults are designed to live alongside source code in a git repository. parc's vault layout assumes the following are git-ignored:
 
-- `index.db` — derivable from `fragments/`, rebuilds with `parc reindex`
+- `index.db` — a cache of `fragments/` that parc keeps up to date and rebuilds on its own
 - `trash/` — local soft-delete state
 - `server.sock` — Unix socket for the long-running JSON-RPC server
 

@@ -44,13 +44,13 @@ impl Default for SearchState {
 /// made outside the TUI: CLI commands, agents, `git pull`, editors.
 ///
 /// File count and newest mtime catch creates, deletes and in-place edits of
-/// fragment files; the index mtime catches index-only changes (`reindex`).
+/// fragment files. The index is left out: it only ever changes to follow the
+/// files (a load syncs it), so its mtime would just echo changes seen here.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct VaultStamp {
     fragment_count: usize,
     newest_fragment: Option<SystemTime>,
     fragments_dir: Option<SystemTime>,
-    index: Option<SystemTime>,
 }
 
 impl VaultStamp {
@@ -74,7 +74,6 @@ impl VaultStamp {
             fragment_count,
             newest_fragment,
             fragments_dir: mtime(&dir),
-            index: mtime(&vault.join("index.db")),
         }
     }
     #[cfg(test)]

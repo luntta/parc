@@ -50,14 +50,14 @@ The server is built on `tokio`. Each request handler is a thin wrapper around a 
 
 ## Files first, index second
 
-The Markdown files in `<vault>/fragments/` are the source of truth. The SQLite index in `<vault>/index.db` is fully derivable from them — `parc reindex` rebuilds it from scratch in seconds for a vault of thousands of fragments.
+The Markdown files in `<vault>/fragments/` are the source of truth. The SQLite index in `<vault>/index.db` is a cache of them, and parc keeps it in step on its own: every time the index is opened (by the CLI, the TUI or the server), parc compares each file's size and modification time with what it last indexed and re-reads only the files that changed, appeared or disappeared. When nothing changed, nothing is written. A file modified again within the same timestamp tick is caught too: a file indexed moments after it was written has its content hash checked on the next open.
 
 This gives you four useful properties:
 
-1. **Backups are simple.** `tar` the vault, you have everything that matters. Restore on any machine, run `parc reindex`, you're back.
-2. **Git transport works.** Pull a collaborator's changes, run `parc reindex`, see their fragments.
-3. **External edits are safe.** Edit fragments by hand, with vim, with a script — `parc reindex` catches up.
-4. **Recovery is local.** A corrupted index is a single command to fix; there is no remote anything to coordinate with.
+1. **Backups are simple.** `tar` the vault, you have everything that matters. Restore it on any machine and the index rebuilds itself on first use.
+2. **Git transport works.** Pull a collaborator's changes and the next command sees their fragments.
+3. **External edits are safe.** Edit fragments by hand, with vim, with a script, with another app: the next read picks them up. A file that can't be read as a fragment is left out of the index, and parc tells you about it (the CLI warns once; `parc doctor` lists it).
+4. **Recovery is automatic.** An index built by another parc version, or a damaged `index.db`, is rebuilt from the files when it's opened. `parc reindex` rebuilds from scratch in one transaction (well under a second for 10,000 fragments), leaving the old index in place if interrupted.
 
 ## The search pipeline
 

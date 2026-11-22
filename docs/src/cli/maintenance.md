@@ -9,37 +9,39 @@ Index management, vault diagnostics, schemas, version checks, and shell completi
 ## reindex
 
 ```bash
-parc reindex [--full]
+parc reindex [--json]
 ```
 
-Rebuilds the SQLite index from the Markdown files in `<vault>/fragments/`. parc keeps the index in sync automatically on every write, so you only need `reindex` after:
+Rebuilds the SQLite index from the Markdown files in `<vault>/fragments/`, in one transaction: if it's interrupted, the previous index stays as it was. Prints the number of fragments indexed and every file that couldn't be indexed, with the reason.
 
-- Pulling vault changes from a collaborator (or after `git checkout`)
-- Editing fragments outside parc (e.g. with vim or a script)
-- Recovering from a corrupted `index.db` — delete the file, then `parc reindex`
+You shouldn't need it. parc brings the index up to date every time it opens it: files added, edited or deleted outside parc (an editor, a script, `git pull`, a sync tool) are picked up by the next command, and only the files that changed are read again. An index from another parc version, or a damaged `index.db`, is rebuilt automatically.
 
-`--full` drops the existing index entirely and rebuilds from scratch. Without it, parc does an incremental sync (faster, but assumes the existing index is structurally valid).
+When a command finds a file it can't index (broken frontmatter, not UTF-8, or a frontmatter `id` that doesn't match the file name, as in a sync tool's conflict copy), it prints a warning to stderr once:
+
+```
+warning: fragments/01JQ7V3XKP5GQZ2N8R6T1WBMVH.md is not indexed: YAML error: …
+```
+
+The file stays out of listings and search until it's fixed; `parc doctor` lists every such file.
 
 ## doctor
 
 ```bash
-parc doctor [--fix] [--json]
+parc doctor [--json]
 ```
 
-Walks the vault and checks for problems:
+Walks the vault and reports problems. It changes nothing.
 
-- Fragments referenced by the index but missing from disk
-- Fragments on disk that aren't in the index
-- Broken wiki-links (target ID doesn't exist)
+- Files in `fragments/` that can't be read as fragments (and so aren't indexed)
+- Broken and ambiguous wiki-links
+- Orphans (fragments nothing links to, that link to nothing)
 - Schema validation failures
-- Orphaned attachments (folder exists, fragment doesn't)
-- Stale history snapshots
-
-By default, `doctor` only reports. `--fix` applies safe automatic remediations: re-indexing missing fragments, removing orphaned index rows, and pruning stale history. It will not delete fragments or attachments.
+- Attachment mismatches (files missing on disk, or present but not listed)
+- Vault size warnings and plugin issues
 
 ```bash
 parc doctor
-parc doctor --fix
+parc doctor --json
 ```
 
 ## git-hooks
@@ -49,7 +51,7 @@ parc git-hooks install [--force]
 parc git-hooks uninstall
 ```
 
-Installs a git `post-merge` hook in the surrounding repository that runs `parc reindex` automatically after a successful pull. Useful for vaults that live alongside source code in a shared repo.
+Installs a git `post-merge` hook in the surrounding repository that runs `parc reindex` after a successful pull. Optional: parc picks up pulled changes on its next command anyway, so the hook only moves that work to the pull.
 
 ```bash
 cd ~/work/api

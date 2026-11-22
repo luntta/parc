@@ -72,4 +72,4 @@ History snapshots are full files, not deltas. For large or noisy fragments you c
 rm .parc/history/01JQ7V3XKP5GQZ2N8R6T1WBMVH/2026-01-*.md
 ```
 
-The index will catch up at the next `parc reindex` or the next edit to that fragment.
+Snapshots aren't indexed, so nothing needs rebuilding afterwards.

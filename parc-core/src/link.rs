@@ -121,6 +121,88 @@ pub fn resolve_link_target(target: &str, candidates: &[FragmentRef]) -> ResolveO
     }
 }
 
+/// Resolves many link targets against one set of fragments. Each answer matches
+/// [`resolve_link_target`] (ambiguous matches may come in a different order),
+/// but a lookup is a binary search instead of a scan of every candidate, so
+/// re-resolving every link in a large vault stays cheap. Build one per batch.
+pub struct LinkResolver {
+    /// Candidate IDs, sorted.
+    ids: Vec<String>,
+    /// `(lowercased title, id)`, sorted.
+    titles: Vec<(String, String)>,
+}
+
+impl LinkResolver {
+    pub fn new(candidates: impl IntoIterator<Item = FragmentRef>) -> Self {
+        let mut ids = Vec::new();
+        let mut titles = Vec::new();
+        for candidate in candidates {
+            titles.push((candidate.title.to_lowercase(), candidate.id.clone()));
+            ids.push(candidate.id);
+        }
+        ids.sort();
+        titles.sort();
+        Self { ids, titles }
+    }
+
+    pub fn resolve(&self, target: &str) -> ResolveOutcome {
+        let target = target.trim();
+        if target.is_empty() {
+            return ResolveOutcome::None;
+        }
+
+        if ULID_PREFIX_RE.is_match(target) {
+            let upper = target.to_uppercase();
+            let start = self.ids.partition_point(|id| id.as_str() < upper.as_str());
+            let matches: Vec<String> = self.ids[start..]
+                .iter()
+                .take_while(|id| id.starts_with(&upper))
+                .cloned()
+                .collect();
+            match matches.len() {
+                0 => {}
+                1 => return ResolveOutcome::Unique(matches[0].clone()),
+                _ => return ResolveOutcome::Ambiguous(matches),
+            }
+        }
+
+        let folded = target.to_lowercase();
+        let start = self
+            .titles
+            .partition_point(|(title, _)| title.as_str() < folded.as_str());
+        let exact: Vec<String> = self.titles[start..]
+            .iter()
+            .take_while(|(title, _)| *title == folded)
+            .map(|(_, id)| id.clone())
+            .collect();
+        match exact.len() {
+            0 => {}
+            1 => return ResolveOutcome::Unique(exact[0].clone()),
+            _ => return ResolveOutcome::Ambiguous(exact),
+        }
+
+        // Titles that start with `folded` sort contiguously from `start`.
+        let prefix: Vec<String> = self.titles[start..]
+            .iter()
+            .take_while(|(title, _)| title.starts_with(&folded))
+            .map(|(_, id)| id.clone())
+            .collect();
+        match prefix.len() {
+            0 => ResolveOutcome::None,
+            1 => ResolveOutcome::Unique(prefix[0].clone()),
+            _ => ResolveOutcome::Ambiguous(prefix),
+        }
+    }
+
+    /// The single fragment `target` names, if it names exactly one.
+    pub fn unique(&self, target: &str) -> Option<String> {
+        match self.resolve(target) {
+            ResolveOutcome::Unique(id) => Some(id),
+            ResolveOutcome::Ambiguous(_) | ResolveOutcome::None => None,
+        }
+    }
+}
+
 /// Merge frontmatter links with wiki-links extracted from the body.
 /// Frontmatter links come first. Deduplicates by uppercase comparison.
 /// `resolve_fn` maps a target string to an optional full ID.
@@ -299,5 +381,64 @@ mod tests {
             resolve_link_target("notes", &candidates),
             ResolveOutcome::None
         );
+    }
+
+    #[test]
+    fn test_link_resolver_matches_resolve_link_target() {
+        let candidates: Vec<FragmentRef> = [
+            ("01JQ7V3XKP5GQZ2N8R6T1WBMVH", "Auth refactor"),
+            ("01JQ7V4YAB1234567890ABCDEF", "Database notes"),
+            ("01JQ7V4YZZ1234567890ABCDEF", "Database"),
+            ("01JQ8A0000000000000000000A", "Dup"),
+            ("01JQ8A0000000000000000000B", "dup"),
+            ("01JQ8B0000000000000000000C", "Auth"),
+            ("01JQ8C0000000000000000000D", "ffff note"),
+            ("01JQ8D0000000000000000000E", "Ünïcode Title"),
+        ]
+        .iter()
+        .map(|(id, title)| FragmentRef {
+            id: id.to_string(),
+            title: title.to_string(),
+        })
+        .collect();
+        let resolver = LinkResolver::new(candidates.clone());
+
+        let normalize = |outcome: ResolveOutcome| match outcome {
+            ResolveOutcome::Ambiguous(mut ids) => {
+                ids.sort();
+                ResolveOutcome::Ambiguous(ids)
+            }
+            other => other,
+        };
+        for target in [
+            "",
+            "  ",
+            "01jq7v3x",
+            "01JQ7V",
+            "01JQ7V4Y",
+            "01JQ7V4YZ",
+            "01JQ8A",
+            "01JQ9",
+            "auth",
+            "Auth ",
+            "auth r",
+            "Database",
+            "database n",
+            "data",
+            "dup",
+            "DUP",
+            "ffff",
+            "ffff n",
+            "ünïcode",
+            "ÜNÏCODE TITLE",
+            "nothing",
+            "zzzz",
+        ] {
+            assert_eq!(
+                normalize(resolver.resolve(target)),
+                normalize(resolve_link_target(target, &candidates)),
+                "target {target:?}"
+            );
+        }
     }
 }

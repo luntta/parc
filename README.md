@@ -323,9 +323,9 @@ Requires the `wasm-plugins` feature. Plugins are compiled to `wasm32-unknown-unk
 ### Maintenance
 
 ```bash
-parc reindex             # Rebuild index from files
+parc reindex             # Rebuild the index from scratch (rarely needed)
 parc doctor              # Check vault health
-parc git-hooks install   # Add post-merge reindex hook
+parc git-hooks install   # Add post-merge reindex hook (optional)
 parc types               # List registered types
 parc version             # Print installed version
 parc update check        # Check latest GitHub release
@@ -387,13 +387,10 @@ plugins:                 # Per-plugin configuration (passed to plugin init)
 parc is single-user by design, but vaults are git-friendly:
 
 - One file per fragment with a ULID filename — no merge conflicts on creation
-- `parc git-hooks install` adds a post-merge hook that runs `parc reindex` automatically
-- The index (`index.db`) and `trash/` are gitignored — they rebuild from source files
+- The index (`index.db`) and `trash/` are gitignored — the index rebuilds from the source files
+- Nothing to run after a pull: the next parc command picks up the changed files
 
-```bash
-# After pulling changes from a collaborator
-parc reindex
-```
+Files that can't be read as fragments (an unresolved merge conflict, a sync tool's `<id>.sync-conflict-….md` copy) are left out of the index; the CLI warns about each one once, and `parc doctor` lists them.
 
 ## Desktop capture prototype
 
@@ -422,7 +419,7 @@ parc/
 └── parc-server/   # JSON-RPC 2.0 server (stdio / Unix socket)
 ```
 
-Files are the source of truth. The SQLite index is derived and fully rebuildable from the Markdown files at any time with `parc reindex`.
+Files are the source of truth. The SQLite index is a cache of them: every open brings it up to date, re-reading only the files whose size or modification time changed, so edits from an editor, a script or `git pull` show up on the next command. An index from another parc version, or a damaged one, is rebuilt automatically; `parc reindex` rebuilds it from scratch on demand.
 
 The WASM plugin system is gated behind the `wasm-plugins` cargo feature — default builds have zero wasmtime overhead. Plugin manifest types and `parc plugin list/info` work without the feature; only runtime loading and execution require it.
 

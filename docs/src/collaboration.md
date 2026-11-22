@@ -27,26 +27,22 @@ git commit -m "Add parc vault"
 
 `parc init` writes a `.gitignore` inside `.parc/` that excludes `index.db`, `trash/`, and `server.sock` automatically.
 
-## The post-merge hook
+## After a pull
+
+Nothing to run. parc keeps its index in step with the files, so the first command after a pull sees whatever your collaborators landed:
 
 ```bash
-parc git-hooks install
-```
-
-Adds a git `post-merge` hook that runs `parc reindex` after a successful pull. This keeps the SQLite index in sync with whatever fragments your collaborators just landed, without you having to remember to do it.
-
-```bash
-git pull origin main          # post-merge hook runs `parc reindex`
+git pull origin main
 parc list todo                 # results include collaborators' new todos
 ```
 
-If you don't want the hook globally installed, run `parc reindex` by hand after every pull.
+`parc git-hooks install` adds a `post-merge` hook that runs `parc reindex` after each pull. It is no longer needed; the hook only moves the indexing work from your next command to the pull itself.
 
 ## Conflict scenarios
 
 ### New fragments from a collaborator
 
-No conflict — different ULID, different filename. `git pull` brings the file in, `parc reindex` adds it to your index.
+No conflict — different ULID, different filename. `git pull` brings the file in, and the next parc command adds it to your index.
 
 ### Same fragment edited by both of you
 
@@ -55,10 +51,11 @@ A textual merge conflict in `fragments/<id>.md`. Resolve it with whatever you'd 
 ```bash
 git add fragments/<id>.md
 git commit
-parc reindex
 ```
 
-If the resolution leaves the fragment invalid against its schema, `parc doctor` will report it. Open the file, fix the frontmatter, and reindex.
+While the conflict markers are in the file, parc can't read it as a fragment: it drops out of the index and the CLI warns about it once. Once resolved, it's picked up again. If the resolution leaves the fragment invalid against its schema, `parc doctor` will report it.
+
+Sync tools such as Syncthing or Dropbox keep both versions instead, as a copy named like `<id>.sync-conflict-….md`. The copy carries the original's `id`, so parc doesn't index it (it would shadow the original) and reports it instead. Merge what you need into the original and delete the copy.
 
 ### Deleted on one side, edited on the other
 
@@ -84,4 +81,4 @@ cd ~/notes
 parc list                     # uses ~/.parc
 ```
 
-This pattern gives you a single global vault that follows you across machines, with git as the transport and `parc reindex` as the only command you ever need to remember.
+This pattern gives you a single global vault that follows you across machines, with git as the transport and nothing extra to remember.

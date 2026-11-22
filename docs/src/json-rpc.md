@@ -255,11 +255,11 @@ Get vault metadata.
 
 ### vault.reindex
 
-Rebuild the search index from fragment files.
+Rebuild the search index from fragment files, in one transaction. Rarely needed: every method reads an index that has just been brought up to date with the files, so edits made outside the server (an editor, the CLI, `git pull`) are visible to the next request.
 
 **Params:** `{}`
 
-**Result:** `{ "indexed": <count> }`
+**Result:** `{ "indexed": <count>, "problems": [{ "file": "fragments/<name>.md", "reason": "<why it could not be indexed>" }] }`
 
 ### vault.links
 
@@ -277,7 +277,7 @@ Run vault health diagnostics.
 
 **Result:** `{ "fragments_checked": <n>, "healthy": true|false, "findings": [...] }`
 
-Each finding has a `type` field: `broken_link`, `orphan`, `schema_violation`, `attachment_mismatch`, or `vault_size_warning`.
+Each finding has a `type` field: `broken_link`, `ambiguous_link`, `orphan`, `schema_violation`, `attachment_mismatch`, `vault_size_warning`, `plugin_issue`, or `unreadable_fragment` (a file in `fragments/` that can't be read as a fragment, with `file` and `reason`; it is not in the index).
 
 ### schema.list
 

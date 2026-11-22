@@ -2747,3 +2747,117 @@ fn test_export_with_filter() {
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["title"], "Tagged note");
 }
+
+// --- The index follows the files without `parc reindex` ---
+
+fn write_fragment_file(vault: &Path, id: &str, title: &str, body: &str) -> std::path::PathBuf {
+    let path = vault.join("fragments").join(format!("{}.md", id));
+    std::fs::write(
+        &path,
+        format!(
+            "---\nid: {id}\ntype: note\ntitle: {title}\ntags: []\nlinks: []\n\
+             created_at: 2026-01-01T00:00:00Z\nupdated_at: 2026-01-01T00:00:00Z\n---\n\n{body}\n"
+        ),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn test_edits_made_outside_parc_show_up_without_reindex() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    let vault = tmp.path().join(".parc");
+    // Index the empty vault first, so what follows is an outside change.
+    parc()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    // A file arrives from an editor, a script or `git pull`.
+    let id = "01KBBBBBBBBBBBBBBBBBBBBBBB";
+    let path = write_fragment_file(&vault, id, "Handwritten note", "About the ferry desk");
+    parc()
+        .args(["search", "ferry"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Handwritten note"));
+
+    // Edited in place.
+    write_fragment_file(
+        &vault,
+        id,
+        "Handwritten note",
+        "Now about orientation slips",
+    );
+    parc()
+        .args(["search", "orientation", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(id));
+    parc()
+        .args(["search", "ferry", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(id).not());
+
+    // Deleted.
+    std::fs::remove_file(&path).unwrap();
+    parc()
+        .args(["list", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(id).not());
+}
+
+#[test]
+fn test_unindexable_file_is_warned_about_once() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    let vault = tmp.path().join(".parc");
+    let id = "01KCCCCCCCCCCCCCCCCCCCCCCC";
+    std::fs::write(
+        vault.join("fragments").join(format!("{}.md", id)),
+        "---\nid: [oops\n---\n",
+    )
+    .unwrap();
+
+    parc()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "warning: fragments/{}.md is not indexed",
+            id
+        )));
+    parc()
+        .args(["list"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty());
+
+    parc()
+        .args(["doctor", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .stdout(predicate::str::contains("unreadable_fragment"));
+
+    let output = parc()
+        .args(["reindex", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["fragments_indexed"], 0);
+    assert_eq!(json["problems"][0]["file"], format!("fragments/{}.md", id));
+}

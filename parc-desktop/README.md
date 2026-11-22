@@ -12,7 +12,7 @@ The **⋯** menu of an open fragment has **History**, **Copy link** (its shortes
 
 ### Drafts and changes from elsewhere
 
-Unsaved text is kept locally as you type, so closing the window or a crash doesn't lose it: the next launch reopens the draft. Leaving a fragment with unsaved changes asks whether to save them. Each opened vault is watched: a save from the CLI, the TUI, another app or a `git pull` (then `parc reindex`) refreshes the list, and reloads the open fragment if you haven't edited it. If you have, Save asks before overwriting the newer version (it stays in the fragment's history either way). The check compares the file's exact contents, so it also catches a save made in the same second. The app reopens the vault you used last.
+Unsaved text is kept locally as you type, so closing the window or a crash doesn't lose it: the next launch reopens the draft. Leaving a fragment with unsaved changes asks whether to save them. Each opened vault is watched: a save from the CLI, the TUI, another app or a `git pull` refreshes the list (and search), and reloads the open fragment if you haven't edited it. If you have, Save asks before overwriting the newer version (it stays in the fragment's history either way). The check compares the file's exact contents, so it also catches a save made in the same second. The app reopens the vault you used last.
 
 ## Start
 

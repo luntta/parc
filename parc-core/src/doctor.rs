@@ -40,6 +40,12 @@ pub enum DoctorFinding {
         plugin_name: String,
         detail: String,
     },
+    /// A file in `fragments/` that can't be read as a fragment, so it is not
+    /// in the index and no other check sees it.
+    UnreadableFragment {
+        file_name: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug)]
@@ -351,19 +357,28 @@ pub fn run_doctor(vault: &Path) -> Result<DoctorReport, ParcError> {
     let all_ids = fragment::list_fragment_ids(vault)?;
     let schemas = load_schemas(vault)?;
 
-    // Load all fragments
+    // Load all fragments; report the ones that can't be loaded.
     let mut fragments = Vec::new();
+    let mut findings = Vec::new();
     for id in &all_ids {
         let path = vault.join("fragments").join(format!("{}.md", id));
-        let content = std::fs::read_to_string(&path)?;
-        match fragment::parse_fragment(&content) {
-            Ok(frag) => fragments.push(frag),
-            Err(_) => continue,
-        }
+        let reason = match std::fs::read(&path) {
+            Ok(bytes) => match fragment::parse_fragment_file(id, &bytes) {
+                Ok(frag) => {
+                    fragments.push(frag);
+                    continue;
+                }
+                Err(e) => e.to_string(),
+            },
+            Err(e) => format!("could not read the file: {}", e),
+        };
+        findings.push(DoctorFinding::UnreadableFragment {
+            file_name: format!("{}.md", id),
+            reason,
+        });
     }
 
     let fragments_checked = fragments.len();
-    let mut findings = Vec::new();
 
     findings.extend(check_broken_links(&fragments, &all_ids));
     findings.extend(check_schema_violations(&fragments, &schemas));
@@ -514,5 +529,42 @@ mod tests {
             .filter(|f| !matches!(f, DoctorFinding::OrphanFragment { .. }))
             .collect();
         assert!(non_orphan_findings.is_empty());
+    }
+
+    #[test]
+    fn test_run_doctor_reports_unreadable_fragments() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+
+        let good = make_fragment("Good", "Body");
+        fragment::create_fragment(&vault, &good).unwrap();
+        let broken = new_id();
+        std::fs::write(
+            vault.join("fragments").join(format!("{}.md", broken)),
+            "no frontmatter",
+        )
+        .unwrap();
+        let not_utf8 = new_id();
+        std::fs::write(
+            vault.join("fragments").join(format!("{}.md", not_utf8)),
+            [0xff, 0xfe],
+        )
+        .unwrap();
+
+        let report = run_doctor(&vault).unwrap();
+        assert_eq!(report.fragments_checked, 1);
+        let mut unreadable: Vec<&str> = report
+            .findings
+            .iter()
+            .filter_map(|f| match f {
+                DoctorFinding::UnreadableFragment { file_name, .. } => Some(file_name.as_str()),
+                _ => None,
+            })
+            .collect();
+        unreadable.sort();
+        let mut expected = vec![format!("{}.md", broken), format!("{}.md", not_utf8)];
+        expected.sort();
+        assert_eq!(unreadable, expected);
     }
 }

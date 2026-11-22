@@ -59,10 +59,6 @@ Every edit creates a snapshot in `<vault>/history/<id>/` automatically — no gi
 
 ## Files first
 
-The Markdown files are the source of truth. The SQLite index in `<vault>/index.db` is fully derivable from them:
+The Markdown files are the source of truth. The SQLite index in `<vault>/index.db` is derived from them, and parc brings it up to date whenever it reads it: only files that changed since the last read are parsed again.
 
-```bash
-parc reindex
-```
-
-This means you can edit fragments by hand, sync the vault with `rsync` or `git`, or restore from backup without losing anything parc cares about.
+This means you can edit fragments by hand, sync the vault with `rsync` or `git`, or restore from backup without losing anything parc cares about, and without running anything afterwards. (`parc reindex` still rebuilds the index from scratch if you want to.)

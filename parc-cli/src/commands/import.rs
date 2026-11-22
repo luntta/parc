@@ -10,9 +10,9 @@ pub fn run(vault: &Path, file: &str, dry_run: bool, json: bool) -> Result<()> {
     let content = std::fs::read_to_string(file)?;
     let results = import::import_json(vault, &content, dry_run)?;
 
-    // Re-index if not dry run
+    // Index the new files now rather than on the next read.
     if !dry_run {
-        index::reindex(vault)?;
+        index::open_index(vault)?;
     }
 
     let created = results
