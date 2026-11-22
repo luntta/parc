@@ -1,0 +1,13 @@
+{
+  "description": "Synthetic recall scenario; labels are test-only, never retrieval input. Dates are fixed, not relative to the test runner's clock.",
+  "fragments": [
+    {"key":"old_observation","created_at":"2023-06-12T09:00:00Z","type":"note","title":"What helped at the ferry desk","body":"With the queue watching, nobody wanted to say they were lost. Giving each visitor a route card to mark in private worked better."},
+    {"key":"recent_distractor","created_at":"2025-06-07T09:00:00Z","type":"note","title":"Volunteer orientation","body":"Book the room and bring a spare projector for volunteer orientation."},
+    {"key":"capture","created_at":"2025-06-12T09:00:00Z","type":"note","title":"Volunteer orientation","body":"When we asked the room what was unclear, not one hand went up. Afterwards three people found me individually to ask where to go. Maybe try anonymous question slips?"},
+    {"key":"unrelated_capture","created_at":"2025-06-13T09:00:00Z","type":"note","title":"Replace the broken kitchen timer","body":""}
+  ],
+  "cases": [
+    {"seed":"capture","expected_evidence":["old_observation"],"candidate_limit":1,"useful_inference":"The private way to ask for help at the ferry desk may be worth trying at orientation.","unsupported_inference":"Anonymous slips have already worked at volunteer orientation."},
+    {"seed":"unrelated_capture","expected_evidence":[],"expected_result":"abstain"}
+  ]
+}
