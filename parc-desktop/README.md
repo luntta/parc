@@ -50,7 +50,7 @@ Single keys work outside text fields; the Ctrl ones work anywhere (Cmd on macOS)
 - **Agent** — inspect the saved fragment context; no model is connected or sent data.
 - **Pulse** — open work, counts by type, and fragments by the week they were last edited. Each count opens the search that lists what it counts.
 
-[Aihio](https://luntta.fi/aihio/) provides UI components and theme tokens (light and dark follow the system); CodeMirror 6 provides source-preserving Markdown editing. Inter and JetBrains Mono ship from `node_modules` (`fonts.css`) and lead Aihio's font tokens, because Chromium on Linux otherwise resolves Aihio's `-apple-system` stack to the desktop default, often Liberation Sans. `npm start` bundles the renderer locally with esbuild. No CDN or runtime network permission is required.
+[Aihio](https://luntta.fi/aihio/) provides UI components and theme tokens (light and dark follow the system); CodeMirror 6 provides source-preserving Markdown editing. Inter and JetBrains Mono ship from `node_modules` (`fonts.css`) and lead Aihio's font tokens, because Chromium on Linux otherwise resolves Aihio's `-apple-system` stack to the desktop default, often Liberation Sans. `npm start` bundles the renderer locally with esbuild. No CDN is used and the page has no network access; the app's only network use is a speech model download you start in Settings.
 
 ## Quick capture
 
@@ -64,9 +64,16 @@ A second launch hands `--capture` to the running app; with none running it opens
 
 ## Local dictation (optional)
 
-Install **ffmpeg** and **whisper.cpp** with its `whisper-cli` executable (e.g. `brew install ffmpeg whisper-cpp` on macOS, or your Linux distribution packages / upstream whisper.cpp). Obtain a compatible local GGML speech model such as `ggml-base.en.bin` for English; see [upstream models](https://github.com/ggml-org/whisper.cpp/tree/master/models). Then choose the model in **Settings** (and `whisper-cli`, if it isn't on the app's PATH). Until dictation is ready the button reads **Set up dictation** and opens Settings. `PARC_WHISPER_MODEL` and `PARC_WHISPER_BIN` still work for terminal launches; Settings wins when both are set.
+Install **whisper.cpp** so its `whisper-cli` program is on your PATH (e.g. `brew install whisper-cpp` on macOS, or your Linux distribution's package or an upstream build), or choose where it is in **Settings**. ffmpeg is not needed: the app converts recordings to the 16 kHz WAV whisper.cpp reads.
 
-**Dictate** checks the configuration before opening the mic. Allow microphone access when prompted (macOS: System Settings → Privacy & Security → Microphone). Click **Stop & transcribe** or let the two-minute limit stop it; **Cancel recording** or Escape discards the recording. Completed audio is converted to 16 kHz mono by ffmpeg and transcribed by whisper-cli on your machine. The draft remains editable. There is no remote speech API, model auto-download or automatic note save. Private temporary clips, WAVs and transcripts are removed after processing, including error exits; a force-kill or system crash may leave a `parc-speech-*` temp directory behind. Typing needs no microphone, speech model or credentials.
+Then open **Settings → Dictation**:
+
+- **Languages you dictate in.** Add one or more. With one, every recording is in it; with several, a picker next to **Dictate** chooses the language of the next recording (the first is the default, and **Detect automatically** is always offered). With none, whisper detects the language.
+- **Speech model.** Five whisper.cpp models are listed with their size, and one is marked **Recommended** for your languages: an English-only model if you only dictate English (faster, and better at English), otherwise Large v3 Turbo, which is the most accurate for other languages but slower on computers without a GPU. **Download** fetches it from Hugging Face with progress and **Cancel**; a cancelled or interrupted download resumes where it stopped. The file is kept only if its SHA-256 matches the hash pinned in the app, and is stored under `models/` in Electron’s user data directory. The first model you download is the one dictation uses; **Use** switches between downloaded models, and the trash button deletes one. You can also choose a model file you already have.
+
+Downloading a model is the only time the app uses the network, and only when you press **Download**. If an English-only model is chosen while you dictate in other languages, Settings and the Dictate button say so (it would write English regardless). `PARC_WHISPER_MODEL` and `PARC_WHISPER_BIN` still work for terminal launches; Settings wins when both are set. Until dictation is ready the button reads **Set up dictation** and opens Settings.
+
+**Dictate** checks the configuration before opening the mic. Allow microphone access when prompted (macOS: System Settings → Privacy & Security → Microphone). Click **Stop & transcribe** or let the two-minute limit stop it; **Cancel recording** or Escape discards the recording. whisper-cli transcribes the audio on your machine, in the chosen language. The draft remains editable. There is no remote speech API and no automatic note save. The temporary WAV and transcript are removed after processing, including error exits; a force-kill or system crash may leave a `parc-speech-*` temp directory behind. Typing needs no microphone, speech model or credentials.
 
 Settings live in `settings.json` beside `vaults.json` in Electron’s user data directory.
 
@@ -77,9 +84,9 @@ After building the Rust binaries:
 ```sh
 npm run lint:ui      # check both pages' markup against Aihio's schema
 npm test             # temporary vault round trips; transcription cleanup & errors
-npm run test:smoke   # requires graphical session and ffmpeg
+npm run test:smoke   # requires a graphical session
 ```
 
-The smoke test opens a temporary Electron window with a synthetic microphone and a stub recognizer. It records, runs real ffmpeg, saves, reopens and edits Markdown, searches the new revision, captures a todo and toggles it, reloads after an outside save, restores a draft across a window reload, checks cross-vault browsing, save routing and both graphs, then opens a fragment from Go to…, filters the sidebar, restores a version from History, archives and trashes with Undo, searches as it types and saves from the quick capture window. It does not test real speech accuracy or microphone hardware.
+The smoke test opens a temporary Electron window with a synthetic microphone and a stub recognizer. It records, converts the recording to WAV in the renderer, saves, reopens and edits Markdown, searches the new revision, captures a todo and toggles it, reloads after an outside save, restores a draft across a window reload, checks cross-vault browsing, save routing and both graphs, then opens a fragment from Go to…, filters the sidebar, restores a version from History, archives and trashes with Undo, searches as it types and saves from the quick capture window, then adds two dictation languages in Settings (checking the model list and its recommendation) and dictates in each. It does not test real speech accuracy or microphone hardware.
 
 Scope: a desktop workspace prototype, not a packaged installer, LLM session or historical-recall engine. The next harness increment should consume shared, cited results through parc-server rather than keeping a separate desktop-only archive.

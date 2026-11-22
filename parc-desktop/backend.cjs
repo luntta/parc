@@ -3,6 +3,8 @@ const { constants, existsSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const { LANGUAGES } = require('./languages.cjs');
+const { englishOnly } = require('./models.cjs');
 
 // No shell; note contents travel over stdin, never through process arguments.
 function run(file, args, input = '', timeout = 15000) {
@@ -106,36 +108,65 @@ function archive(vault) {
   };
 }
 
+/**
+ * The language to dictate in: the only preferred language; with several, the one chosen next to Dictate
+ * (which may be 'auto'), else the first; 'auto' (whisper detects it) when none are set.
+ */
+function speechLanguage(settings = {}) {
+  const preferred = (settings.speechLanguages || []).filter(code => LANGUAGES.includes(code));
+  if (preferred.length === 1) return preferred[0];
+  if (preferred.length && (settings.speechLanguage === 'auto' || preferred.includes(settings.speechLanguage))) return settings.speechLanguage;
+  return preferred[0] || 'auto';
+}
+
 // Settings chosen in the app win over the environment variables, which still work for terminal launches.
 async function speechConfig(env = process.env, settings = {}) {
   const model = settings.whisperModel || env.PARC_WHISPER_MODEL;
   if (!model || !path.isAbsolute(model) || !(await fs.stat(model).catch(() => null))?.isFile()) {
-    throw new Error('Choose a local whisper.cpp speech model to enable dictation.');
+    throw new Error('Choose or download a speech model to enable dictation.');
   }
   const command = settings.whisperBin || env.PARC_WHISPER_BIN || 'whisper-cli';
-  for (const file of [command, 'ffmpeg']) {
-    const options = path.isAbsolute(file) ? [file] : (env.PATH || '').split(path.delimiter).map(dir => path.join(dir, file));
-    let found = false;
-    for (const option of options) {
-      try { await fs.access(option, constants.X_OK); found = true; break; } catch { /* next directory */ }
-    }
-    if (!found) throw new Error(file === 'ffmpeg' ? 'Install ffmpeg to enable dictation, then restart parc Capture.' : `Can’t find ${path.basename(file)}: install it, or choose where it is.`);
+  const options = path.isAbsolute(command) ? [command] : (env.PATH || '').split(path.delimiter).map(dir => path.join(dir, command));
+  let found = false;
+  for (const option of options) {
+    try { await fs.access(option, constants.X_OK); found = true; break; } catch { /* next directory */ }
   }
-  return { model, command };
+  if (!found) throw new Error(`Can’t find ${path.basename(command)}: install whisper.cpp, or choose where whisper-cli is.`);
+  const language = speechLanguage(settings);
+  // An English-only model ignores the language option and writes English.
+  const others = (settings.speechLanguages || []).filter(code => code !== 'en');
+  const warning = englishOnly(model) && (others.length || !['en', 'auto'].includes(language))
+    ? 'This model only understands English. Choose a multilingual model to dictate in other languages.' : null;
+  return { model, command, language, warning };
+}
+
+const WAV_HEADER = 44, MAX_WAV = WAV_HEADER + 16000 * 2 * 120; // two minutes of 16 kHz mono 16-bit audio
+/** Accept only the WAV the renderer writes: PCM, 16-bit, mono, 16 kHz, header and length consistent. */
+function checkWav(audio) {
+  if (!(audio instanceof Uint8Array) || audio.byteLength <= WAV_HEADER || audio.byteLength > MAX_WAV) {
+    throw new Error('Recording is empty or too long. Record up to two minutes.');
+  }
+  const view = new DataView(audio.buffer, audio.byteOffset, audio.byteLength);
+  const tag = offset => String.fromCharCode(...audio.subarray(offset, offset + 4));
+  const valid = tag(0) === 'RIFF' && view.getUint32(4, true) === audio.byteLength - 8 && tag(8) === 'WAVE'
+    && tag(12) === 'fmt ' && view.getUint32(16, true) === 16 && view.getUint16(20, true) === 1 && view.getUint16(22, true) === 1
+    && view.getUint32(24, true) === 16000 && view.getUint16(34, true) === 16
+    && tag(36) === 'data' && view.getUint32(40, true) === audio.byteLength - WAV_HEADER;
+  if (!valid) throw new Error('The recording couldn’t be read. Try recording again.');
+  return audio;
 }
 
 async function transcribe(audio, config, execute = run) {
-  if (!(audio instanceof Uint8Array) || !audio.byteLength || audio.byteLength > 4 * 1024 * 1024) throw new Error('Recording is empty or too large. Record up to two minutes.');
+  checkWav(audio);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-speech-'));
-  const clip = path.join(dir, 'clip.webm'), wav = path.join(dir, 'clip.wav'), output = path.join(dir, 'words');
+  const wav = path.join(dir, 'clip.wav'), output = path.join(dir, 'words');
   try {
-    await fs.writeFile(clip, audio, { mode: 0o600 });
-    await execute('ffmpeg', ['-nostdin', '-loglevel', 'error', '-protocol_whitelist', 'file', '-f', 'matroska', '-i', clip, '-t', '120', '-vn', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav]);
-    await execute(config.command, ['-m', config.model, '-f', wav, '-otxt', '-of', output], '', 180000);
+    await fs.writeFile(wav, audio, { mode: 0o600 });
+    await execute(config.command, ['-m', config.model, '-l', config.language || 'auto', '-f', wav, '-otxt', '-of', output], '', 180000);
     const text = (await fs.readFile(output + '.txt', 'utf8')).trim();
     if (!text) throw new Error('No speech detected. Try recording again.');
     return text;
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 }
 
-module.exports = { archive, speechConfig, transcribe };
+module.exports = { archive, speechConfig, speechLanguage, checkWav, transcribe };

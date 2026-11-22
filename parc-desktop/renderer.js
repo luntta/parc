@@ -6,6 +6,7 @@ import { vaultGraph } from './graph.js';
 import { palette } from './palette.js';
 import { searchAssist } from './assist.js';
 import { diffLines, fold as foldDiff, stat } from './diff.js';
+import { LANGUAGES } from './languages.cjs';
 
 const $ = id => document.getElementById(id), api = window.parc;
 hydrateIcons();
@@ -15,7 +16,7 @@ $('save').title = `Save fragment (${mod}+S)`;
 
 let vaults = [], suggested = [], scope = '', rows = [], opened = null, mode = 'capture', phase = 'loading', dirty = false;
 let fresh = null;                          // a new capture's type, schema fields and tags until its first save
-let speech = { ready: true };              // whether dictation is set up; checked at launch and after Settings
+let speech = { ready: true };              // dictation: { ready, problem?, language, languages, warning? }; checked at launch and after Settings
 const schemas = new Map();                 // vault path → schema.list
 const changedVaults = new Set();           // vaults whose fragments changed on disk, waiting for an idle moment
 const key = r => JSON.stringify([r.vault, r.id]);
@@ -177,7 +178,23 @@ function setPhase(value) {
 const voice = dictation(api, setPhase, status, text => editor.append(text));
 async function checkSpeech() {
   try { speech = await api.speechStatus(); } catch (err) { speech = { ready: false, problem: cleanError(err) }; }
-  paint();
+  languageSwitch(); paint();
+}
+
+// ── Dictation languages: whisper's codes, named in English ──
+const displayNames = (() => { try { return new Intl.DisplayNames(['en'], { type: 'language' }); } catch { return null; } })();
+const languageName = code => code === 'auto' ? 'Detect automatically' : code === 'jw' ? 'Javanese' : displayNames?.of(code) || code;
+// Next to Dictate, with more than one preferred language: which one the next recording is in.
+function languageSwitch() {
+  const slot = $('languageSlot'), languages = speech.languages || [];
+  slot.replaceChildren();
+  if (languages.length < 2) return;
+  const current = speech.language || 'auto';
+  const dd = menu([el('span', 'sr', 'Dictation language: '), el('span', 'language-code', current === 'auto' ? 'Auto' : current.toUpperCase())],
+    [...languages.map(code => [code, languageName(code), code === current]), null, ['auto', languageName('auto'), current === 'auto']],
+    code => api.setSpeechLanguage(code).then(checkSpeech).catch(status), 'language-menu');
+  dd.querySelector('aihio-button').title = `Dictation language: ${languageName(current)}`;
+  slot.append(dd);
 }
 
 // ── Paint: every control's state from (phase, mode, dirty, opened, scope) ──
@@ -192,7 +209,9 @@ function paint() {
   $('record').toggleAttribute('loading', phase === 'transcribing' || phase === 'starting');
   const setup = !speech.ready && phase === 'idle';
   $('recordLabel').textContent = recording ? 'Stop & transcribe' : phase === 'transcribing' ? 'Transcribing' : setup ? 'Set up dictation' : 'Dictate';
-  $('record').title = setup ? speech.problem || '' : '';
+  $('record').title = setup ? speech.problem || '' : speech.warning || '';
+  $('languageSlot').hidden = !capture;
+  $('languageSlot').querySelector('aihio-button')?.toggleAttribute('disabled', phase !== 'idle');
   $('record').setAttribute('variant', setup ? 'ghost' : 'outline');
   const glyph = $('recordIcon');
   if (glyph && glyph.dataset.name !== (recording ? 'stop' : 'mic')) {
@@ -992,21 +1011,134 @@ async function navigate(view) {
 }
 
 // ── Settings ──
-let pending = null;
-function renderSettings(view) {
-  $('modelPath').textContent = pending.whisperModel || 'Not chosen'; $('modelPath').title = pending.whisperModel;
+// Choices wait for Save (`pending`); downloading and deleting a model happen at once.
+let pending = null, models = null, settingsView = null;
+function renderSettings(view = settingsView) {
+  settingsView = view;
+  const custom = pending.whisperModel && !models?.models.some(m => m.path === pending.whisperModel);
+  $('modelPath').textContent = custom ? pending.whisperModel : 'None'; $('modelPath').title = custom ? pending.whisperModel : '';
   $('binPath').textContent = pending.whisperBin || 'whisper-cli from PATH'; $('binPath').title = pending.whisperBin;
   $('clearBin').hidden = !pending.whisperBin;
-  $('speechState').textContent = speech.ready ? 'Ready to dictate.' : speech.problem || 'Not set up.';
-  $('speechState').dataset.tone = speech.ready ? 'ok' : 'warn';
+  const where = speech.language && speech.language !== 'auto' ? ` in ${languageName(speech.language)}` : '';
+  $('speechState').textContent = speech.ready ? speech.warning || `Ready to dictate${where}.` : speech.problem || 'Not set up.';
+  $('speechState').dataset.tone = speech.ready && !speech.warning ? 'ok' : 'warn';
   $('shortcutState').textContent = view.shortcut?.error || (view.shortcut?.active ? `${view.quickCaptureShortcut} opens quick capture.` : 'Leave empty for none.');
   $('shortcutState').dataset.tone = view.shortcut?.error ? 'error' : '';
   $('captureCommand').textContent = view.captureCommand;
+  renderLanguages(); renderModels();
 }
+function renderLanguages() {
+  const box = $('languageList'), chosen = pending.speechLanguages;
+  box.replaceChildren();
+  for (const code of chosen) {
+    const chip = el('span', 'tag'), remove = el('button', 'tag-x');
+    remove.type = 'button'; remove.title = `Remove ${languageName(code)}`; remove.setAttribute('aria-label', remove.title);
+    remove.append(icon('x'));
+    remove.onclick = () => { pending.speechLanguages = chosen.filter(c => c !== code); refreshModels().catch(modelMessage); };
+    chip.append(languageName(code), remove);
+    box.append(chip);
+  }
+  const add = el('select', 'language-add');
+  add.setAttribute('aria-label', 'Add a language');
+  add.append(new Option(chosen.length ? 'Add a language…' : 'Choose a language…', ''));
+  for (const [code, label] of LANGUAGES.filter(c => !chosen.includes(c)).map(c => [c, languageName(c)]).sort((a, b) => a[1].localeCompare(b[1]))) {
+    add.append(new Option(label, code));
+  }
+  add.disabled = chosen.length >= 12;
+  add.onchange = () => {
+    if (!add.value) return;
+    pending.speechLanguages = [...chosen, add.value];
+    refreshModels().then(() => $('languageList').querySelector('select')?.focus()).catch(modelMessage);
+  };
+  box.append(add);
+}
+const megabytes = bytes => `${Math.round(bytes / 1e6)} MB`;
+function smallButton(label, variant, onClick) {
+  const b = document.createElement('aihio-button');
+  b.setAttribute('variant', variant); b.setAttribute('size', 'sm'); b.append(label); b.onclick = onClick;
+  return b;
+}
+function renderModels() {
+  const list = $('modelList');
+  list.replaceChildren();
+  if (!models) return;
+  const busy = models.models.some(m => m.downloading);
+  for (const m of models.models) {
+    const li = el('li', 'model'), text = el('div', 'model-text'), actions = el('div', 'model-actions');
+    li.dataset.id = m.id;
+    const title = el('strong', '', m.label);
+    if (m.id === models.recommended) {
+      const badge = document.createElement('aihio-badge'); badge.setAttribute('variant', 'secondary'); badge.append('Recommended');
+      title.append(' ', badge);
+    }
+    text.append(title, el('span', 'model-note', `${m.note} ${megabytes(m.size)}.`));
+    if (m.downloading) {
+      const bar = el('progress'); bar.max = m.size; bar.value = m.downloading.received;
+      bar.setAttribute('aria-label', `Downloading ${m.label}`);
+      actions.append(bar, el('span', 'model-percent', `${Math.floor(100 * m.downloading.received / m.size)}%`),
+        smallButton('Cancel', 'ghost', () => api.cancelDownload().catch(modelMessage)));
+    } else if (m.installed) {
+      actions.append(pending.whisperModel === m.path ? el('span', 'model-in-use', 'In use')
+        : smallButton('Use', 'outline', () => { pending.whisperModel = m.path; renderSettings(); }));
+      const remove = smallButton(icon('trash'), 'ghost', () => deleteModel(m));
+      remove.setAttribute('size', 'icon'); remove.setAttribute('aria-label', `Delete ${m.label}`); remove.title = remove.getAttribute('aria-label');
+      actions.append(remove);
+    } else {
+      const get = smallButton('Download', 'outline', () => downloadModel(m));
+      get.toggleAttribute('disabled', busy);
+      actions.append(get);
+    }
+    li.append(text, actions);
+    list.append(li);
+  }
+}
+function modelMessage(message) { $('modelMessage').textContent = message ? cleanError(message) : ''; }
+async function refreshModels() {
+  models = await api.speechModels(pending.speechLanguages);
+  renderSettings();
+}
+async function downloadModel(m) {
+  modelMessage(`Downloading ${m.label}…`);
+  const done = api.downloadModel(m.id);
+  refreshModels().catch(() => {});
+  try {
+    const result = await done;
+    if (result.cancelled) modelMessage('Download cancelled. Download again to resume where it stopped.');
+    else {
+      if (result.inUse || !pending.whisperModel) pending.whisperModel = result.path;
+      modelMessage(`${m.label} downloaded${result.inUse ? ' and in use' : ''}.`);
+      if (!$('settings').hasAttribute('open')) status(`Speech model downloaded${result.inUse ? '. Dictation is ready' : ''}.`);
+    }
+  } catch (err) { modelMessage(err); }
+  await checkSpeech();
+  if (pending) await refreshModels().catch(() => {});
+}
+async function deleteModel(m) {
+  try {
+    const result = await api.deleteModel(m.id);
+    if (!result.deleted) return;
+    if (pending.whisperModel === result.path) pending.whisperModel = '';
+    modelMessage(`${m.label} deleted.`);
+    await checkSpeech(); await refreshModels();
+  } catch (err) { modelMessage(err); }
+}
+// Moves the open dialog's progress bar in place, so the Cancel button keeps focus.
+api.onModelProgress(p => {
+  const m = models?.models.find(x => x.id === p.id);
+  if (!m) return;
+  if (p.done) { m.downloading = null; return; }
+  m.downloading = { received: p.received, size: p.size };
+  const row = $('modelList').querySelector(`[data-id="${CSS.escape(p.id)}"]`), bar = row?.querySelector('progress');
+  if (!bar) return renderModels();
+  bar.value = p.received;
+  row.querySelector('.model-percent').textContent = `${Math.floor(100 * p.received / p.size)}%`;
+});
 async function openSettings() {
   const view = await api.settings();
-  pending = { whisperModel: view.whisperModel, whisperBin: view.whisperBin };
+  pending = { whisperModel: view.whisperModel, whisperBin: view.whisperBin, speechLanguages: [...(view.speechLanguages || [])] };
   $('shortcutInput').value = view.quickCaptureShortcut;
+  modelMessage('');
+  models = await api.speechModels(pending.speechLanguages).catch(() => null);
   renderSettings(view);
   $('settings').open();
 }

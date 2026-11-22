@@ -656,3 +656,35 @@ body.quick { display: block; }
 .quick-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--aihio-font-size-badge); }
 .quick-status[data-tone="error"] { color: var(--aihio-color-destructive-text); }
 .quick-keys { color: var(--muted); font-size: var(--aihio-font-size-badge); white-space: nowrap; }
+
+/* Dictation language, next to Dictate */
+.language-slot { display: inline-flex; }
+.language-slot[hidden] { display: none; }
+.language-code { font: var(--aihio-font-weight-control) .75rem var(--aihio-font-family-code); letter-spacing: .02em; }
+
+/* Settings: languages and speech models */
+.setting-stack { flex-direction: column; align-items: stretch; gap: .5rem; }
+.setting-sub { color: var(--muted); font-size: var(--aihio-font-size-badge); line-height: 1.4; }
+.setting-sub:empty { display: none; }
+.language-list { display: flex; flex-wrap: wrap; align-items: center; gap: .375rem; }
+.language-list .tag {
+  display: inline-flex; align-items: center; gap: .25rem; height: 1.625rem; padding: 0 .25rem 0 .625rem;
+  border: 1px solid var(--rule); border-radius: 999px; font-size: var(--aihio-font-size-body-sm);
+}
+.language-list .tag-x { opacity: .7; }
+.language-add {
+  height: 1.75rem; max-width: 12rem; padding: 0 .5rem; border: 1px solid var(--aihio-color-field-border);
+  border-radius: var(--aihio-radius-interactive-compact); background: var(--aihio-color-page-bg); color: var(--aihio-color-page-fg);
+  font-size: var(--aihio-font-size-badge);
+}
+.model-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.model { display: flex; align-items: center; gap: .75rem; padding: .5rem 0; }
+.model + .model { border-top: 1px solid var(--rule); }
+.model-text { display: grid; flex: 1; gap: .125rem; min-width: 0; }
+.model-text aihio-badge { vertical-align: middle; }
+.model-note { color: var(--muted); font-size: var(--aihio-font-size-badge); }
+.model-actions { display: flex; flex: none; align-items: center; gap: .375rem; }
+.model-actions progress { width: 6rem; accent-color: var(--aihio-color-primary-action-bg); }
+.model-percent { min-width: 2.5rem; color: var(--muted); font: .75rem var(--aihio-font-family-code); text-align: end; }
+.model-in-use { color: var(--aihio-color-success-text); font-size: var(--aihio-font-size-badge); }
+.model-custom { display: flex; align-items: center; gap: .5rem; padding-top: .5rem; border-top: 1px solid var(--rule); }

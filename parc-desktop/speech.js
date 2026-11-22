@@ -1,3 +1,5 @@
+import { recordingToWav } from './wav.mjs';
+
 // Reports lifecycle changes so vault and document navigation cannot redirect a transcript.
 export function dictation(api, phase, status, append) {
   let session;
@@ -22,7 +24,7 @@ export function dictation(api, phase, status, append) {
           if (s.failed) throw new Error('Recording failed. Check your microphone.');
           if (s.cancelled) { status('Recording discarded.'); return; }
           phase('transcribing'); status('Transcribing on this device…');
-          append(await api.transcribe(new Uint8Array(await new Blob(chunks).arrayBuffer())));
+          append(await api.transcribe(await recordingToWav(new Blob(chunks))));
           status('Review the transcript before saving.');
         } catch (err) { status(err); } finally { phase('idle'); }
       };

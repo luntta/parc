@@ -1,10 +1,12 @@
-const { app, BrowserWindow, ipcMain, session, systemPreferences, dialog, nativeTheme, clipboard, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, session, systemPreferences, dialog, nativeTheme, clipboard, globalShortcut, net } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
 const { watch } = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const { archive, speechConfig, transcribe } = require('./backend.cjs');
+const models = require('./models.cjs');
+const { LANGUAGES } = require('./languages.cjs');
 
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
 const capturePage = pathToFileURL(path.join(__dirname, 'capture.html')).href;
@@ -53,7 +55,8 @@ else app.whenReady().then(() => {
   const home = path.join(os.homedir(), '.parc'); // parc's global vault
   const stores = new Map([[vault, archive(vault)]]);
   let init, globalVault = null;
-  let settings = { whisperModel: '', whisperBin: '', quickCaptureShortcut: '' }, shortcut = { active: false };
+  const modelDir = path.join(app.getPath('userData'), 'models');
+  let settings = { whisperModel: '', whisperBin: '', quickCaptureShortcut: '', speechLanguages: [], speechLanguage: '' }, shortcut = { active: false };
   async function initialize() {
     await stores.get(vault).init();
     globalVault = await fs.realpath(home).catch(() => null);
@@ -84,7 +87,7 @@ else app.whenReady().then(() => {
   };
   const trusted = wc => !!wc && ((wc === window?.webContents && wc.getURL() === page) || (wc === captureWindow?.webContents && wc.getURL() === capturePage));
 
-  // ── Settings: dictation paths and the quick capture shortcut, kept beside the vault registry ──
+  // ── Settings: dictation (model, whisper-cli, languages) and the quick capture shortcut, kept beside the vault registry ──
   function clean(input) {
     const next = { ...settings };
     for (const k of ['whisperModel', 'whisperBin']) {
@@ -92,6 +95,18 @@ else app.whenReady().then(() => {
       const v = String(input[k]).trim();
       if (v && (!path.isAbsolute(v) || v.length > 4096)) throw new Error('Choose files by their full path.');
       next[k] = v;
+    }
+    if (input?.speechLanguages !== undefined) {
+      const list = input.speechLanguages;
+      if (!Array.isArray(list) || list.length > 12 || !list.every(c => LANGUAGES.includes(c)) || new Set(list).size !== list.length) {
+        throw new Error('Choose languages from the list.');
+      }
+      next.speechLanguages = list;
+    }
+    if (input?.speechLanguage !== undefined) {
+      const v = String(input.speechLanguage);
+      if (v && v !== 'auto' && !LANGUAGES.includes(v)) throw new Error('Choose a language from the list.'); // '' = the first preferred
+      next.speechLanguage = v;
     }
     if (input?.quickCaptureShortcut !== undefined) {
       const v = String(input.quickCaptureShortcut).trim();
@@ -216,13 +231,90 @@ else app.whenReady().then(() => {
   handle('copy-text', text => { clipboard.writeText(String(text).slice(0, 10000)); });
   handle('open-capture', () => openCapture());
   handle('settings', async () => { await ready(); return settingsView(); });
+  async function persist() {
+    await fs.writeFile(settingsFile + '.tmp', JSON.stringify(settings, null, 2), { mode: 0o600 });
+    await fs.rename(settingsFile + '.tmp', settingsFile);
+  }
   handle('save-settings', async input => {
     await ready();
     settings = clean(input);
-    await fs.writeFile(settingsFile + '.tmp', JSON.stringify(settings, null, 2), { mode: 0o600 });
-    await fs.rename(settingsFile + '.tmp', settingsFile);
+    await persist();
     applyShortcut();
     return settingsView();
+  });
+  // The dictation language picked next to Dictate: one setting, saved at once.
+  handle('set-speech-language', async code => {
+    await ready();
+    settings = clean({ speechLanguage: code });
+    await persist();
+  });
+
+  // ── Speech models: the catalog, with what is installed, in use and downloading ──
+  // One download at a time. Only an explicit Download reaches the network, and only models.SOURCE.
+  let download = null;
+  async function modelView(languages = settings.speechLanguages) {
+    const list = await Promise.all(models.MODELS.map(async m => {
+      const file = path.join(modelDir, m.file);
+      return {
+        id: m.id, label: m.label, note: m.note, size: m.size, english: m.english, path: file,
+        installed: await models.installed(m, modelDir),
+        downloading: download?.id === m.id ? { received: download.received, size: m.size } : null
+      };
+    }));
+    return { models: list, recommended: models.recommended(languages), dir: modelDir };
+  }
+  const catalogModel = id => {
+    const model = models.MODELS.find(m => m.id === id);
+    if (!model) throw new Error('Unknown model.');
+    return model;
+  };
+  handle('speech-models', async languages => {
+    await ready();
+    return modelView(Array.isArray(languages) ? languages.filter(c => LANGUAGES.includes(c)) : undefined);
+  });
+  handle('download-model', async id => {
+    await ready();
+    const model = catalogModel(id);
+    if (download) throw new Error('Another model is downloading. Wait for it, or cancel it.');
+    const controller = new AbortController();
+    download = { id, controller, received: 0 };
+    const notify = data => window?.webContents.send('model-progress', { id, size: model.size, ...data });
+    let last = 0;
+    try {
+      const file = await models.download(model, {
+        dir: modelDir, signal: controller.signal, fetch: (url, init) => net.fetch(url, init),
+        onProgress: received => {
+          download.received = received;
+          if (Date.now() - last > 200) { last = Date.now(); notify({ received }); }
+        }
+      });
+      // The first model downloaded is the one dictation uses.
+      if (!settings.whisperModel || !(await fs.stat(settings.whisperModel).catch(() => null))) {
+        settings = clean({ whisperModel: file });
+        await persist();
+      }
+      return { path: file, inUse: settings.whisperModel === file };
+    } catch (err) {
+      if (controller.signal.aborted) return { cancelled: true };
+      throw err;
+    } finally {
+      download = null;
+      notify({ done: true });
+    }
+  });
+  handle('cancel-download', () => { download?.controller.abort(); });
+  handle('delete-model', async function (id) {
+    await ready();
+    const model = catalogModel(id);
+    if (download?.id === id) throw new Error('Cancel the download first.');
+    const { response } = await dialog.showMessageBox(this, {
+      message: `Delete the “${model.label}” speech model?`, detail: `This frees ${Math.round(model.size / 1e6)} MB. You can download it again later.`,
+      buttons: ['Cancel', 'Delete'], cancelId: 0, defaultId: 0
+    });
+    if (response !== 1) return { deleted: false };
+    const file = await models.remove(model, modelDir);
+    if (settings.whisperModel === file) { settings = clean({ whisperModel: '' }); await persist(); }
+    return { deleted: true, path: file };
   });
   handle('pick-file', async function (kind) {
     const model = kind === 'model';
@@ -235,8 +327,11 @@ else app.whenReady().then(() => {
   });
   handle('speech-status', async () => {
     await ready();
-    try { await speechConfig(process.env, settings); return { ready: true }; }
-    catch (err) { return { ready: false, problem: err.message }; }
+    const languages = settings.speechLanguages;
+    try {
+      const { language, warning, model } = await speechConfig(process.env, settings);
+      return { ready: true, language, languages, warning, model };
+    } catch (err) { return { ready: false, problem: err.message, languages }; }
   });
   handle('speech-ready', async () => {
     await ready();

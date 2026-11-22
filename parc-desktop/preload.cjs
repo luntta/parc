@@ -9,6 +9,14 @@ contextBridge.exposeInMainWorld('parc', {
   schemas: invoke('schemas'), links: invoke('links'), copyText: invoke('copy-text'), openCapture: invoke('open-capture'),
   settings: invoke('settings'), saveSettings: invoke('save-settings'), pickFile: invoke('pick-file'),
   speechStatus: invoke('speech-status'), speechReady: invoke('speech-ready'), transcribe: invoke('transcribe'),
+  setSpeechLanguage: invoke('set-speech-language'), speechModels: invoke('speech-models'),
+  downloadModel: invoke('download-model'), cancelDownload: invoke('cancel-download'), deleteModel: invoke('delete-model'),
+  // { id, size, received } while a model downloads, then { id, done: true }.
+  onModelProgress(callback) {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('model-progress', listener);
+    return () => ipcRenderer.off('model-progress', listener);
+  },
   // The vault path whose fragments changed on disk, from any app.
   onVaultChanged(callback) {
     const listener = (_event, vault) => callback(vault);

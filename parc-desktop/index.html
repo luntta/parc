@@ -56,6 +56,7 @@
         <aihio-button id="resume" variant="ghost" size="sm" hidden><i data-icon="back" class="icon"></i>Return to draft</aihio-button>
         <span id="recTime" class="rec-time" hidden>0:00</span>
         <aihio-button id="cancel" variant="ghost" size="sm" hidden>Discard</aihio-button>
+        <span id="languageSlot" class="language-slot"></span>
         <aihio-button id="record" variant="outline" size="sm"><i data-icon="mic" class="icon" id="recordIcon"></i><span id="recordLabel">Dictate</span></aihio-button>
         <label id="destinationLabel" class="destination" hidden><span>Save to</span><select id="destination"></select></label>
         <aihio-dropdown id="fragmentMenu" align="end" hidden>
@@ -116,16 +117,25 @@
       <section aria-labelledby="dictationHeading">
         <h3 id="dictationHeading">Dictation</h3>
         <p id="speechState" class="setting-state"></p>
-        <div class="setting">
-          <div class="setting-text"><strong>Speech model</strong><span id="modelPath" class="path">Not chosen</span></div>
-          <aihio-button id="pickModel" variant="outline" size="sm">Choose…</aihio-button>
+        <div class="setting setting-stack">
+          <div class="setting-text"><strong id="languagesLabel">Languages you dictate in</strong><span class="setting-sub">With more than one, pick the language next to Dictate. With none, it is detected.</span></div>
+          <div id="languageList" class="language-list" role="group" aria-labelledby="languagesLabel"></div>
+        </div>
+        <div class="setting setting-stack">
+          <div class="setting-text"><strong id="modelsLabel">Speech model</strong><span class="setting-sub">Downloaded from Hugging Face only when you press Download.</span></div>
+          <ul id="modelList" class="model-list" aria-labelledby="modelsLabel"></ul>
+          <p id="modelMessage" class="setting-sub" role="status"></p>
+          <div class="model-custom">
+            <span class="setting-text"><span>Your own model file</span><span id="modelPath" class="path">None</span></span>
+            <aihio-button id="pickModel" variant="outline" size="sm">Choose…</aihio-button>
+          </div>
         </div>
         <div class="setting">
           <div class="setting-text"><strong>whisper-cli</strong><span id="binPath" class="path">From PATH</span></div>
           <aihio-button id="clearBin" variant="ghost" size="sm">Use PATH</aihio-button>
           <aihio-button id="pickBin" variant="outline" size="sm">Choose…</aihio-button>
         </div>
-        <p class="setting-hint">A whisper.cpp model file such as ggml-base.en.bin. Audio is transcribed on this computer and never uploaded.</p>
+        <p class="setting-hint">Audio is transcribed on this computer by whisper.cpp and never uploaded. Install whisper.cpp for whisper-cli.</p>
       </section>
       <section aria-labelledby="quickHeading">
         <h3 id="quickHeading">Quick capture</h3>

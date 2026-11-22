@@ -10,7 +10,11 @@ app.commandLine.appendSwitch('use-fake-device-for-media-stream');
 process.env.PARC_WHISPER_MODEL = path.join(dir, 'model');
 process.env.PARC_WHISPER_BIN = path.join(dir, 'stub');
 fs.writeFileSync(process.env.PARC_WHISPER_MODEL, 'test');
-fs.writeFileSync(process.env.PARC_WHISPER_BIN, '#!/bin/sh\nwhile [ "$1" != "-of" ]; do shift; done\nprintf "Synthetic transcript" > "$2.txt"\n', { mode: 0o700 });
+// The stub recognizer records its arguments, then writes a transcript where whisper-cli would.
+const whisperArgs = path.join(dir, 'whisper-args');
+fs.writeFileSync(process.env.PARC_WHISPER_BIN, `#!/bin/sh\nprintf '%s\\n' "$@" > '${whisperArgs}'\nwhile [ "$1" != "-of" ]; do shift; done\nprintf "Synthetic transcript" > "$2.txt"\n`, { mode: 0o700 });
+const lastArgs = () => fs.readFileSync(whisperArgs, 'utf8').trim().split('\n');
+const argAfter = flag => { const args = lastArgs(); return args[args.indexOf(flag) + 1]; };
 const second = path.join(dir, 'Research', '.parc');
 fs.writeFileSync(path.join(dir, 'vaults.json'), JSON.stringify([second]));
 const { archive } = require('../backend.cjs');
@@ -45,6 +49,10 @@ async function check() {
   await delay(1100);
   await js('document.querySelector("#record").click()');
   await until('document.querySelector(".cm-content").textContent === "Synthetic transcript"');
+  // The renderer converted the recording to WAV itself (no ffmpeg); with no languages set, whisper detects one.
+  assert.match(argAfter('-f'), /clip\.wav$/);
+  assert.equal(argAfter('-l'), 'auto');
+  assert.equal(await js('document.querySelector("#languageSlot").childElementCount'), 0);
   assert.equal(await js('document.querySelectorAll("#recent li").length'), 0);
   await js('document.querySelector("#title").value = "Ferry desk"; document.querySelector("#save").click()');
   await until(`document.querySelector("#recent button")?.textContent.includes("Ferry desk") && ${idle}`);
@@ -162,7 +170,31 @@ async function check() {
   await eventually(async () => quick.isDestroyed());
   const idea = (await prototype.list()).find(r => r.title === 'Ferry timetable as a widget');
   assert.equal(idea?.type, 'idea');
-  console.log('PASS: dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to…, sidebar filters, history restore, archive and trash with undo, live search, quick capture');
+  // Settings: the model list recommends by language; two languages put a picker next to Dictate.
+  await js('document.querySelector("[data-view=capture]").click()'); await until(idle);
+  await js('document.querySelector("#openSettings").click()');
+  await until('document.querySelectorAll("#modelList li").length === 5');
+  const recommended = 'document.querySelector("#modelList aihio-badge")?.closest("li").dataset.id';
+  assert.equal(await js(recommended), 'small.en');
+  assert.equal(await js('[...document.querySelectorAll("#modelList li")].every(li => li.querySelector("aihio-button")?.textContent === "Download")'), true);
+  for (const code of ['fi', 'en']) {
+    await js(`{ const s = document.querySelector("#languageList select"); s.value = "${code}"; s.dispatchEvent(new Event("change")); }`);
+    await until(`document.querySelectorAll("#languageList .tag").length === ${code === 'fi' ? 1 : 2}`);
+  }
+  assert.equal(await js('document.querySelector("#languageList .tag").textContent'), 'Finnish');
+  await until(`${recommended} === "large-v3-turbo-q5_0"`);
+  await js('document.querySelector("#settingsSave").click()');
+  await until('!document.querySelector("#settings").hasAttribute("open") && document.querySelector("#languageSlot .language-code")?.textContent === "FI"');
+  await js('document.querySelector("#record").click()');
+  await until('document.querySelector("#recordLabel").textContent.includes("Stop")');
+  await delay(600);
+  await js('document.querySelector("#record").click()');
+  await until(`document.querySelector(".cm-content").textContent.includes("Synthetic transcript") && ${idle}`);
+  assert.equal(argAfter('-l'), 'fi');
+  await js('document.querySelector("#languageSlot aihio-dropdown-item[value=en]").click()');
+  await until('document.querySelector("#languageSlot .language-code")?.textContent === "EN"');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).speechLanguages, ['fi', 'en']);
+  console.log('PASS: dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to…, sidebar filters, history restore, archive and trash with undo, live search, quick capture, dictation languages and model list');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {
