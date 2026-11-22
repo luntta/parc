@@ -1,0 +1,58 @@
+// One stroke family (24px grid, 1.75 stroke, round joins) for every glyph in the workspace.
+const paths = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  graph: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="5.5" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4.1M8.2 13.2l7.6 4.1"/>',
+  agent: '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4.5M9 13.5v1.5M15 13.5v1.5M2 14h2M20 14h2"/>',
+  pulse: '<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
+  chevrons: '<path d="m8 9.5 4-4 4 4M8 14.5l4 4 4-4"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  folder: '<path d="M3.5 18.5V6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v.5M3.5 18.5l2.6-7.2a2 2 0 0 1 1.9-1.3H20a1.5 1.5 0 0 1 1.4 2l-2.2 6.2a2 2 0 0 1-1.9 1.3H5.5a2 2 0 0 1-2-1.5Z"/>',
+  layers: '<path d="m12 3.5 8.5 4.25L12 12 3.5 7.75Z"/><path d="m3.5 12 8.5 4.25L20.5 12"/><path d="m3.5 16.25 8.5 4.25 8.5-4.25"/>',
+  back: '<path d="M9 14.5 4 9.5l5-5"/><path d="M4 9.5h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  link: '<path d="M10 13.5a4.5 4.5 0 0 0 6.4.4l2.8-2.8a4.5 4.5 0 0 0-6.4-6.4l-1.3 1.3"/><path d="M14 10.5a4.5 4.5 0 0 0-6.4-.4l-2.8 2.8a4.5 4.5 0 0 0 6.4 6.4l1.3-1.3"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  alert: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16.2v.1"/>',
+  x: '<path d="m7 7 10 10M17 7 7 17"/>',
+  chevron: '<path d="m7.5 10 4.5 4.5 4.5-4.5"/>',
+  flag: '<path d="M5.5 21V4.5M5.5 4.5h11l-2.5 4 2.5 4h-11"/>',
+  tag: '<path d="M3.5 12.2V4.5a1 1 0 0 1 1-1h7.7a2 2 0 0 1 1.4.6l7.3 7.3a2 2 0 0 1 0 2.8l-6.6 6.6a2 2 0 0 1-2.8 0l-7.3-7.3a2 2 0 0 1-.7-1.3Z"/><circle cx="8.5" cy="8.5" r="1.5"/>',
+  sidebar: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/>',
+  more: '<circle cx="6" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="18" cy="12" r="1.2" fill="currentColor"/>',
+  settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  history: '<path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5"/><path d="M4 4v4.5h4.5M12 8v4.5l3 2"/>',
+  archive: '<rect x="3.5" y="4.5" width="17" height="4.5" rx="1.5"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/>',
+  trash: '<path d="M4.5 7h15M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2M6.5 7l.8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12"/>',
+  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
+  bolt: '<path d="M13 3 5 13.5h6L10 21l8-10.5h-6Z"/>',
+  command: '<path d="m7 9 3 3-3 3M12.5 15H17"/><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/>',
+  fit: '<path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15"/>',
+  // Fragment types
+  note: '<path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5Z"/><path d="M14 3.5v5h5M9 13h6M9 16.5h4"/>',
+  todo: '<rect x="4.5" y="4.5" width="15" height="15" rx="4"/><path d="m8.5 12.2 2.5 2.5 4.5-5"/>',
+  decision: '<path d="M12 21v-8M12 3v2.5"/><path d="M5 5.5h11.5l3.5 3.5-3.5 3.5H5Z"/>',
+  risk: '<path d="M10.3 4.6 3.4 16.8a2 2 0 0 0 1.7 3h13.8a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z"/><path d="M12 9.5v4M12 16.6v.1"/>',
+  idea: '<path d="M9 17.5h6M10 21h4"/><path d="M15 14.5c.3-1.4 1-2.2 1.8-3A6 6 0 1 0 6 8c0 1.4.4 2.4 1.2 3.4.8.9 1.5 1.7 1.8 3.1"/>',
+  fragment: '<path d="M12 3.5 19.5 8v8L12 20.5 4.5 16V8Z"/>'
+};
+const SVG = 'http://www.w3.org/2000/svg';
+export const types = ['note', 'todo', 'decision', 'risk', 'idea'];
+export function icon(name, className = 'icon') {
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', className);
+  svg.innerHTML = paths[name] || paths.fragment;
+  return svg;
+}
+export const typeIcon = (type, className = 'icon') => icon(types.includes(type) ? type : 'fragment', className);
+// Replace [data-icon] placeholders in static markup.
+export function hydrateIcons(root = document) {
+  for (const el of root.querySelectorAll('[data-icon]')) {
+    const svg = icon(el.dataset.icon, el.className || 'icon');
+    if (el.id) svg.id = el.id;
+    el.replaceWith(svg);
+  }
+}

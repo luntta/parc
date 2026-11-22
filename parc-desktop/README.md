@@ -1,0 +1,85 @@
+# parc Capture
+
+A local-first Electron workspace for Linux and macOS. Choose a vault from the switcher at the top of the sidebar, select a fragment, and edit its Markdown in place. The active line exposes its syntax; other lines style headings, emphasis, links, lists and task markers without changing the source. Task boxes toggle with a click, `#tags` are marked, and `[[id]]` links show the title of the fragment they point at (click to open it; a prefix that matches more than one fragment stays unresolved). Typing `[[` opens a link picker over the vault's fragments, recent first; keep typing to filter by title, tag, type or ID, and press Enter or Tab to insert the shortest unique `[[id]]`. **Save** (Ctrl+S or Ctrl+Enter; Cmd on macOS) commits a revision. New captures can be typed or dictated; if you omit a title the first body line supplies one. The window's title names the open fragment, with a dot while it has unsaved changes.
+
+### Types and fields
+
+A new capture starts as a note; its badge (**New note ▾**) picks any type the vault's schemas define. The row under the badge holds the type's fields: enum fields such as status, priority, likelihood or impact open a menu of the schema's values, date fields such as due open a calendar, and tags are added with the tag button and removed with their ×. On a saved fragment each field change is saved at once, as it is in `parc tui`; the text keeps its own Save. On a new capture they wait for its first save. When the schema declares a `toggle:` (todos flip open/done, decisions proposed/accepted, risks identified/resolved), the status mark toggles it, and so does **T** outside the editor.
+
+### History, archive and trash
+
+The **⋯** menu of an open fragment has **History**, **Copy link** (its shortest `[[id]]`), **Archive** and **Move to trash**; the "Edited …" time in the status bar opens History too. History lists earlier versions newest first and compares the one you select with the current version, field by field and line by line; **Restore this version** puts it back (the version it replaces stays in History). Archived fragments stay in the list, marked, and leave default searches. Archiving and trashing offer **Undo** in the status bar; trashed fragments can also come back with `parc trash --restore`.
+
+### Drafts and changes from elsewhere
+
+Unsaved text is kept locally as you type, so closing the window or a crash doesn't lose it: the next launch reopens the draft. Leaving a fragment with unsaved changes asks whether to save them. Each opened vault is watched: a save from the CLI, the TUI, another app or a `git pull` (then `parc reindex`) refreshes the list, and reloads the open fragment if you haven't edited it. If you have, Save asks before overwriting the newer version (it stays in the fragment's history either way). The check compares the file's exact contents, so it also catches a save made in the same second. The app reopens the vault you used last.
+
+## Start
+
+From the repository root, with Rust and Node 22.12+:
+
+```sh
+cargo build -p parc-cli -p parc-server
+cd parc-desktop
+npm ci
+npm start
+```
+
+The default vault is `prototype/.parc` under Electron’s user data directory. Hover over a vault in the switcher to see its path; each vault's mark has its own colour. If parc's global vault (`~/.parc`) exists, the switcher offers it by name. **Open vault folder…** accepts an existing `.parc` or its parent; only open trusted vaults, because writes run vault hooks. Opened vaults are remembered locally, not discovered by scanning your machine. **All opened vaults** combines fragment lists without merging the vaults. New captures in that view require an explicit destination; existing fragments always save back to their original vault. Writes use the standard `fragment.create` / `fragment.update` RPCs and preserve type-specific metadata; every write names the revision it was based on (`expected_revision`), so a newer save from elsewhere is never silently overwritten. The app prefers `../target/debug/{parc,parc-server}`, falling back to PATH.
+
+### Moving around
+
+**Go to…** (Ctrl+K) is one box for fragments and commands, ranked together like the TUI's launcher: type part of a title to open a fragment with the caret in its text, or a command (new todo, switch vault, archive, history, settings…). Start with `>` for commands only (Ctrl+Shift+P opens it that way).
+
+The sidebar lists every fragment in scope, archived ones included and marked, with its type's glyph, status and age; titles get two lines. The box above it filters as you type: plain words match titles, types, statuses, tags and vault names; anything in the search language (`type:todo`, `#tag`, `due:overdue`) asks the vault, with completion as in Search. **Open** hides done, closed and archived work. ↑/↓ move through the list (↓ from the filter enters it), Enter opens a fragment with the caret in its text. Drag the sidebar's edge to resize it (double-click to reset), or hide it with Ctrl+\\.
+
+| Key | Does |
+|-----|------|
+| Ctrl+K | Go to a fragment or command |
+| Ctrl+N or + | New capture |
+| Ctrl+F or / | Search |
+| Ctrl+S or Ctrl+Enter | Save |
+| Ctrl+\\ | Hide or show the sidebar |
+| G, A, P | Graph, Agent, Pulse |
+| T | Toggle the open fragment's status (schema `toggle:`) |
+
+Single keys work outside text fields; the Ctrl ones work anywhere (Cmd on macOS).
+
+- **Search** — parc’s search language against the selected scope. Results update as you type; Tab completes filter names and their values (types, statuses, priorities, tags, date words) from the vault's schemas, and the chips add common filters.
+- **Graph** — every fragment in scope and the links between them, laid out once and drawn to pan (drag) and zoom (scroll). Hover or focus a fragment to pick out its neighbours; select one to open it. Fragments without links are left out until **Show unlinked**. Each saved fragment also has a **Graph** section under its text with its own linked fragments.
+- **Agent** — inspect the saved fragment context; no model is connected or sent data.
+- **Pulse** — open work, counts by type, and fragments by the week they were last edited. Each count opens the search that lists what it counts.
+
+[Aihio](https://luntta.fi/aihio/) provides UI components and theme tokens (light and dark follow the system); CodeMirror 6 provides source-preserving Markdown editing. Inter and JetBrains Mono ship from `node_modules` (`fonts.css`) and lead Aihio's font tokens, because Chromium on Linux otherwise resolves Aihio's `-apple-system` stack to the desktop default, often Liberation Sans. `npm start` bundles the renderer locally with esbuild. No CDN or runtime network permission is required.
+
+## Quick capture
+
+A small window over whatever you're doing: pick a vault and type, write, Ctrl+S, and it closes. Esc asks before dropping text; text in progress is kept if the window closes some other way. Open it from the sidebar, from Go to…, with a global shortcut set in **Settings** (for example `CommandOrControl+Shift+Space`), or by launching the app with `--capture`:
+
+```sh
+./node_modules/.bin/electron . --capture
+```
+
+A second launch hands `--capture` to the running app; with none running it opens only the capture window. Some desktops, including many Wayland compositors, don't let apps register global shortcuts: bind that command in the desktop's own shortcut settings instead (Settings shows the exact command).
+
+## Local dictation (optional)
+
+Install **ffmpeg** and **whisper.cpp** with its `whisper-cli` executable (e.g. `brew install ffmpeg whisper-cpp` on macOS, or your Linux distribution packages / upstream whisper.cpp). Obtain a compatible local GGML speech model such as `ggml-base.en.bin` for English; see [upstream models](https://github.com/ggml-org/whisper.cpp/tree/master/models). Then choose the model in **Settings** (and `whisper-cli`, if it isn't on the app's PATH). Until dictation is ready the button reads **Set up dictation** and opens Settings. `PARC_WHISPER_MODEL` and `PARC_WHISPER_BIN` still work for terminal launches; Settings wins when both are set.
+
+**Dictate** checks the configuration before opening the mic. Allow microphone access when prompted (macOS: System Settings → Privacy & Security → Microphone). Click **Stop & transcribe** or let the two-minute limit stop it; **Cancel recording** or Escape discards the recording. Completed audio is converted to 16 kHz mono by ffmpeg and transcribed by whisper-cli on your machine. The draft remains editable. There is no remote speech API, model auto-download or automatic note save. Private temporary clips, WAVs and transcripts are removed after processing, including error exits; a force-kill or system crash may leave a `parc-speech-*` temp directory behind. Typing needs no microphone, speech model or credentials.
+
+Settings live in `settings.json` beside `vaults.json` in Electron’s user data directory.
+
+## Verify
+
+After building the Rust binaries:
+
+```sh
+npm run lint:ui      # check both pages' markup against Aihio's schema
+npm test             # temporary vault round trips; transcription cleanup & errors
+npm run test:smoke   # requires graphical session and ffmpeg
+```
+
+The smoke test opens a temporary Electron window with a synthetic microphone and a stub recognizer. It records, runs real ffmpeg, saves, reopens and edits Markdown, searches the new revision, captures a todo and toggles it, reloads after an outside save, restores a draft across a window reload, checks cross-vault browsing, save routing and both graphs, then opens a fragment from Go to…, filters the sidebar, restores a version from History, archives and trashes with Undo, searches as it types and saves from the quick capture window. It does not test real speech accuracy or microphone hardware.
+
+Scope: a desktop workspace prototype, not a packaged installer, LLM session or historical-recall engine. The next harness increment should consume shared, cited results through parc-server rather than keeping a separate desktop-only archive.

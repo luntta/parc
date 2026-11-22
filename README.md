@@ -395,6 +395,10 @@ parc is single-user by design, but vaults are git-friendly:
 parc reindex
 ```
 
+## Desktop capture prototype
+
+[`parc-desktop/`](parc-desktop/README.md) is an Electron workspace for Linux and macOS. Browse opened vaults, search and follow fragment links, edit Markdown in place, or dictate a capture with a local whisper.cpp model. See the desktop README for development setup.
+
 ## Terminal UI
 
 Bare `parc` opens a keyboard-driven terminal UI when stdout is a TTY. In pipes and scripts it falls back to the plain `parc today` digest.

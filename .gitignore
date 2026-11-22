@@ -5,6 +5,8 @@
 # Node (docs site)
 node_modules/
 
+/parc-desktop/dist/
+
 # Docs site
 docs/_site/
 

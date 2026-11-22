@@ -1,0 +1,32 @@
+{
+  "name": "parc-desktop",
+  "productName": "parc Capture",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "build": "esbuild workspace=renderer.js capture=capture.js --bundle --outdir=dist --format=iife --log-level=warning",
+    "prestart": "npm run build",
+    "pretest:smoke": "npm run build",
+    "start": "electron .",
+    "lint:ui": "aihio lint index.html && aihio lint capture.html",
+    "test": "node --test test/*.test.cjs",
+    "test:smoke": "node test/run-smoke.cjs"
+  },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "6.20.4",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
+    "@fontsource-variable/inter": "5.2.8",
+    "@fontsource-variable/jetbrains-mono": "5.2.8",
+    "@lezer/highlight": "1.2.5",
+    "@luntta/aihio": "2.5.0"
+  }
+}

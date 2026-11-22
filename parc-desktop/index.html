@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'nonce-parc-editor'; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>parc</title>
+  <link rel="stylesheet" href="fonts.css">
+  <link rel="stylesheet" href="node_modules/@luntta/aihio/dist/aihio.css"><link rel="stylesheet" href="style.css">
+  <script defer src="dist/workspace.js"></script>
+</head><body data-phase="loading">
+  <aside id="sidebar" aria-label="Archive navigation">
+    <aihio-dropdown id="vaultMenu" class="switcher-menu">
+      <aihio-button slot="trigger" id="scope" class="switcher" variant="ghost" disabled>
+        <span id="vaultMark" class="vault-mark" aria-hidden="true"></span>
+        <span class="switcher-name"><span class="sr">Vault: </span><span id="vaultName">Opening…</span></span>
+        <i data-icon="chevrons" class="icon chevrons"></i>
+      </aihio-button>
+    </aihio-dropdown>
+
+    <aihio-button id="newCapture" class="new" data-view="capture" variant="outline" aria-keyshortcuts="+ Control+N">
+      <i data-icon="plus" class="icon"></i><span>New capture</span><kbd aria-hidden="true">+</kbd>
+    </aihio-button>
+
+    <nav aria-label="Workspace">
+      <button type="button" id="goTo" aria-keyshortcuts="Control+K"><i data-icon="command" class="icon"></i><span>Go to…</span><kbd aria-hidden="true">Ctrl K</kbd></button>
+      <button type="button" data-view="search" aria-keyshortcuts="/ Control+F"><i data-icon="search" class="icon"></i><span>Search</span><kbd aria-hidden="true">/</kbd></button>
+      <button type="button" data-view="graph" aria-keyshortcuts="G"><i data-icon="graph" class="icon"></i><span>Graph</span><kbd aria-hidden="true">G</kbd></button>
+      <button type="button" data-view="agent" aria-keyshortcuts="A"><i data-icon="agent" class="icon"></i><span>Agent</span><kbd aria-hidden="true">A</kbd></button>
+      <button type="button" data-view="pulse" aria-keyshortcuts="P"><i data-icon="pulse" class="icon"></i><span>Pulse</span><kbd aria-hidden="true">P</kbd></button>
+    </nav>
+
+    <section class="list" aria-labelledby="listHeading">
+      <div class="list-head"><h2 id="listHeading">Fragments</h2><span id="count"></span></div>
+      <div class="list-tools">
+        <aihio-input id="filter" type="search" size="sm" placeholder="Filter, or type:todo #tag" aria-label="Filter fragments" autocomplete="off"></aihio-input>
+        <button type="button" id="openOnly" class="chip" aria-pressed="false" title="Hide done, closed and archived fragments">Open</button>
+      </div>
+      <p id="empty">Opening vault…</p>
+      <ul id="recent" aria-labelledby="listHeading"></ul>
+    </section>
+
+    <div class="side-foot">
+      <button type="button" id="quickCapture" class="side-link" title="A small capture window over other apps"><i data-icon="bolt" class="icon"></i><span>Quick capture</span></button>
+      <button type="button" id="openSettings" class="side-link icon-only" aria-label="Settings" title="Settings"><i data-icon="settings" class="icon"></i></button>
+    </div>
+    <div id="resizer" class="resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-controls="sidebar" tabindex="0"></div>
+  </aside>
+
+  <main id="main">
+    <header class="bar">
+      <div class="bar-start">
+        <aihio-button id="sidebarToggle" variant="ghost" size="icon" aria-label="Hide sidebar" aria-keyshortcuts="Control+Backslash" title="Hide sidebar (Ctrl+\)"><i data-icon="sidebar" class="icon"></i></aihio-button>
+        <p id="crumb" class="crumb"></p>
+      </div>
+      <aihio-cluster gap="sm" align="center" class="actions">
+        <span id="revision" class="save-state"></span>
+        <aihio-button id="resume" variant="ghost" size="sm" hidden><i data-icon="back" class="icon"></i>Return to draft</aihio-button>
+        <span id="recTime" class="rec-time" hidden>0:00</span>
+        <aihio-button id="cancel" variant="ghost" size="sm" hidden>Discard</aihio-button>
+        <aihio-button id="record" variant="outline" size="sm"><i data-icon="mic" class="icon" id="recordIcon"></i><span id="recordLabel">Dictate</span></aihio-button>
+        <label id="destinationLabel" class="destination" hidden><span>Save to</span><select id="destination"></select></label>
+        <aihio-dropdown id="fragmentMenu" align="end" hidden>
+          <aihio-button slot="trigger" variant="ghost" size="icon" aria-label="Fragment actions" title="Fragment actions"><i data-icon="more" class="icon"></i></aihio-button>
+          <aihio-dropdown-item value="history"><i data-icon="history" class="icon"></i><span>History</span></aihio-dropdown-item>
+          <aihio-dropdown-item value="copy"><i data-icon="copy" class="icon"></i><span>Copy link</span></aihio-dropdown-item>
+          <aihio-dropdown-item value="archive"><i data-icon="archive" class="icon"></i><span id="archiveLabel">Archive</span></aihio-dropdown-item>
+          <aihio-dropdown-separator></aihio-dropdown-separator>
+          <aihio-dropdown-item value="trash"><i data-icon="trash" class="icon"></i><span>Move to trash</span></aihio-dropdown-item>
+        </aihio-dropdown>
+        <aihio-button id="save" size="sm" disabled>Save<kbd id="saveKey" aria-hidden="true"></kbd></aihio-button>
+      </aihio-cluster>
+    </header>
+
+    <div class="scroll" id="scroller">
+      <article id="document" class="page" aria-label="Fragment editor">
+        <div id="meta" class="doc-meta"></div>
+        <label class="sr" for="title">Fragment title</label>
+        <textarea id="title" rows="1" placeholder="Untitled" autocomplete="off"></textarea>
+        <div id="draft"></div>
+        <section id="docGraph" class="doc-graph" aria-labelledby="docGraphTitle" hidden>
+          <h2 id="docGraphTitle" class="section-label">Graph<small id="docGraphNote"></small></h2>
+          <div id="docGraphBody"></div>
+        </section>
+        <datalist id="tagOptions"></datalist>
+      </article>
+
+      <section id="tool" class="page wide" aria-labelledby="toolTitle" hidden>
+        <header class="tool-head">
+          <h1 id="toolTitle"></h1>
+          <p id="intro"></p>
+        </header>
+        <form id="searchForm" role="search" hidden>
+          <div class="search-row">
+            <div class="search-field">
+              <aihio-input id="query" name="q" type="search" size="lg" aria-label="Search the archive" placeholder="Words, #tags, or type:decision" autocomplete="off"></aihio-input>
+            </div>
+            <aihio-button type="submit" size="lg">Search</aihio-button>
+          </div>
+          <div class="hints" id="hints"><span class="hints-label" id="hintsLabel">Filters</span></div>
+        </form>
+        <div id="results"></div>
+      </section>
+    </div>
+
+    <footer class="statusbar">
+      <p id="status" role="status"></p>
+      <p id="stats" class="stats"></p>
+    </footer>
+  </main>
+
+  <aihio-dialog id="settings">
+    <aihio-dialog-header>
+      <aihio-dialog-title>Settings</aihio-dialog-title>
+      <aihio-dialog-description>Kept on this computer, beside the list of opened vaults.</aihio-dialog-description>
+    </aihio-dialog-header>
+    <div class="settings-body">
+      <section aria-labelledby="dictationHeading">
+        <h3 id="dictationHeading">Dictation</h3>
+        <p id="speechState" class="setting-state"></p>
+        <div class="setting">
+          <div class="setting-text"><strong>Speech model</strong><span id="modelPath" class="path">Not chosen</span></div>
+          <aihio-button id="pickModel" variant="outline" size="sm">Choose…</aihio-button>
+        </div>
+        <div class="setting">
+          <div class="setting-text"><strong>whisper-cli</strong><span id="binPath" class="path">From PATH</span></div>
+          <aihio-button id="clearBin" variant="ghost" size="sm">Use PATH</aihio-button>
+          <aihio-button id="pickBin" variant="outline" size="sm">Choose…</aihio-button>
+        </div>
+        <p class="setting-hint">A whisper.cpp model file such as ggml-base.en.bin. Audio is transcribed on this computer and never uploaded.</p>
+      </section>
+      <section aria-labelledby="quickHeading">
+        <h3 id="quickHeading">Quick capture</h3>
+        <aihio-field>
+          <span slot="label">Global shortcut</span>
+          <aihio-input id="shortcutInput" placeholder="CommandOrControl+Shift+Space" autocomplete="off"></aihio-input>
+          <span slot="description" id="shortcutState">Leave empty for none.</span>
+        </aihio-field>
+        <p class="setting-hint">Where the desktop doesn’t let apps register shortcuts, bind one in its own settings to <code id="captureCommand"></code></p>
+      </section>
+    </div>
+    <aihio-dialog-footer>
+      <aihio-button variant="outline" commandfor="settings" command="--close">Cancel</aihio-button>
+      <aihio-button id="settingsSave">Save</aihio-button>
+    </aihio-dialog-footer>
+  </aihio-dialog>
+</body></html>

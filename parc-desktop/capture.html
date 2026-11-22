@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Quick capture — parc</title>
+  <link rel="stylesheet" href="fonts.css">
+  <link rel="stylesheet" href="node_modules/@luntta/aihio/dist/aihio.css"><link rel="stylesheet" href="style.css">
+  <script defer src="dist/capture.js"></script>
+</head><body class="quick">
+  <form id="quick" aria-label="Quick capture">
+    <div class="quick-head">
+      <label class="quick-pick"><span>Vault</span><select id="qVault"></select></label>
+      <label class="quick-pick"><span>Type</span><select id="qType"></select></label>
+    </div>
+    <label class="sr" for="qTitle">Title</label>
+    <input id="qTitle" class="quick-title" type="text" placeholder="Title (optional)" autocomplete="off">
+    <label class="sr" for="qBody">Text</label>
+    <textarea id="qBody" class="quick-body" placeholder="Write it down. Markdown, #tags and [[links]] work as everywhere in parc."></textarea>
+    <div class="quick-foot">
+      <p id="qStatus" class="quick-status" role="status"></p>
+      <span class="quick-keys"><kbd id="qSaveKey">Ctrl S</kbd> save · <kbd>Esc</kbd> close</span>
+      <aihio-button id="qSave" type="submit" size="sm">Save</aihio-button>
+    </div>
+  </form>
+</body></html>
