@@ -16,13 +16,30 @@ struct Args {
     /// Custom socket path (implies --socket)
     #[arg(long)]
     socket_path: Option<PathBuf>,
+
+    /// Speak the Model Context Protocol on stdio instead of parc's JSON-RPC,
+    /// for agent harnesses (Claude Code, Codex, editors)
+    #[arg(long, conflicts_with_all = ["socket", "socket_path"])]
+    mcp: bool,
+
+    /// With --mcp: offer only the tools that read the vault
+    #[arg(long, requires = "mcp")]
+    read_only: bool,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let vault_path = parc_core::vault::resolve_vault(args.vault.as_deref())?;
+
+    if args.mcp {
+        eprintln!(
+            "parc-server: vault={} transport=stdio protocol=mcp{}",
+            vault_path.display(),
+            if args.read_only { " read-only" } else { "" }
+        );
+        return parc_server::mcp::run_stdio(vault_path, args.read_only);
+    }
 
     let use_socket = args.socket || args.socket_path.is_some();
     let transport = if use_socket {
@@ -43,5 +60,5 @@ async fn main() -> anyhow::Result<()> {
         parc_server::TransportMode::Stdio
     };
 
-    parc_server::run(vault_path, transport).await
+    tokio::runtime::Runtime::new()?.block_on(parc_server::run(vault_path, transport))
 }

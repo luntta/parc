@@ -950,3 +950,55 @@ fn test_archive_and_trash_restore() {
     let resp = h.send_rpc(rpc(10, "trash.restore", serde_json::json!({ "id": &id })));
     assert!(resp.get("error").is_some());
 }
+
+#[test]
+fn test_mcp_mode_over_stdio() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let vault_path = tmp.path().join(".parc");
+    parc_core::vault::init_vault(&vault_path).unwrap();
+    let bin = env!("CARGO_BIN_EXE_parc-server");
+
+    let mut child = Command::new(bin)
+        .args(["--mcp", "--read-only", "--vault"])
+        .arg(&vault_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18"}}}}"#
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+    )
+    .unwrap();
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list"}}"#).unwrap();
+    drop(stdin);
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let lines: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "the notification gets no reply");
+    assert_eq!(lines[0]["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 4);
+
+    // --read-only only makes sense for MCP.
+    let status = Command::new(bin)
+        .args(["--read-only", "--vault"])
+        .arg(&vault_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success());
+}

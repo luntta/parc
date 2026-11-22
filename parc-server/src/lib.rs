@@ -1,4 +1,5 @@
 pub mod jsonrpc;
+pub mod mcp;
 pub mod methods;
 pub mod router;
 pub mod transport;

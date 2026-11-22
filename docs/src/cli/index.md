@@ -25,6 +25,7 @@ The `parc` command is the primary way to interact with a vault. It speaks JSON w
 A few commands are also dispatched through this CLI but live in their own pages:
 
 - [`parc server`]({{ '/json-rpc/' | url }}) — JSON-RPC 2.0 server
+- [`parc mcp`]({{ '/mcp/' | url }}) — Model Context Protocol server for AI agents
 - [`parc plugin`]({{ '/plugins/' | url }}) — WASM plugin management
 
 ## Type aliases

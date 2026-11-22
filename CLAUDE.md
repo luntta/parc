@@ -10,7 +10,7 @@ Library-first design: `parc-core` (library) + thin consumer binaries.
 parc/
 ├── parc-core/       # Library crate — no terminal I/O, returns Result<T, ParcError>
 ├── parc-cli/        # CLI binary + terminal UI (`parc tui`) — terminal I/O, $EDITOR, formatting
-└── parc-server/     # JSON-RPC server binary (stdio / Unix socket)
+└── parc-server/     # JSON-RPC server binary (stdio / Unix socket); `mcp.rs` is the MCP server (`parc mcp`), a thin layer over the RPC methods
 ```
 
 Rules for `parc-core`:

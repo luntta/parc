@@ -283,6 +283,17 @@ echo '{"jsonrpc":"2.0","id":1,"method":"fragment.create","params":{"type":"todo"
 
 See the [JSON-RPC reference](https://luntta.github.io/parc/json-rpc/) for the full method reference with examples and integration snippets for Node.js and Python.
 
+### MCP server for agents
+
+`parc mcp` serves the vault over the [Model Context Protocol](https://modelcontextprotocol.io), so Claude Code, Codex and other MCP clients can search it, read fragments, and record notes, todos, decisions, risks and ideas. Writes go through the same validation, hooks and history as the CLI.
+
+```bash
+claude mcp add parc -- parc mcp      # Claude Code, using this project's vault
+parc mcp --read-only                 # search and read only
+```
+
+Tools: `search`, `get_fragment`, `list_types`, `list_tags`, `create_fragment`, `update_fragment` (with `append` and `expected_revision`), `link_fragments`. See the [MCP reference](https://luntta.github.io/parc/mcp/).
+
 ### Plugins
 
 Extend parc with WebAssembly plugins. Plugins are `.wasm` binaries with TOML manifests, installed into `<vault>/plugins/`. They can hook into fragment lifecycle events, add custom validation, provide custom rendering, and extend the CLI with new subcommands.
@@ -416,7 +427,7 @@ Library-first: `parc-core` is a pure library crate with no terminal I/O. The CLI
 parc/
 ├── parc-core/     # Library — no println!, no TTY, returns Result<T, ParcError>
 ├── parc-cli/      # CLI binary — terminal formatting, $EDITOR, clap
-└── parc-server/   # JSON-RPC 2.0 server (stdio / Unix socket)
+└── parc-server/   # JSON-RPC 2.0 server (stdio / Unix socket) and MCP server
 ```
 
 Files are the source of truth. The SQLite index is a cache of them: every open brings it up to date, re-reading only the files whose size or modification time changed, so edits from an editor, a script or `git pull` show up on the next command. An index from another parc version, or a damaged one, is rebuilt automatically; `parc reindex` rebuilds it from scratch on demand.

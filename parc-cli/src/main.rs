@@ -434,6 +434,12 @@ enum Commands {
         #[arg(long)]
         socket_path: Option<String>,
     },
+    /// Serve the vault to agents over the Model Context Protocol (stdio)
+    Mcp {
+        /// Offer only the tools that read the vault
+        #[arg(long)]
+        read_only: bool,
+    },
     /// Manage plugins
     Plugin {
         #[command(subcommand)]
@@ -556,7 +562,10 @@ fn main() -> anyhow::Result<()> {
             // on every request.
             if !matches!(
                 command,
-                Commands::Reindex { .. } | Commands::Doctor { .. } | Commands::Server { .. }
+                Commands::Reindex { .. }
+                    | Commands::Doctor { .. }
+                    | Commands::Server { .. }
+                    | Commands::Mcp { .. }
             ) {
                 sync_index(&vault);
             }
@@ -703,6 +712,7 @@ fn main() -> anyhow::Result<()> {
                     socket,
                     socket_path,
                 } => commands::server::run(&vault, socket, socket_path),
+                Commands::Mcp { read_only } => parc_server::mcp::run_stdio(vault, read_only),
                 Commands::Plugin { subcommand } => match subcommand {
                     PluginCommands::List { json } => commands::plugin::run_list(&vault, json),
                     PluginCommands::Info { name, json } => {

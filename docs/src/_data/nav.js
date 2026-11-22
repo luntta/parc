@@ -35,6 +35,7 @@ export default [
   { url: "/configuration/", title: "Configuration" },
   { url: "/custom-types/", title: "Custom types" },
   { url: "/json-rpc/", title: "JSON-RPC server" },
+  { url: "/mcp/", title: "MCP server" },
   { url: "/plugins/", title: "Plugins" },
   { url: "/releasing/", title: "Releasing" },
   { url: "/collaboration/", title: "Collaboration" },
