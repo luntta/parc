@@ -140,6 +140,11 @@ function archive(vault) {
       if (typeof query !== 'string' || query.length > 2000) throw new Error('Invalid search query');
       return request('fragment.search', { query });
     },
+    // Lines of fragment bodies containing the text (literal, smart case): Go to…'s / mode.
+    async grep(pattern) {
+      if (typeof pattern !== 'string' || pattern.length > 1000) throw new Error('Invalid search text');
+      return request('fragment.grep', { pattern, limit: 300 });
+    },
     get: id => request('fragment.get', { id: validId(id) }),
     async archive(id, archived, expected) {
       if (typeof archived !== 'boolean') throw new Error('Invalid archive flag');

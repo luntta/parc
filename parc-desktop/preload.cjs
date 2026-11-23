@@ -3,7 +3,7 @@ const invoke = channel => (...args) => ipcRenderer.invoke(channel, ...args);
 contextBridge.exposeInMainWorld('parc', {
   vaults: invoke('vaults'), suggestedVaults: invoke('suggested-vaults'), openVault: invoke('open-vault'),
   discard: invoke('discard'), conflict: invoke('conflict'),
-  list: invoke('list'), note: invoke('note'), save: invoke('save'), update: invoke('update'),
+  list: invoke('list'), grep: invoke('grep'), note: invoke('note'), save: invoke('save'), update: invoke('update'),
   archive: invoke('archive'), remove: invoke('delete'), untrash: invoke('untrash'),
   history: invoke('history'), version: invoke('version'), restoreVersion: invoke('restore-version'),
   schemas: invoke('schemas'), links: invoke('links'),

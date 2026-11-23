@@ -53,19 +53,19 @@ async function check() {
   assert.match(argAfter('-f'), /clip\.wav$/);
   assert.equal(argAfter('-l'), 'auto');
   assert.equal(await js('document.querySelector("#languageSlot").childElementCount'), 0);
-  assert.equal(await js('document.querySelectorAll("#recent li").length'), 0);
+  assert.equal(await js('document.querySelectorAll("#recent .row").length'), 0);
   await js('document.querySelector("#title").value = "Ferry desk"; document.querySelector("#save").click()');
-  await until(`document.querySelector("#recent button")?.textContent.includes("Ferry desk") && ${idle}`);
+  await until(`document.querySelector("#recent .row")?.textContent.includes("Ferry desk") && ${idle}`);
   await js('document.querySelector("[data-view=capture]").click()');
   await until('!document.querySelector("#title").value');
-  await js('document.querySelector("#recent button").click()');
+  await js('document.querySelector("#recent .row").click()');
   await until('document.querySelector("#title").value === "Ferry desk"');
   await js('document.querySelector(".cm-content").focus()');
   await win.webContents.insertText('## Questions\n');
   await until('!!document.querySelector(".cm-line.md-h2")');
   await js('document.querySelector("#save").click()');
   await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
-  assert.equal(await js('document.querySelectorAll("#recent li").length'), 1);
+  assert.equal(await js('document.querySelectorAll("#recent .row").length'), 1);
   await js('document.querySelector("[data-view=search]").click()');
   await until(idle);
   await js('document.querySelector("#query").value = "Questions"; document.querySelector("#searchForm").requestSubmit()');
@@ -97,7 +97,7 @@ async function check() {
   const old = await other.save({ title: 'Old observation', body: 'People asked privately.' });
   answers.push(1); // Don't save
   await js('document.querySelector(\'#vaultMenu aihio-dropdown-item[value="@all"]\').click()');
-  await until(`document.querySelectorAll("#recent li").length === 3 && ${idle}`);
+  await until(`document.querySelectorAll("#recent .row").length === 3 && ${idle}`);
   assert.equal(await js('localStorage.getItem("parc.draft")'), null);
   await js('document.querySelector(".cm-content").focus()');
   // The [[ picker ranks fragments in memory and inserts the shortest unique ID on Enter.
@@ -109,21 +109,41 @@ async function check() {
   await win.webContents.insertText(` and connection to [[${old.id}]]`);
   assert.equal(await js('document.querySelector("#save > button").disabled'), true);
   await js(`document.querySelector('#destination').value=${JSON.stringify(second)}; document.querySelector('#destination').dispatchEvent(new Event('change')); document.querySelector('#save').click()`);
-  await until(`document.querySelectorAll("#recent li").length === 4 && ${idle}`);
+  await until(`document.querySelectorAll("#recent .row").length === 4 && ${idle}`);
   assert.equal((await other.list()).length, 2);
   // The saved fragment's own Graph section, then the whole scope as a graph.
   await until('document.querySelector("#docGraph:not([hidden]) .node:not(.center)")?.textContent.includes("Old observation")');
   await js('document.querySelector("[data-view=graph]").click()');
   await until('[...document.querySelectorAll("#results .vg-node")].some(n => n.getAttribute("aria-label").startsWith("Old observation"))');
   assert.equal(await js('document.querySelectorAll("#results .vg-edges line").length'), 1);
-  // Go to… (Ctrl+K) finds a fragment by title and opens it with the caret in its text.
-  await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))');
-  await until('!document.querySelector(".palette").hidden');
-  await js('{ const i = document.querySelector(".palette-input"); i.value = "ferry desk"; i.dispatchEvent(new Event("input")); }');
+  // Go to… (Ctrl+K) finds a fragment by title, shows it on the right as it reads, and opens it with the caret in its text.
+  const goTo = async text => {
+    await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))');
+    await until('!document.querySelector(".palette").hidden');
+    await js(`{ const i = document.querySelector(".palette-input"); i.value = ${JSON.stringify(text)}; i.dispatchEvent(new Event("input")); }`);
+  };
+  const paletteKey = key => js(`document.querySelector(".palette-input").dispatchEvent(new KeyboardEvent("keydown", { key: "${key}", bubbles: true }))`);
+  await goTo('ferry desk');
   await until('document.querySelector(".palette-item[aria-selected=true]")?.textContent.includes("Ferry desk")');
-  await js('document.querySelector(".palette-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))');
+  await until('document.querySelector(".pv-title")?.textContent === "Ferry desk" && document.querySelector(".palette-preview .cm-content")?.textContent.includes("Questions")');
+  assert.equal(await js('document.querySelector(".palette-preview .cm-content").contentEditable'), 'false');
+  await paletteKey('Enter');
   await until(`document.querySelector("#title").value === "Ferry desk" && ${idle}`);
   await until('document.activeElement?.classList.contains("cm-content")');
+  // "/" greps inside fragments: each matching line under its fragment with line:column, the match marked in the
+  // preview, and Enter selects it in the editor.
+  await goTo('/questions');
+  await until('document.querySelector(".palette-file")?.textContent.includes("Ferry desk") && !!document.querySelector(".palette-hit[aria-selected=true]")');
+  assert.equal(await js('document.querySelector(".palette-mode").textContent'), 'Grep');
+  assert.match(await js('document.querySelector(".palette-hit .palette-pos").textContent'), /^\d+:\d+$/);
+  assert.equal(await js('document.querySelector(".palette-hit mark").textContent'), 'Questions');
+  await until('document.querySelector(".palette-preview .md-hit-current")?.textContent === "Questions"');
+  await paletteKey('Enter');
+  await until(`document.querySelector(".palette").hidden && getSelection().toString() === "Questions" && ${idle}`);
+  await goTo('/Nothing like this');
+  await until('document.querySelector(".palette-none")?.textContent.startsWith("No fragment contains")');
+  await paletteKey('Escape');
+  await until('document.querySelector(".palette").hidden');
   // The sidebar filters by words, by the search language, and to open work.
   const filter = async text => { await js(`{ const f = document.querySelector("#filter"); f.value = ${JSON.stringify(text)}; f.dispatchEvent(new Event("input", { bubbles: true })); }`); await delay(400); };
   const shown = () => js('[...document.querySelectorAll("#recent .row-title")].map(t => t.textContent)');
@@ -135,6 +155,34 @@ async function check() {
   await filter('type:todo');
   assert.deepEqual(await shown(), ['Call the ferry office']);
   await filter('');
+  // The list groups by type unless told otherwise, or by tag with a fragment under each of its tags; groups fold;
+  // it sorts by title and creation.
+  const listView = value => js(`document.querySelector('#listView aihio-dropdown-item[value="${value}"]').click()`);
+  const groupNames = 'JSON.stringify([...document.querySelectorAll("#recent .group-name")].map(t => t.textContent))';
+  await prototype.update(todo.id, { tags: ['ferry', 'calls'] });
+  assert.equal(await js(groupNames), '["Note","Todo"]');
+  assert.equal(await js('document.querySelector("#listHeading").textContent'), 'Fragments by type');
+  assert.equal(await js('document.querySelector("#listView").hasAttribute("data-active")'), false);
+  await listView('group:tag');
+  await until(`${groupNames} === '["#calls","#ferry","No tags"]'`);
+  assert.equal((await shown()).filter(t => t === 'Call the ferry office').length, 2);
+  await js('document.querySelector(\'#recent [data-group="tag:calls"] .group-head\').click()');
+  assert.equal(await js('document.querySelector(\'#recent [data-group="tag:calls"] .row\')'), null);
+  assert.equal(await js('document.querySelector(\'#recent [data-group="tag:calls"] .group-count\').textContent'), '1');
+  assert.deepEqual(JSON.parse(await js('localStorage.getItem("parc.folded")')), ['tag:calls']);
+  await listView('group:none'); await listView('sort:title');
+  assert.equal(await js('document.querySelectorAll("#recent .group").length'), 0);
+  assert.equal(await js('document.querySelector("#listView").hasAttribute("data-active")'), true);
+  const byTitle = await shown();
+  assert.equal(byTitle[0], 'Call the ferry office');
+  await listView('dir:desc');
+  assert.deepEqual(await shown(), [...byTitle].reverse());
+  await listView('sort:created'); await listView('dir:asc');
+  assert.equal((await shown())[0], 'Ferry desk');
+  assert.match(await js('document.querySelector("#recent time").title'), /^Created /);
+  await listView('sort:updated'); await listView('group:type');
+  assert.equal(await js('document.querySelector("#listView").hasAttribute("data-active")'), false);
+  assert.deepEqual(JSON.parse(await js('localStorage.getItem("parc.listView")')), { group: 'type', sort: 'updated', dir: 'desc' });
   // History lists the version before "## Questions" was added; restoring it brings that text back.
   await js('document.querySelector("#fragmentMenu aihio-dropdown-item[value=history]").click()');
   await until(`document.querySelectorAll(".version").length >= 1 && ${idle}`);
@@ -220,7 +268,7 @@ async function check() {
   assert.deepEqual(kinds.find(k => k.name === 'bug').fields[0].categories, { open: 'open', done: 'done' });
   await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Done")).click()');
   await until('!document.querySelector("#vaultSettings").hasAttribute("open")');
-  console.log('PASS: dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to…, sidebar filters, history restore, archive and trash with undo, live search, quick capture, dictation languages and model list, vault settings');
+  console.log('PASS: dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, history restore, archive and trash with undo, live search, quick capture, dictation languages and model list, vault settings');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

@@ -112,6 +112,7 @@ pub struct SearchResult {
     pub status: Option<String>,
     pub tags: Vec<String>,
     pub updated_at: String,
+    pub created_at: String,
     pub snippet: Option<String>,
     /// Serialized only when true: fuzzy hits don't carry it, so absent means "not known to be archived".
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -595,17 +596,17 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
         param_idx += 1;
         if has_tag_joins {
             // Can't use snippet() with additional JOINs
-            "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived \
+            "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived, f.created_at \
              FROM fragments f \
              JOIN fragments_fts ON fragments_fts.id = f.id"
                 .to_string()
         } else {
-            "SELECT f.id, f.type, f.title, f.status, f.updated_at, snippet(fragments_fts, 2, '»', '«', '…', 20) as snippet, f.archived \
+            "SELECT f.id, f.type, f.title, f.status, f.updated_at, snippet(fragments_fts, 2, '»', '«', '…', 20) as snippet, f.archived, f.created_at \
              FROM fragments f \
              JOIN fragments_fts ON fragments_fts.id = f.id".to_string()
         }
     } else {
-        "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived \
+        "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived, f.created_at \
          FROM fragments f"
             .to_string()
     };
@@ -762,6 +763,7 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchResult
             status: row.get(3)?,
             tags: Vec::new(),
             updated_at: row.get(4)?,
+            created_at: row.get(7)?,
             snippet: row.get(5)?,
             archived: row.get::<_, i64>(6)? != 0,
         })

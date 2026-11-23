@@ -25,8 +25,9 @@ const name = p => vaults.find(v => v.path === p)?.name || 'All vaults';
 const labels = { capture: 'New capture', search: 'Search', graph: 'Graph', agent: 'Agent', pulse: 'Pulse', history: 'History' };
 const blankCapture = () => ({ type: defaultType(scope || $('destination').value), fields: {}, tags: [] });
 
-// Per-viewer memory: last vault, an unsaved draft, the sidebar's shape and filter. The app works without it.
-const DRAFT = 'parc.draft', SCOPE = 'parc.scope', SIDE = 'parc.sidebar', OPEN_ONLY = 'parc.openOnly';
+// Per-viewer memory: last vault, an unsaved draft, the sidebar's shape, filter, grouping, order and folded groups.
+// The app works without it.
+const DRAFT = 'parc.draft', SCOPE = 'parc.scope', SIDE = 'parc.sidebar', OPEN_ONLY = 'parc.openOnly', LIST_VIEW = 'parc.listView', FOLDED = 'parc.folded';
 const remember = {
   get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch { /* not persisted */ } }
@@ -331,10 +332,13 @@ function openRow(r, focus = false) {
   return action(() => openFragment(r)).then(() => { if (focus && opened && key(opened) === key(r) && mode === 'capture') editor.focus(); });
 }
 // A fragment row. In the sidebar (compact) the glyph says the type, so the row keeps its room for the title.
-function row(r, { withSnippet = false, compact = false } = {}) {
+// Its age is the last edit, or the creation when the list is in creation order.
+const createdAt = r => r.created_at || r.updated_at;
+function row(r, { withSnippet = false, compact = false, created = false } = {}) {
   const b = el('button', 'row'); b.type = 'button';
   const meta = el('span', 'row-meta'), facts = el('span', 'row-facts'), main = el('span', 'row-main');
-  const time = el('time', '', age(r.updated_at)); time.dateTime = r.updated_at; time.title = stamp.format(new Date(r.updated_at));
+  const at = created ? createdAt(r) : r.updated_at;
+  const time = el('time', '', age(at)); time.dateTime = at; time.title = `${created ? 'Created' : 'Edited'} ${stamp.format(new Date(at))}`;
   if (!scope) facts.append(el('span', 'where', name(r.vault)));
   if (!compact) facts.append(el('span', '', typeLabel(r.type)));
   if (r.status) facts.append(state(r.vault, r.type, r.status));
@@ -349,9 +353,10 @@ function row(r, { withSnippet = false, compact = false } = {}) {
   b.onclick = e => openRow(r, e.detail === 0);
   return b;
 }
+const rowItem = (r, options) => { const li = el('li'); li.append(row(r, options)); return li; };
 function rowList(items, options) {
   const ul = el('ul', 'results');
-  ul.append(...items.map(r => { const li = el('li'); li.append(row(r, options)); return li; }));
+  ul.append(...items.map(r => rowItem(r, options)));
   return ul;
 }
 
@@ -386,9 +391,90 @@ function onFilter() {
   filterTimer = setTimeout(async () => { await refilter(); list(); }, 150);
 }
 function toggleOpenOnly() { openOnly = !openOnly; remember.set(OPEN_ONLY, openOnly); list(); }
+
+// ── Sidebar grouping and order ──
+// Grouped by type (the default), by tag, or not at all. By tag, a fragment with several tags is listed under each,
+// and untagged ones under "No tags". Groups run alphabetically, so they stay put while their fragments change; the
+// order applies inside each. Dates sort newest first by default, titles A to Z. A folded group keeps its header and count.
+const GROUPS = { none: 'No grouping', type: 'Group by type', tag: 'Group by tag' };
+const SORTS = { updated: 'Sort by last edit', created: 'Sort by creation date', title: 'Sort by title' };
+const DEFAULT_VIEW = { group: 'type', sort: 'updated', dir: 'desc' };
+const naturalDir = sort => sort === 'title' ? 'asc' : 'desc';
+const dirLabel = (sort, dir) => sort === 'title' ? (dir === 'asc' ? 'A to Z' : 'Z to A') : (dir === 'desc' ? 'Newest first' : 'Oldest first');
+const listView = (() => {
+  const saved = remember.get(LIST_VIEW) || {}, own = (map, k) => typeof k === 'string' && Object.hasOwn(map, k);
+  const sort = own(SORTS, saved.sort) ? saved.sort : DEFAULT_VIEW.sort;
+  return { group: own(GROUPS, saved.group) ? saved.group : DEFAULT_VIEW.group, sort, dir: ['asc', 'desc'].includes(saved.dir) ? saved.dir : naturalDir(sort) };
+})();
+const folded = new Set([remember.get(FOLDED)].flat().filter(k => typeof k === 'string'));
+const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+function setListView(change) {
+  if (change.sort && change.sort !== listView.sort && !change.dir) change = { ...change, dir: naturalDir(change.sort) };
+  Object.assign(listView, change);
+  remember.set(LIST_VIEW, listView); viewMenu(); list();
+}
+function ordered(items) {
+  const { sort, dir } = listView, sign = dir === 'asc' ? 1 : -1, when = sort === 'created' ? createdAt : r => r.updated_at;
+  const keyed = items.map(r => ({ r, t: Date.parse(when(r)) || 0 }));
+  // created_at is kept to the second; IDs (ULIDs) keep the millisecond, so captures made within a second stay in order.
+  const byId = (a, b) => sort === 'created' ? sign * (a.r.id < b.r.id ? -1 : a.r.id > b.r.id ? 1 : 0) : 0;
+  keyed.sort(sort === 'title'
+    ? (a, b) => (!a.r.title - !b.r.title) || sign * collator.compare(a.r.title, b.r.title) || b.t - a.t // untitled last
+    : (a, b) => sign * (a.t - b.t) || byId(a, b) || collator.compare(a.r.title || '', b.r.title || ''));
+  return keyed.map(k => k.r);
+}
+function grouped(items) {
+  const groups = new Map();
+  const add = (id, label, glyph, r) => { if (!groups.has(id)) groups.set(id, { id, label, glyph, items: [] }); groups.get(id).items.push(r); };
+  for (const r of items) {
+    if (listView.group === 'type') { add(`type:${r.type}`, typeLabel(r.type), r.type, r); continue; }
+    const tags = new Map((r.tags || []).map(t => [t.toLowerCase(), t])); // tags are case-insensitive
+    if (!tags.size) add('tag:', 'No tags', null, r);
+    for (const [low, t] of tags) add(`tag:${low}`, `#${t}`, null, r);
+  }
+  const sortName = g => g.label.replace(/^#/, '');
+  return [...groups.values()].sort((a, b) => (a.id === 'tag:') - (b.id === 'tag:') || collator.compare(sortName(a), sortName(b)));
+}
+function groupItem(g, options) {
+  const li = el('li', 'group'), head = el('button', 'group-head'), open = !folded.has(g.id);
+  li.dataset.group = g.id;
+  head.type = 'button'; head.setAttribute('aria-expanded', String(open));
+  head.append(icon('chevron', 'icon fold'), g.glyph ? typeIcon(g.glyph) : icon('tag'), el('span', 'group-name', g.label), el('span', 'group-count', g.items.length.toLocaleString()));
+  head.onclick = () => foldGroup(g.id);
+  li.append(head);
+  if (open) { const ul = el('ul', 'group-rows'); ul.setAttribute('aria-label', g.label); ul.append(...g.items.map(r => rowItem(r, options))); li.append(ul); }
+  return li;
+}
+function foldGroup(id, fold = !folded.has(id)) {
+  if (fold) folded.add(id); else folded.delete(id);
+  remember.set(FOLDED, [...folded]); list();
+  $('recent').querySelector(`[data-group="${CSS.escape(id)}"] > .group-head`)?.focus();
+}
+// The menu beside Open. Its button is marked while the list isn't in its default grouping and order.
+function viewMenu() {
+  const menu = $('listView'), { group, sort, dir } = listView;
+  menu.querySelectorAll('aihio-dropdown-item, aihio-dropdown-separator').forEach(n => n.remove());
+  const item = (value, label, current) => {
+    const it = document.createElement('aihio-dropdown-item');
+    it.setAttribute('value', value); it.append(el('span', 'item-name', label));
+    if (current) it.append(icon('check', 'icon current'), el('span', 'sr', '(current)'));
+    return it;
+  };
+  const sep = () => document.createElement('aihio-dropdown-separator');
+  const dirs = sort === 'title' ? ['asc', 'desc'] : ['desc', 'asc'];
+  menu.append(...Object.entries(GROUPS).map(([k, label]) => item(`group:${k}`, label, k === group)), sep(),
+    ...Object.entries(SORTS).map(([k, label]) => item(`sort:${k}`, label, k === sort)), sep(),
+    ...dirs.map(d => item(`dir:${d}`, dirLabel(sort, d), d === dir)));
+  menu.toggleAttribute('data-active', Object.entries(DEFAULT_VIEW).some(([k, v]) => listView[k] !== v));
+  const how = [group === 'none' ? 'not grouped' : `by ${group}`, SORTS[sort].replace(/^Sort /, ''), dirLabel(sort, dir).toLowerCase()].filter(Boolean).join(', ');
+  menu.querySelector('aihio-button').title = `Group and sort the list (now ${how})`;
+}
+
 function list() {
-  const shown = visible(), narrowed = !!filterText.trim() || openOnly;
-  $('recent').replaceChildren(...shown.map(r => { const li = el('li'); li.append(row(r, { compact: true })); return li; }));
+  const shown = ordered(visible()), narrowed = !!filterText.trim() || openOnly;
+  const options = { compact: true, created: listView.sort === 'created' };
+  $('recent').replaceChildren(...(listView.group === 'none' ? shown.map(r => rowItem(r, options)) : grouped(shown).map(g => groupItem(g, options))));
+  $('listHeading').textContent = { none: 'Fragments', type: 'Fragments by type', tag: 'Fragments by tag' }[listView.group];
   $('count').textContent = rows.length ? narrowed ? `${shown.length} of ${rows.length}` : rows.length : '';
   $('empty').textContent = !rows.length
     ? suggested.length && scope === vaults[0]?.path
@@ -1206,6 +1292,7 @@ function commands() {
   add('New capture', () => newCapture(), { icon: 'plus', keys: `${mod} N`, keywords: `${startAs} create` });
   for (const s of enabledTypes(scope)) if (s.name !== startAs) add(`New ${s.name}`, () => newCapture(s.name), { glyph: typeIcon(s.name), keywords: 'create capture' });
   add('Search', () => action(() => navigate('search')), { icon: 'search', keys: `${mod} F` });
+  add('Search inside fragments', () => goTo.open('/'), { icon: 'search', keys: `${mod} Shift F`, keywords: 'grep text find lines body content' });
   add('Graph of the vault', () => action(() => navigate('graph')), { icon: 'graph', keys: 'G', keywords: 'links' });
   add('Pulse', () => action(() => navigate('pulse')), { icon: 'pulse', keys: 'P', keywords: 'stats counts' });
   add('Agent context', () => action(() => navigate('agent')), { icon: 'agent', keys: 'A' });
@@ -1224,16 +1311,54 @@ function commands() {
   add('Open vault folder…', () => switchScope('@open'), { icon: 'folder', keywords: 'vault' });
   add(side.collapsed ? 'Show sidebar' : 'Hide sidebar', toggleSidebar, { icon: 'sidebar', keys: `${mod} \\` });
   add(openOnly ? 'Show every fragment in the list' : 'Show only open fragments in the list', toggleOpenOnly, { icon: 'check', keywords: 'filter done' });
+  const sidebar = { icon: 'sort', keywords: 'sidebar list group sort order' };
+  for (const [g, label] of Object.entries({ type: 'Group the list by type', tag: 'Group the list by tag', none: 'Ungroup the list' })) {
+    if (g !== listView.group) add(label, () => setListView({ group: g }), sidebar);
+  }
+  for (const [s, label] of Object.entries(SORTS)) if (s !== listView.sort) add(label.replace('Sort by', 'Sort the list by'), () => setListView({ sort: s }), sidebar);
+  const flip = listView.dir === 'asc' ? 'desc' : 'asc';
+  const flipped = dirLabel(listView.sort, flip);
+  add(`List ${listView.sort === 'title' ? flipped : flipped.toLowerCase()}`, () => setListView({ dir: flip }), { ...sidebar, keywords: `${sidebar.keywords} reverse ascending descending` });
   add('Quick capture window', () => api.openCapture(), { icon: 'bolt' });
   if (!speech.ready) add('Set up dictation', openSettings, { icon: 'mic', keywords: 'whisper speech' });
   add('Vault settings', () => openVaultSettings(), { icon: 'settings', keywords: 'types statuses fields schema turn off' });
   add('Settings', openSettings, { icon: 'settings', keywords: 'preferences dictation shortcut' });
   return out;
 }
+// Its preview reads fragments as saved. A few stay cached, each until its row says it changed.
+const previewCache = new Map();
+function loadNote(r) {
+  const k = key(r), cached = previewCache.get(k);
+  if (cached?.updated_at === r.updated_at) return cached.note;
+  const note = api.note(r.vault, r.id);
+  previewCache.delete(k); previewCache.set(k, { updated_at: r.updated_at, note });
+  note.catch(() => { if (previewCache.get(k)?.note === note) previewCache.delete(k); });
+  if (previewCache.size > 40) previewCache.delete(previewCache.keys().next().value);
+  return note;
+}
+// "/" in Go to…: every vault in view, merged, most recently edited first.
+async function grepScope(text) {
+  const paths = scope ? [scope] : vaults.map(v => v.path);
+  const answers = await Promise.all(paths.map(async p => ({ p, found: await api.grep(p, text) })));
+  const hits = answers.flatMap(({ p, found }) => found.matches.map(h => ({ ...h, vault: p })));
+  return { hits: hits.sort((a, b) => b.updated_at.localeCompare(a.updated_at)), truncated: answers.some(a => a.found.truncated) };
+}
+// A link in the preview resolves inside the previewed fragment's vault; following it opens that fragment.
+function previewLinks(r) {
+  const find = prefix => { const hits = rows.filter(x => x.vault === r.vault && x.id.startsWith(prefix)); return hits.length === 1 ? hits[0] : null; };
+  return {
+    resolve(prefix) { const t = find(prefix); return t ? { title: t.title, type: t.type } : null; },
+    open(prefix) { const t = find(prefix); if (t) { goTo.close(false); openRow(t, true); } },
+    pool: () => [], shortId: x => x.id, describe: () => []
+  };
+}
 const goTo = palette({
   fragments: () => rows, commands,
   describe: r => [typeLabel(r.type), !scope && name(r.vault), age(r.updated_at)].filter(Boolean).join(' · '),
-  open: r => openRow(r, true)
+  facts: r => [typeLabel(r.type), r.status && capital(r.status), r.archived && 'Archived', !scope && name(r.vault), edited(r.updated_at)].filter(Boolean),
+  // A grep match opens with the match selected, the caret ready to edit there.
+  open: (r, at) => openRow(r, true).then(() => { if (at && opened && key(opened) === key(r) && mode === 'capture') editor.reveal(at); }),
+  load: loadNote, grep: grepScope, linksFor: previewLinks
 });
 
 // ── Wiring ──
@@ -1251,19 +1376,33 @@ $('query').addEventListener('input', () => {
 $('filter').addEventListener('input', onFilter);
 $('filter').addEventListener('keydown', e => {
   const first = $('recent').querySelector('.row');
-  if (e.key === 'ArrowDown' && first) { e.preventDefault(); first.focus(); }
+  if (e.key === 'ArrowDown' && first) { e.preventDefault(); $('recent').querySelector('.group-head, .row').focus(); }
   else if (e.key === 'Enter' && first && $('filterAssist').hidden) { e.preventDefault(); first.click(); } // a keyboard click: opens it, caret in the text
 });
-// The list moves with the arrow keys; Enter opens a fragment with the caret in its text.
+// The list moves with the arrow keys, through group headers too; Enter opens a fragment with the caret in its
+// text. On a header ← folds and → unfolds (or enters the group); ← from a row goes up to its header.
 $('recent').addEventListener('keydown', e => {
-  const all = [...$('recent').querySelectorAll('.row')], i = all.indexOf(document.activeElement);
+  const all = [...$('recent').querySelectorAll('.group-head, .row')], i = all.indexOf(document.activeElement);
   if (i < 0) return;
+  const group = all[i].closest('.group'), onHead = all[i].classList.contains('group-head');
+  if (group && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    e.preventDefault();
+    const id = group.dataset.group, open = !folded.has(id);
+    if (e.key === 'ArrowLeft') { if (!onHead) group.querySelector('.group-head').focus(); else if (open) foldGroup(id, true); }
+    else if (onHead) { if (open) group.querySelector('.row')?.focus(); else foldGroup(id, false); }
+    return;
+  }
   const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: all.length - 1 }[e.key];
   if (to === undefined) return;
   e.preventDefault();
   if (to < 0) $('filter').focus(); else all[Math.min(all.length - 1, to)].focus();
 });
 $('openOnly').onclick = toggleOpenOnly;
+$('listView').addEventListener('aihio-select', e => {
+  e.stopPropagation();
+  const [what, value] = e.detail.value.split(':');
+  if (['group', 'sort', 'dir'].includes(what)) setListView({ [what]: value });
+});
 $('sidebarToggle').addEventListener('click', toggleSidebar);
 $('goTo').onclick = () => goTo.open();
 $('openSettings').onclick = () => openSettings().catch(status);
@@ -1303,6 +1442,7 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (ctrl && e.shiftKey && k === 'p') { e.preventDefault(); goTo.open('>'); return; }
+  if (ctrl && e.shiftKey && k === 'f') { e.preventDefault(); goTo.open('/'); return; }
   if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing || e.target.closest('input,textarea,select,[contenteditable=true],aihio-dropdown,aihio-date-picker,aihio-input')) return;
   const next = ({ '+': 'capture', '/': 'search', g: 'graph', a: 'agent', p: 'pulse' })[k];
   if (next === 'capture') { e.preventDefault(); newCapture(); }
@@ -1311,7 +1451,7 @@ document.addEventListener('keydown', e => {
 });
 // Drafts are kept on disk, so only work that cannot resume holds the window.
 window.addEventListener('beforeunload', e => { rememberDraft(true); if (['recording', 'transcribing', 'saving'].includes(phase)) e.returnValue = false; });
-applySide();
+applySide(); viewMenu();
 (async () => {
   try {
     vaults = await api.vaults();

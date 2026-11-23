@@ -28,6 +28,7 @@ impl Router {
             "trash.restore" => methods::trash::restore(vault, params),
             "fragment.list" => methods::fragment::list(vault, params),
             "fragment.search" => methods::fragment::search(vault, params),
+            "fragment.grep" => methods::fragment::grep(vault, params),
 
             // Link methods
             "fragment.link" => methods::link::link(vault, params),

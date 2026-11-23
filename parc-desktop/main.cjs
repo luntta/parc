@@ -208,6 +208,7 @@ else app.whenReady().then(() => {
   });
   handle('list', (p, query) => query ? store(p).search(query) : store(p).list());
   handle('note', (p, id) => store(p).get(id));
+  handle('grep', (p, pattern) => store(p).grep(pattern));
   handle('save', (p, data) => store(p).save(data));
   handle('update', (p, id, changes, expected) => store(p).update(id, changes, expected));
   handle('archive', (p, id, archived, expected) => store(p).archive(id, archived, expected));

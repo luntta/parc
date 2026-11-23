@@ -33,6 +33,9 @@
       <div class="list-tools">
         <aihio-input id="filter" type="search" size="sm" placeholder="Filter, or type:todo #tag" aria-label="Filter fragments" autocomplete="off"></aihio-input>
         <button type="button" id="openOnly" class="chip" aria-pressed="false" title="Hide done, closed and archived fragments">Open</button>
+        <aihio-dropdown id="listView" class="list-view" align="end">
+          <aihio-button slot="trigger" variant="ghost" size="icon" aria-label="Group and sort the list" title="Group and sort the list"><i data-icon="sort" class="icon"></i></aihio-button>
+        </aihio-dropdown>
       </div>
       <p id="empty">Opening vault…</p>
       <ul id="recent" aria-labelledby="listHeading"></ul>

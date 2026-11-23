@@ -217,14 +217,62 @@ const style = HighlightStyle.define([
   { tag: tags.strikethrough, class: 'md-strike' }, { tag: tags.link, class: 'md-link' },
   { tag: tags.monospace, class: 'md-code' }, { tag: tags.processingInstruction, class: 'md-mark' }
 ]);
-export function markdownEditor(parent, onChange, links = { resolve: () => null, open() {}, pool: () => [], shortId: r => r.id, describe: () => [] }) {
-  const lock = new Compartment();
-  const live = ViewPlugin.fromClass(class {
-    constructor(view) { this.decorations = liveMarks(view, links); }
+const NO_LINKS = { resolve: () => null, open() {}, pool: () => [], shortId: r => r.id, describe: () => [] };
+
+// ── Grep: literal text, smart case, as fragment.grep matches it ──
+// Case-insensitive unless the text has an uppercase letter.
+export function grepRegex(pattern) {
+  return new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), /\p{Uppercase}/u.test(pattern) ? 'gu' : 'giu');
+}
+// The match at a 1-based line and column in characters (fragment.grep's positions), or null.
+function matchAt(doc, line, column, re) {
+  if (!(line >= 1 && line <= doc.lines)) return null;
+  const l = doc.line(line), offset = [...l.text].slice(0, Math.max(0, column - 1)).join('').length;
+  re.lastIndex = offset;
+  const m = re.exec(l.text);
+  return m && m.index === offset ? { from: l.from + offset, to: l.from + offset + m[0].length } : null;
+}
+function hitMarks(doc, re, current) {
+  const ranges = [], text = doc.toString();
+  re.lastIndex = 0;
+  for (const m of text.matchAll(re)) {
+    if (!m[0] || ranges.length >= 5000) break;
+    const here = current && m.index === current.from;
+    ranges.push(Decoration.mark({ class: here ? 'md-hit md-hit-current' : 'md-hit' }).range(m.index, m.index + m[0].length));
+  }
+  return Decoration.set(ranges);
+}
+function liveView(getLinks) {
+  return ViewPlugin.fromClass(class {
+    constructor(view) { this.decorations = liveMarks(view, getLinks()); }
     update(u) {
-      if (u.docChanged || u.selectionSet || u.viewportChanged || u.focusChanged || syntaxTree(u.startState) !== syntaxTree(u.state) || u.transactions.some(t => t.effects.some(e => e.is(refresh)))) this.decorations = liveMarks(u.view, links);
+      if (u.docChanged || u.selectionSet || u.viewportChanged || u.focusChanged || syntaxTree(u.startState) !== syntaxTree(u.state) || u.transactions.some(t => t.effects.some(e => e.is(refresh)))) this.decorations = liveMarks(u.view, getLinks());
     }
   }, { decorations: v => v.decorations });
+}
+
+// A fragment as it reads, not editable: Go to…'s preview. With a grep pattern, every match is marked and the one
+// at (line, column) stands out; show() returns its range so the caller can scroll to it.
+export function markdownPreview(parent) {
+  let links = NO_LINKS;
+  const base = [EditorView.cspNonce.of('parc-editor'), markdown({ base: markdownLanguage }), liveView(() => links), syntaxHighlighting(style), EditorView.lineWrapping,
+    EditorView.editable.of(false), EditorState.readOnly.of(true), EditorView.contentAttributes.of({ 'aria-label': 'Fragment preview' })];
+  const view = new EditorView({ state: EditorState.create({ extensions: base }), parent });
+  return {
+    show(doc, { links: next = NO_LINKS, pattern = '', line = 0, column = 0 } = {}) {
+      links = next;
+      const text = EditorState.create({ doc }).doc, re = pattern ? grepRegex(pattern) : null;
+      const current = re && line ? matchAt(text, line, column, re) : null;
+      view.setState(EditorState.create({ doc: text, extensions: re ? [...base, EditorView.decorations.of(hitMarks(text, re, current))] : base }));
+      return current;
+    },
+    scrollTo(pos) { view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) }); }
+  };
+}
+
+export function markdownEditor(parent, onChange, links = NO_LINKS) {
+  const lock = new Compartment();
+  const live = liveView(() => links);
   const extensions = [EditorView.cspNonce.of('parc-editor'), history(), markdown({ base: markdownLanguage }), live, syntaxHighlighting(style), EditorView.lineWrapping, linkCompletion(links),
     keymap.of([...defaultKeymap, ...historyKeymap]), placeholder('Write in Markdown, or dictate a thought…'),
     EditorView.contentAttributes.of({ 'aria-label': 'Fragment body, Markdown', spellcheck: 'true' }), lock.of(EditorView.editable.of(true)),
@@ -235,6 +283,14 @@ export function markdownEditor(parent, onChange, links = { resolve: () => null, 
     load(doc) { view.setState(EditorState.create({ doc, extensions })); }, // reset undo history across fragments
     append(text) { const end = view.state.doc.length; view.dispatch({ changes: { from: end, insert: (end ? '\n' : '') + text } }); view.focus(); },
     lock(value) { view.dispatch({ effects: lock.reconfigure(EditorView.editable.of(!value)) }); },
-    refresh() { view.dispatch({ effects: refresh.of(null) }); }
+    refresh() { view.dispatch({ effects: refresh.of(null) }); },
+    // Select a grep match ({ line, column, pattern }, as fragment.grep reports it) and bring it into view.
+    reveal({ line, column, pattern }) {
+      const m = matchAt(view.state.doc, line, column, grepRegex(pattern));
+      if (!m) return false;
+      view.dispatch({ selection: { anchor: m.from, head: m.to }, effects: EditorView.scrollIntoView(m.from, { y: 'center' }) });
+      view.focus();
+      return true;
+    }
   };
 }

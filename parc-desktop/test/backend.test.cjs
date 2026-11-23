@@ -22,6 +22,16 @@ test('explicit save is readable from a separate RPC process in an isolated vault
   const updated = await other.save({ id: note.id, title: note.title, body: '## Questions\nWhat next?' });
   assert.equal(updated.id, note.id);
   assert.equal((await other.search('Questions'))[0].id, note.id);
+  // Go to…'s / mode: lines of bodies containing the text, with line and column, ignoring case unless it has capitals.
+  const found = await store.grep('what next');
+  assert.equal(found.matches[0].id, note.id);
+  assert.deepEqual(found.matches[0].lines.map(l => [l.line, l.column, l.text, l.ranges]), [[2, 1, 'What next?', [[0, 9]]]]);
+  assert.equal((await store.grep('What Next')).matches.length, 0);
+  await assert.rejects(store.grep('x'.repeat(1001)));
+  // The sidebar sorts by creation as well as by last edit, so rows carry both.
+  const [listed] = await store.list();
+  assert.equal(listed.created_at, (await store.get(note.id)).created_at);
+  assert.ok(listed.updated_at >= listed.created_at);
   assert.equal((await store.list()).length, 1);
   assert.match(await fs.readFile(path.join(vault, 'fragments', note.id + '.md'), 'utf8'), /Volunteer orientation/);
 });

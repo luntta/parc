@@ -354,11 +354,28 @@ pub fn list(vault: &Path, params: Value) -> Result<Value, RpcError> {
                 "status": r.status,
                 "tags": r.tags,
                 "updated_at": r.updated_at,
+                "created_at": r.created_at,
             })
         })
         .collect();
 
     Ok(Value::Array(items))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrepParams {
+    pub pattern: String,
+    pub limit: Option<usize>,
+}
+
+/// Lines of fragment bodies that contain `pattern` (literal text, smart case).
+pub fn grep(vault: &Path, params: Value) -> Result<Value, RpcError> {
+    let p: GrepParams = extract_params(params)?;
+    let limit = p.limit.unwrap_or(200).min(1000);
+    let conn = index::open_index(vault).map_err(map_parc_error)?;
+    let result = parc_core::grep::grep(&conn, &p.pattern, limit).map_err(map_parc_error)?;
+    serde_json::to_value(result).map_err(|e| RpcError::internal_error(&e.to_string()))
 }
 
 #[derive(Deserialize)]
@@ -389,6 +406,7 @@ pub fn search(vault: &Path, params: Value) -> Result<Value, RpcError> {
                 "status": r.status,
                 "tags": r.tags,
                 "updated_at": r.updated_at,
+                "created_at": r.created_at,
                 "snippet": r.snippet,
                 "archived": r.archived,
             })
