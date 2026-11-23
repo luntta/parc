@@ -17,6 +17,7 @@ Rules for `parc-core`:
 - No `println!`, no TTY assumptions
 - All operations return structured `Result<T, ParcError>`
 - Takes `VaultPath` as input, never assumes a location
+- A vault's `config.yml` travels with the vault (git is the transport), so treat it as untrusted: it must not choose a program parc runs. `editor:` is honoured only from the global vault (`config::get_editor`)
 - Every fragment write goes through `ops::Writer` (validate → pre-hooks → write + history → index → post-hooks). Frontends never call `create_fragment`/`write_fragment` + index themselves, or hooks drift between CLI, TUI and server
 
 ## Key Dependencies
@@ -26,7 +27,9 @@ Rust. Key crates: `clap` (derive), `ratatui`/`crossterm` (TUI), `serde`/`serde_y
 ## Core Concepts
 
 - **Fragment**: Markdown file with YAML frontmatter (common envelope + type-specific fields)
-- **Fragment types**: defined by YAML schemas in `<vault>/schemas/`. Built-in: note, todo, decision, risk, idea
+- **Fragment types**: defined by YAML schemas in `<vault>/schemas/`. Built-in: note, todo, decision, risk, idea (copied into each vault by `parc init`, so a vault can edit them)
+- **Vault settings**: `types:` in `config.yml` (`default` capture type, `disabled` types). `ops::Writer` refuses creating or converting into a disabled type; existing fragments of it stay editable. Save it with `config::save_types`, which rewrites only that block
+- **Status categories**: each status value is open, active, done or closed (`categories:` on the status field, `Schema::status_category`, `SchemaRegistry::settled_statuses`). Never hard-code status words for "finished" or "open work"; read the categories. Schema edits that rename or remove values go through `Writer::save_schema`, which moves fragments and refuses to strand them
 - **Vault**: `.parc/` directory. Global (`~/.parc/`) or local (`.parc/` in project, discovered by walking up from CWD)
 - **IDs**: ULIDs. Prefix-matching supported everywhere
 - **Links**: `[[id-prefix]]` wiki-links, bidirectional at query time

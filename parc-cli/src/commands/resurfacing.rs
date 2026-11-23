@@ -4,6 +4,7 @@ use std::path::Path;
 use anyhow::Result;
 use chrono::{Duration, Local};
 use parc_core::index::open_index;
+use parc_core::schema::load_schemas;
 use parc_core::search::{self, Filter, SearchQuery, SearchResult};
 
 pub fn today_string() -> String {
@@ -47,11 +48,21 @@ pub fn cap_results(results: Vec<SearchResult>, limit: usize) -> (Vec<SearchResul
     (results.into_iter().take(limit).collect(), total)
 }
 
-pub fn unfinished_status_filters() -> Vec<Filter> {
-    ["done", "cancelled", "resolved", "accepted", "discarded"]
-        .iter()
+/// Filters that leave out settled work: every status some type's schema
+/// counts as done or closed (see `SchemaRegistry::settled_statuses`).
+pub fn unfinished_status_filters(vault: &Path) -> Vec<Filter> {
+    let settled = load_schemas(vault)
+        .map(|schemas| schemas.settled_statuses())
+        .unwrap_or_else(|_| {
+            ["done", "cancelled", "resolved", "accepted", "discarded"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        });
+    settled
+        .into_iter()
         .map(|status| Filter::Status {
-            value: status.to_string(),
+            value: status,
             negated: true,
         })
         .collect()

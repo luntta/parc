@@ -84,7 +84,7 @@ parc show 01JQ7V
 | **risk** | `r` | `status` (identified/mitigating/accepted/resolved), `likelihood`, `impact`, `mitigation` |
 | **idea** | `i` | `status` (raw/exploring/promoted/parked/discarded) |
 
-Define custom types by dropping a YAML schema into your vault:
+Each vault keeps its own copy of these schemas, so it can change them, turn types off, or add its own. `parc init` asks which types to turn on (`-y` keeps them all); the desktop app's Vault settings edit them later. Define custom types by dropping a YAML schema into your vault:
 
 ```bash
 parc schema add my-type.yml
@@ -246,7 +246,8 @@ parc import fragments.json [--dry-run]
 ### Vault management
 
 ```bash
-parc init                # Local vault in .parc/
+parc init                # Local vault in .parc/ (asks which types to turn on)
+parc init -y             # The same, with every default
 parc init --global       # Global vault in ~/.parc/
 parc --global n "Personal note" # Use ~/.parc/ inside a local vault
 parc vault               # Show active vault
@@ -337,10 +338,9 @@ Requires the `wasm-plugins` feature. Plugins are compiled to `wasm32-unknown-unk
 parc reindex             # Rebuild the index from scratch (rarely needed)
 parc doctor              # Check vault health
 parc git-hooks install   # Add post-merge reindex hook (optional)
-parc types               # List registered types
+parc types               # List types: alias, on/off/default, fields
 parc version             # Print installed version
 parc update check        # Check latest GitHub release
-parc schema show <type>  # Print schema definition
 parc schema add <file>   # Register a custom type
 parc completions <shell> # bash, zsh, fish, elvish
 ```

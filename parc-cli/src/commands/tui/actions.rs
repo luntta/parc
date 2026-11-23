@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{anyhow, Result};
 use crossterm::cursor::{Hide, Show};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use parc_core::config::load_config;
 use parc_core::config::Config;
-use parc_core::config::{get_editor, load_config};
 use parc_core::fragment::{
     self, parse_fragment, read_fragment, serialize_fragment, validate_fragment,
 };
@@ -70,10 +69,21 @@ fn run_editor(writer: &mut Writer, id: &str) -> Result<String> {
     let schemas = load_schemas(vault)?;
     let original = read_fragment(vault, id)?;
     let content = serialize_fragment(&original);
-    let editor = get_editor(&config);
     let tmp_path = secure_fs::write_private_temp("parc-edit", ".md", content.as_bytes())?;
 
-    let status = Command::new(&editor).arg(&tmp_path).status()?;
+    // Shown with the result: a warning on stderr would vanish behind the editor.
+    let noted = |msg: String| match crate::editor::ignored_note(&config) {
+        Some(note) => format!("{} ({})", msg, note),
+        None => msg,
+    };
+    let status = crate::editor::launch(&config, &tmp_path);
+    let status = match status {
+        Ok(status) => status,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    };
 
     if !status.success() {
         let _ = std::fs::remove_file(&tmp_path);
@@ -84,7 +94,7 @@ fn run_editor(writer: &mut Writer, id: &str) -> Result<String> {
     let _ = std::fs::remove_file(&tmp_path);
 
     if edited == content {
-        return Ok(format!("no changes to {}", short(&original.id)));
+        return Ok(noted(format!("no changes to {}", short(&original.id))));
     }
     if edited.trim().is_empty() {
         return Err(anyhow!("aborted: empty content"));
@@ -95,7 +105,10 @@ fn run_editor(writer: &mut Writer, id: &str) -> Result<String> {
         validate_fragment(&frag, s)?;
     }
     let frag = writer.update(frag)?;
-    Ok(with_warnings(writer, format!("edited {}", short(&frag.id))))
+    Ok(with_warnings(
+        writer,
+        noted(format!("edited {}", short(&frag.id))),
+    ))
 }
 
 /// Flip the field the type's schema declares with `toggle: [off, on]`

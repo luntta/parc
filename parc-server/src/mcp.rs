@@ -478,6 +478,11 @@ fn list_types(vault: &Path, args: &Map<String, Value>) -> ToolResult {
         if let Some(alias) = schema.get("alias").and_then(Value::as_str) {
             text.push_str(&format!(" (alias {})", alias));
         }
+        if schema.get("enabled").and_then(Value::as_bool) == Some(false) {
+            text.push_str(
+                " [turned off: existing fragments can change, new ones can't be created]",
+            );
+        }
         let fields = schema
             .get("fields")
             .and_then(Value::as_array)
@@ -952,6 +957,21 @@ mod tests {
             text.contains("status: open | in-progress | done | cancelled"),
             "{text}"
         );
+        assert!(!text.contains("turned off"), "{text}");
+
+        let types = parc_core::config::TypesConfig {
+            default: Some("note".into()),
+            disabled: vec!["risk".into()],
+        };
+        parc_core::config::save_types(&_tmp.path().join(".parc"), &types).unwrap();
+        let (text, _) = call(&server, "list_types", json!({}));
+        assert!(text.contains("risk (alias r) [turned off"), "{text}");
+        let (text, is_error) = call(
+            &server,
+            "create_fragment",
+            json!({ "type": "risk", "title": "Disk fills up" }),
+        );
+        assert!(is_error && text.contains("turned off"), "{text}");
     }
 
     #[test]

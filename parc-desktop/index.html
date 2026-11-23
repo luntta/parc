@@ -137,6 +137,13 @@
         </div>
         <p class="setting-hint">Audio is transcribed on this computer by whisper.cpp and never uploaded. Install whisper.cpp for whisper-cli.</p>
       </section>
+      <section aria-labelledby="vaultHeading">
+        <h3 id="vaultHeading">Types and statuses</h3>
+        <div class="setting">
+          <div class="setting-text"><span>Which types are on, and what each type holds, are kept in each vault for everyone who opens it.</span></div>
+          <aihio-button id="vaultSettingsLink" variant="outline" size="sm">Vault settings…</aihio-button>
+        </div>
+      </section>
       <section aria-labelledby="quickHeading">
         <h3 id="quickHeading">Quick capture</h3>
         <aihio-field>
@@ -151,5 +158,14 @@
       <aihio-button variant="outline" commandfor="settings" command="--close">Cancel</aihio-button>
       <aihio-button id="settingsSave">Save</aihio-button>
     </aihio-dialog-footer>
+  </aihio-dialog>
+
+  <aihio-dialog id="vaultSettings" class="vault-settings">
+    <aihio-dialog-header>
+      <aihio-dialog-title id="vsTitle">Vault settings</aihio-dialog-title>
+      <aihio-dialog-description id="vsDescription"></aihio-dialog-description>
+    </aihio-dialog-header>
+    <div id="vsBody" class="settings-body vs-body"></div>
+    <aihio-dialog-footer id="vsFooter"></aihio-dialog-footer>
   </aihio-dialog>
 </body></html>

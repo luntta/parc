@@ -9,19 +9,49 @@ Create vaults, list them, and switch between them.
 ## init
 
 ```bash
-parc init [--global] [--force]
+parc init [--global] [-y | --yes]
 ```
 
 Creates a new vault. Without flags, creates `.parc/` in the current directory. With `--global`, creates `~/.parc/`.
 
+Like `npm init`, it asks a few questions first: which of the built-in types (note, todo, decision, risk, idea) new fragments can use, and which type captures start as. Press Enter to keep the answer in parentheses; at the end it shows the `types:` block it will write to `config.yml` and asks *Is this OK?*
+
+```text
+$ parc init
+This walks you through creating a parc vault.
+Press Enter to keep the answer in parentheses, or ^C to quit.
+
+Vault: /home/alice/work/api/.parc
+
+Which types should new fragments use? You can turn types on or off later.
+note      free-form thoughts and captures (Y/n)
+todo      tasks with a status, due date and priority (Y/n)
+decision  choices and the reasons for them (Y/n)
+risk      what could go wrong, and what is being done about it (Y/n) n
+idea      possibilities to explore later (Y/n) n
+Type new captures start as: (note) todo
+
+About to write to /home/alice/work/api/.parc/config.yml:
+
+types:
+  default: todo
+  disabled:
+  - risk
+  - idea
+
+Is this OK? (yes)
+Initialized local vault at /home/alice/work/api/.parc
+```
+
+`-y` / `--yes` skips the questions and takes every default: all five types on, notes by default. So does running `init` without a terminal (in a script, or with input piped in).
+
 ```bash
-parc init                # local vault in $PWD/.parc/
+parc init                # local vault in $PWD/.parc/, asks first
+parc init -y             # the same, with the defaults
 parc init --global       # global vault in ~/.parc/
 ```
 
-`init` writes the standard layout (`config.yml`, `schemas/`, `templates/`, `fragments/`, etc.), seeds the schemas directory with the five built-in types, and registers the vault in the known-vaults list.
-
-`--force` overwrites an existing `.parc/` after a confirmation prompt — it does **not** delete fragments, it only re-creates `config.yml` and re-seeds schemas/templates if they're missing.
+`init` writes the standard layout (`config.yml`, `schemas/`, `templates/`, `fragments/`, etc.) and seeds `schemas/` with all five built-in types, including the ones you turned off, so turning a type on later needs no other step. See [Types]({{ '/concepts/types/' | url }}#turning-types-on-and-off). `init` refuses to touch a directory that is already a vault.
 
 ## vault
 

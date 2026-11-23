@@ -48,6 +48,14 @@ impl Router {
             // Schema methods
             "schema.list" => methods::schema::list(vault, params),
             "schema.get" => methods::schema::get(vault, params),
+            "schema.builtin" => methods::schema::builtin(vault, params),
+            "schema.usage" => methods::schema::usage(vault, params),
+            "schema.save" => methods::schema::save(vault, params),
+            "schema.delete" => methods::schema::delete(vault, params),
+
+            // Vault settings (config.yml)
+            "settings.get" => methods::settings::get(vault, params),
+            "settings.update" => methods::settings::update(vault, params),
 
             // Tags
             "tags.list" => methods::tags::list(vault, params),

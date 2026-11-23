@@ -18,6 +18,27 @@ A **type** defines what fields a fragment carries. Every fragment has exactly on
 
 The aliases work everywhere a type name is expected: `parc n "..."` is `parc new note "..."`, and `parc list t` is `parc list todo`.
 
+Each vault has its own copy of these definitions in `schemas/`, so a vault can change them: rename `in-progress` to `doing`, add a `blocked` status, drop `assignee`. The desktop app's **Vault settings** do this and move existing fragments to renamed values; by hand, edit the YAML (see [Custom types]({{ '/custom-types/' | url }})).
+
+## What a status means
+
+Status words differ per type, so each value of a `status` field says what it means in one of four **categories**:
+
+| Category | Meaning | Built-in examples |
+|----------|---------|-------------------|
+| `open` | Waiting | open, proposed, identified, raw |
+| `active` | Under way | in-progress, mitigating, exploring |
+| `done` | Finished | done, accepted (decision), resolved, promoted |
+| `closed` | Dropped | cancelled, superseded, deprecated, accepted (risk), parked, discarded |
+
+Done and closed fragments are *settled*: they leave the open-work lists of `parc today`, `due`, `stale` and `review`, the TUI's matching tabs, the desktop's **Open** filter and its open-work counts. A status a schema doesn't categorize is open. Schemas written before categories existed are read with the built-in meanings of these words.
+
+## Turning types on and off
+
+A vault doesn't have to use every type. `parc init` asks which ones to turn on, and the desktop's **Vault settings** switch them later; both write `types:` in [`config.yml`]({{ '/configuration/' | url }}#types).
+
+A type that is off keeps its schema and its fragments: they still open, list, search, validate and change. What it loses is new fragments: `parc new`, the type's alias, `parc promote` and every other way of creating or converting a fragment refuse it, and capture forms don't offer it. `parc types` shows each type as `on`, `off` or `default`, the type captures start as (`parc +`, the TUI's capture form and the desktop's captures).
+
 ## Common envelope
 
 Every type, built-in or custom, carries the same common fields:
@@ -42,6 +63,6 @@ Drop a YAML schema into `<vault>/schemas/` to register a new type. See [Custom t
 ## Listing registered types
 
 ```bash
-parc types               # list all registered types in the active vault
-parc schema show todo    # print a type's schema
+parc types               # every type in the active vault: alias, on/off/default, fields
+parc types --json        # the same, with each status's category
 ```

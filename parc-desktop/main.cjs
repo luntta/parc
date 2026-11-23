@@ -227,6 +227,21 @@ else app.whenReady().then(() => {
   handle('version', (p, id, timestamp) => store(p).version(id, timestamp));
   handle('restore-version', (p, id, timestamp) => store(p).restoreVersion(id, timestamp));
   handle('schemas', p => store(p).schemas());
+  handle('vault-settings', p => store(p).vaultSettings());
+  handle('update-vault-settings', (p, changes) => store(p).updateVaultSettings(changes));
+  handle('schema-usage', (p, type) => store(p).schemaUsage(type));
+  handle('builtin-schema', (p, type) => store(p).builtinSchema(type));
+  handle('save-schema', (p, data) => store(p).saveSchema(data));
+  // Asks first; resolves { deleted }. The server refuses a type that still has fragments.
+  handle('delete-schema', async function (p, type) {
+    const name = String(type).slice(0, 64);
+    const { response } = await dialog.showMessageBox(this, {
+      message: `Delete the type “${name}”?`, detail: 'No fragment uses it. Its schema file is removed from the vault; a new type can take its name later.',
+      buttons: ['Cancel', 'Delete type'], cancelId: 0, defaultId: 0
+    });
+    if (response !== 1) return { deleted: false };
+    return store(p).deleteSchema(type);
+  });
   handle('links', p => store(p).links());
   handle('copy-text', text => { clipboard.writeText(String(text).slice(0, 10000)); });
   handle('open-capture', () => openCapture());

@@ -8,6 +8,9 @@ fields:
     required: true
     default: proposed
     toggle: [proposed, accepted]
+    categories:
+      done: [accepted]
+      closed: [superseded, deprecated]
   - name: deciders
     type: list
     required: false

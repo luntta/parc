@@ -1121,14 +1121,18 @@ fn load_current_rows(app: &mut App, vault: &Path, config: &Config) -> Result<()>
     Ok(())
 }
 
+/// The capture form offers the types that are on, starting at the vault's default.
 fn new_capture_form(vault: &Path) -> Result<CaptureForm> {
     let schemas = load_schemas(vault)?;
-    let types = schemas
+    let types = parc_core::config::load_config(vault)?.types;
+    let default = types.default_type(&schemas).map(|s| s.name.clone());
+    let choices = schemas
         .list()
         .into_iter()
+        .filter(|schema| types.is_enabled(&schema.name))
         .map(|schema| schema.name.clone())
         .collect();
-    Ok(CaptureForm::new(types))
+    Ok(CaptureForm::new(choices, default.as_deref()))
 }
 
 fn select_row_by_id(app: &mut App, id: &str) {

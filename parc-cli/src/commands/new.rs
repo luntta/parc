@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
-use parc_core::config::{get_editor, load_config};
+use anyhow::{bail, Result};
+use parc_core::config::load_config;
 use parc_core::fragment::{self, parse_fragment, serialize_fragment, validate_fragment};
 use parc_core::schema::{load_schemas, load_template};
 use parc_core::secure_fs;
@@ -30,6 +30,9 @@ pub fn run(
     let schema = schemas
         .resolve(type_name)
         .ok_or_else(|| anyhow::anyhow!("unknown type: {}", type_name))?;
+
+    // Refuse before $EDITOR opens, so nothing typed there is lost at save.
+    config.types.check_enabled(&schema.name)?;
 
     let resolved_type = &schema.name.clone();
     let mut fragment = fragment::new_fragment(resolved_type, "", schema, &config);
@@ -138,7 +141,6 @@ fn run_editor_loop(
     schema: &parc_core::schema::Schema,
     config: &parc_core::config::Config,
 ) -> Result<fragment::Fragment> {
-    let editor = get_editor(config);
     let tmp_path = secure_fs::write_private_temp("parc", ".md", initial_content.as_bytes())?;
 
     let mut last_error: Option<String> = None;
@@ -149,10 +151,7 @@ fn run_editor_loop(
             eprintln!("Re-opening editor. Save empty file to abort.");
         }
 
-        let status = std::process::Command::new(&editor)
-            .arg(&tmp_path)
-            .status()
-            .with_context(|| format!("failed to launch editor: {}", editor))?;
+        let status = crate::editor::open(config, &tmp_path)?;
 
         if !status.success() {
             let _ = std::fs::remove_file(&tmp_path);

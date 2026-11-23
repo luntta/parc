@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::config::TypesConfig;
 use crate::error::ParcError;
 use crate::secure_fs;
 
@@ -222,8 +223,40 @@ fn add_gitignore_entry(gitignore_path: &Path, entry: &str) -> Result<(), ParcErr
 
 /// Creates a new vault at the given path with the default directory structure.
 pub fn init_vault(path: &Path) -> Result<(), ParcError> {
+    init_vault_with(path, &default_init_types())
+}
+
+/// The type choices `parc init -y` makes: every built-in type on, notes by default.
+pub fn default_init_types() -> TypesConfig {
+    TypesConfig {
+        default: Some("note".to_string()),
+        disabled: Vec::new(),
+    }
+}
+
+/// Creates a new vault with the given type choices. Every built-in schema is
+/// written, turned-off ones included, so a type can be turned on later
+/// without recreating it.
+pub fn init_vault_with(path: &Path, types: &TypesConfig) -> Result<(), ParcError> {
     if is_vault(path) {
         return Err(ParcError::VaultAlreadyExists(path.to_path_buf()));
+    }
+    let builtin = |name: &str| crate::schema::is_builtin(name);
+    if let Some(unknown) = types
+        .disabled
+        .iter()
+        .chain(types.default.as_ref())
+        .find(|t| !builtin(t))
+    {
+        return Err(ParcError::SchemaNotFound(unknown.clone()));
+    }
+    if crate::schema::BUILTIN_TYPES
+        .iter()
+        .all(|t| !types.is_enabled(t))
+    {
+        return Err(ParcError::ValidationError(
+            "at least one type has to stay on".into(),
+        ));
     }
 
     // Create directory structure
@@ -243,6 +276,10 @@ pub fn init_vault(path: &Path) -> Result<(), ParcError> {
     // Write built-in templates
     for (name, content) in BUILTIN_TEMPLATES {
         secure_fs::write_private(&path.join("templates").join(name), content)?;
+    }
+
+    if types != &default_init_types() {
+        crate::config::save_types(path, types)?;
     }
 
     // If the vault's parent directory is inside a git repository,
@@ -570,5 +607,43 @@ mod tests {
 
         assert!(!vaults.is_empty());
         assert!(vaults.iter().any(|v| v.scope == VaultScope::Global));
+    }
+
+    #[test]
+    fn test_init_vault_with_turned_off_types() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        let types = TypesConfig {
+            default: Some("todo".into()),
+            disabled: vec!["risk".into(), "idea".into()],
+        };
+        init_vault_with(&vault, &types).unwrap();
+        // Turned-off types keep their schemas, ready to be turned on.
+        assert!(vault.join("schemas/risk.yml").exists());
+        let config = crate::config::load_config(&vault).unwrap();
+        assert_eq!(config.types, types);
+        assert!(std::fs::read_to_string(vault.join("config.yml"))
+            .unwrap()
+            .contains("# parc vault configuration"));
+    }
+
+    #[test]
+    fn test_init_vault_with_rejects_unknown_or_no_types() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        let unknown = TypesConfig {
+            default: Some("bug".into()),
+            disabled: vec![],
+        };
+        assert!(init_vault_with(&vault, &unknown).is_err());
+        let none = TypesConfig {
+            default: None,
+            disabled: crate::schema::BUILTIN_TYPES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        };
+        assert!(init_vault_with(&vault, &none).is_err());
+        assert!(!vault.exists(), "nothing is created for a refused choice");
     }
 }

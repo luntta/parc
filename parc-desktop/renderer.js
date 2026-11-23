@@ -7,6 +7,7 @@ import { palette } from './palette.js';
 import { searchAssist } from './assist.js';
 import { diffLines, fold as foldDiff, stat } from './diff.js';
 import { LANGUAGES } from './languages.cjs';
+import { vaultSettings } from './vaultsettings.js';
 
 const $ = id => document.getElementById(id), api = window.parc;
 hydrateIcons();
@@ -22,7 +23,7 @@ const changedVaults = new Set();           // vaults whose fragments changed on 
 const key = r => JSON.stringify([r.vault, r.id]);
 const name = p => vaults.find(v => v.path === p)?.name || 'All vaults';
 const labels = { capture: 'New capture', search: 'Search', graph: 'Graph', agent: 'Agent', pulse: 'Pulse', history: 'History' };
-const blankCapture = () => ({ type: 'note', fields: {}, tags: [] });
+const blankCapture = () => ({ type: defaultType(scope || $('destination').value), fields: {}, tags: [] });
 
 // Per-viewer memory: last vault, an unsaved draft, the sidebar's shape and filter. The app works without it.
 const DRAFT = 'parc.draft', SCOPE = 'parc.scope', SIDE = 'parc.sidebar', OPEN_ONLY = 'parc.openOnly';
@@ -65,12 +66,11 @@ function edited(iso) { // prose, for the status bar
   return `Edited ${longDate.format(t)}`;
 }
 const dayLabel = day => (day.slice(0, 4) === String(new Date().getFullYear()) ? shortDate : longDate).format(new Date(`${day}T12:00`));
-// Status words differ per type; tone is what they mean for attention.
-const TONES = { open: 'open', proposed: 'open', raw: 'open', identified: 'attention', 'in-progress': 'active', mitigating: 'active', exploring: 'active',
-  done: 'done', accepted: 'done', resolved: 'done', promoted: 'done', cancelled: 'closed', superseded: 'closed', deprecated: 'closed', parked: 'closed', discarded: 'closed' };
-const tone = (type, status) => type === 'risk' && status === 'accepted' ? 'closed' : TONES[status] || 'open';
-const settled = r => ['done', 'closed'].includes(tone(r.type, r.status));
-function state(type, status) { const s = el('span', 'state', capital(status)); s.dataset.tone = tone(type, status); return s; }
+// Status words differ per type; what each means for attention (open, active, done or closed) is in the type's schema.
+const statusField = (vault, type) => schemaFor(vault, type)?.fields.find(f => f.name === 'status');
+const tone = (vault, type, status) => (status && statusField(vault, type)?.categories?.[status]) || 'open';
+const settled = r => ['done', 'closed'].includes(tone(r.vault, r.type, r.status));
+function state(vault, type, status) { const s = el('span', 'state', capital(status)); s.dataset.tone = tone(vault, type, status); return s; }
 const overdue = f => !!f.due && !settled(f) && f.due < new Date().toLocaleDateString('sv');
 
 // ── Status line ── An optional action (Undo) sits after the message until the next one.
@@ -100,6 +100,14 @@ function typesIn(vault) {
   return [...byName.values()];
 }
 const schemaFor = (vault, type) => typesIn(vault).find(s => s.name === type) || null;
+// Types new captures can use (a vault can turn types off), and the one they start as.
+const enabledTypes = vault => typesIn(vault).filter(s => s.enabled !== false);
+const defaultType = vault => (enabledTypes(vault).find(s => s.default) || enabledTypes(vault)[0])?.name || 'note';
+// The statuses a type (or, with none given, any type in view) counts as done or closed: search filters that leave them out.
+const settledValues = (vault, type) => [...new Set(typesIn(vault).filter(s => !type || s.name === type).flatMap(s => {
+  const f = s.fields.find(x => x.name === 'status');
+  return (f?.values || []).filter(v => ['done', 'closed'].includes(f.categories?.[v]));
+}))].map(v => `status:!${v}`).join(' ');
 // Every value an enum field takes in the types in view, e.g. all statuses.
 const fieldValues = field => [...new Set(typesIn(scope).flatMap(s => s.fields.filter(f => f.name === field && f.values).flatMap(f => f.values)))];
 const allTags = () => [...new Set(rows.flatMap(r => r.tags || []))].sort();
@@ -275,7 +283,8 @@ function options() {
     ...vaults.map(v => item(v.path, v.name, vaultMark(v.path), v.path === scope)),
     item('@all', 'All opened vaults', vaultMark(''), scope === ''),
     sep(), ...suggested.map(s => item(`@suggest:${s.path}`, `Open ${s.name} vault`, icon('folder'), false, s.hint)),
-    item('@open', 'Open vault folder…', icon('folder'), false));
+    item('@open', 'Open vault folder…', icon('folder'), false),
+    sep(), item('@settings', 'Vault settings…', icon('settings'), false));
   $('vaultName').textContent = scope ? name(scope) : 'All vaults';
   $('vaultMark').replaceChildren(vaultMark(scope));
   $('scope').title = scope || 'All opened vaults';
@@ -328,7 +337,7 @@ function row(r, { withSnippet = false, compact = false } = {}) {
   const time = el('time', '', age(r.updated_at)); time.dateTime = r.updated_at; time.title = stamp.format(new Date(r.updated_at));
   if (!scope) facts.append(el('span', 'where', name(r.vault)));
   if (!compact) facts.append(el('span', '', typeLabel(r.type)));
-  if (r.status) facts.append(state(r.type, r.status));
+  if (r.status) facts.append(state(r.vault, r.type, r.status));
   if (r.archived) facts.append(el('span', 'archived', 'Archived'));
   if (!compact && r.tags?.length) facts.append(el('span', 'tags', r.tags.map(t => `#${t}`).join(' ')));
   meta.append(facts, time);
@@ -462,7 +471,7 @@ function menu(trigger, items, onPick, className) {
   return dd;
 }
 function typeMenu(c) {
-  const types = [...typesIn(c.vault)];
+  const types = [...enabledTypes(c.vault)];
   if (!types.some(s => s.name === c.type)) types.unshift({ name: c.type });
   return menu([el('span', 'sr', 'Type: '), typeIcon(c.type), el('span', '', `New ${c.type}`)],
     types.map(s => [s.name, typeLabel(s.name), s.name === c.type, typeIcon(s.name)]),
@@ -476,7 +485,7 @@ function enumControl(field, c) {
   const value = c.values[field.name] ?? null, toggle = c.schema?.toggle?.field === field.name ? c.schema.toggle : null;
   const shown = field.name === 'status' ? capital(value) : `${capital(value)} ${field.name.replace(/[-_]/g, ' ')}`;
   const trigger = [el('span', 'sr', `${capital(field.name)}: `)];
-  if (field.name === 'status' && !toggle) { const dot = el('span', 'state'); dot.dataset.tone = tone(c.type, value); trigger.push(dot); }
+  if (field.name === 'status' && !toggle) { const dot = el('span', 'state'); dot.dataset.tone = tone(c.vault, c.type, value); trigger.push(dot); }
   if (field.name === 'priority') trigger.push(icon('flag'));
   trigger.push(el('span', value ? '' : 'unset', value ? shown : capital(field.name)), ...(value ? [] : [el('span', 'sr', ' not set')]));
   const items = field.values.map(v => [v, capital(v), v === value]);
@@ -487,7 +496,7 @@ function enumControl(field, c) {
   if (!toggle) return dd;
   // A one-click toggle (the schema's `toggle:`, the TUI's t) on the status mark.
   const next = value === toggle.on ? toggle.off : toggle.on, mark = el('button', 'toggle-mark');
-  mark.type = 'button'; mark.dataset.tone = tone(c.type, value);
+  mark.type = 'button'; mark.dataset.tone = tone(c.vault, c.type, value);
   mark.title = `Mark ${capital(next).toLowerCase()} (T)`; mark.setAttribute('aria-label', `Mark ${next}`);
   mark.onclick = () => setField(toggle.field, next);
   const group = el('span', 'prop-group'); group.append(mark, dd);
@@ -495,7 +504,7 @@ function enumControl(field, c) {
 }
 function dateControl(field, c) {
   const value = c.values[field.name] ?? null, wrap = el('span', 'prop-date'), btn = el('button', 'prop-button');
-  const late = field.name === 'due' && overdue({ type: c.type, status: c.values.status, due: value });
+  const late = field.name === 'due' && overdue({ vault: c.vault, type: c.type, status: c.values.status, due: value });
   btn.type = 'button'; btn.dataset.field = field.name;
   btn.append(icon('calendar'), el('span', value ? '' : 'unset', value ? `${capital(field.name)} ${dayLabel(value)}${late ? ', overdue' : ''}` : `${capital(field.name)} date`));
   if (late) btn.dataset.overdue = '';
@@ -560,7 +569,7 @@ function meta() {
     if (opened.archived) { const a = document.createElement('aihio-badge'); a.setAttribute('variant', 'secondary'); a.append(icon('archive'), 'Archived'); box.append(a); }
   }
   for (const f of editable(c.schema)) box.append(f.kind === 'date' ? dateControl(f, c) : enumControl(f, c));
-  if (!c.schema && c.values.status) box.append(state(c.type, c.values.status)); // a type without a schema here: shown, not edited
+  if (!c.schema && c.values.status) box.append(state(c.vault, c.type, c.values.status)); // a type without a schema here: shown, not edited
   box.append(tagEditor(c));
   if (!c.isNew) {
     const short = shortId(opened.id), id = el('span', 'fid', short); id.title = `Link to this fragment with [[${short}]]`;
@@ -917,8 +926,8 @@ function highlight(json) {
 // Each count opens the search that lists what it counts.
 function pulse(overdueCount) {
   const out = $('results');
-  const openTodos = rows.filter(r => r.type === 'todo' && !settled(r)).length;
-  const openRisks = rows.filter(r => r.type === 'risk' && !settled(r)).length;
+  const openOf = type => rows.filter(r => r.type === type && !settled(r)).length;
+  const known = type => typesIn(scope).some(s => s.name === type) || rows.some(r => r.type === type);
   const figures = el('div', 'figures');
   const figure = (label, value, query, alert) => {
     const b = el('button', 'figure'); b.type = 'button';
@@ -928,8 +937,10 @@ function pulse(overdueCount) {
     b.onclick = () => searchFor(query);
     return b;
   };
-  figures.append(figure('Fragments', rows.length, ''), figure('Open todos', openTodos, 'type:todo status:!done status:!cancelled'),
-    figure('Overdue', overdueCount, 'due:overdue status:!done status:!cancelled', overdueCount > 0), figure('Open risks', openRisks, 'type:risk status:!resolved status:!accepted'));
+  figures.append(figure('Fragments', rows.length, ''));
+  if (known('todo')) figures.append(figure('Open todos', openOf('todo'), `type:todo ${settledValues(scope, 'todo')}`.trim()));
+  figures.append(figure('Overdue', overdueCount, `due:overdue ${settledValues(scope)}`.trim(), overdueCount > 0));
+  if (known('risk')) figures.append(figure('Open risks', openOf('risk'), `type:risk ${settledValues(scope, 'risk')}`.trim()));
 
   const byType = new Map(); for (const r of rows) byType.set(r.type, (byType.get(r.type) || 0) + 1);
   const meters = el('dl', 'meters');
@@ -1138,7 +1149,7 @@ async function openSettings() {
   pending = { whisperModel: view.whisperModel, whisperBin: view.whisperBin, speechLanguages: [...(view.speechLanguages || [])] };
   $('shortcutInput').value = view.quickCaptureShortcut;
   modelMessage('');
-  models = await api.speechModels(pending.speechLanguages).catch(() => null);
+  [models] = await Promise.all([api.speechModels(pending.speechLanguages).catch(() => null), checkSpeech()]);
   renderSettings(view);
   $('settings').open();
 }
@@ -1159,11 +1170,41 @@ $('settingsSave').addEventListener('click', async () => {
   } catch (err) { $('shortcutState').textContent = cleanError(err); $('shortcutState').dataset.tone = 'error'; }
 });
 
+// ── Vault settings: types, their fields and statuses (vaultsettings.js) ──
+// Kept in the vault itself. After a change, the vault's types and rows reload; a type change may have moved
+// fragments to renamed statuses, so the open fragment reloads too unless it has unsaved edits.
+async function reloadVault(p) {
+  await loadSchemas([p]);
+  if (!scope || scope === p) { rows = await collect(); await refilter(); }
+  if (opened?.vault === p && !dirty) { try { const full = await api.note(p, opened.id); load({ ...full, vault: p }); } catch { /* moved away: left as it is */ } }
+  if (!opened && fresh && !dirty && !enabledTypes(destination()).some(s => s.name === fresh.type)) fresh = { ...blankCapture(), tags: fresh.tags };
+  options(); meta(); paint(); list();
+}
+const vaultPanel = vaultSettings({
+  api,
+  vaults: () => vaults,
+  schemasOf: p => schemas.get(p),
+  async counts(p) {
+    const list = !scope || scope === p ? rows.filter(r => r.vault === p) : await api.list(p, '');
+    const n = new Map(); for (const r of list) n.set(r.type, (n.get(r.type) || 0) + 1);
+    return n;
+  },
+  reload: reloadVault,
+  notify: message => status(message)
+});
+async function openVaultSettings() {
+  const target = opened?.vault || scope || vaults[0]?.path;
+  if (!schemas.has(target)) await loadSchemas([target]);
+  return vaultPanel.open(target).catch(status);
+}
+$('vaultSettingsLink').addEventListener('click', () => { $('settings').close(); openVaultSettings(); });
+
 // ── Go to… (Ctrl+K) ──
 function commands() {
   const out = [], add = (label, run, extra = {}) => out.push({ label, run, ...extra });
-  add('New capture', () => newCapture(), { icon: 'plus', keys: `${mod} N`, keywords: 'note create' });
-  for (const s of typesIn(scope)) if (s.name !== 'note') add(`New ${s.name}`, () => newCapture(s.name), { glyph: typeIcon(s.name), keywords: 'create capture' });
+  const startAs = defaultType(scope);
+  add('New capture', () => newCapture(), { icon: 'plus', keys: `${mod} N`, keywords: `${startAs} create` });
+  for (const s of enabledTypes(scope)) if (s.name !== startAs) add(`New ${s.name}`, () => newCapture(s.name), { glyph: typeIcon(s.name), keywords: 'create capture' });
   add('Search', () => action(() => navigate('search')), { icon: 'search', keys: `${mod} F` });
   add('Graph of the vault', () => action(() => navigate('graph')), { icon: 'graph', keys: 'G', keywords: 'links' });
   add('Pulse', () => action(() => navigate('pulse')), { icon: 'pulse', keys: 'P', keywords: 'stats counts' });
@@ -1185,6 +1226,7 @@ function commands() {
   add(openOnly ? 'Show every fragment in the list' : 'Show only open fragments in the list', toggleOpenOnly, { icon: 'check', keywords: 'filter done' });
   add('Quick capture window', () => api.openCapture(), { icon: 'bolt' });
   if (!speech.ready) add('Set up dictation', openSettings, { icon: 'mic', keywords: 'whisper speech' });
+  add('Vault settings', () => openVaultSettings(), { icon: 'settings', keywords: 'types statuses fields schema turn off' });
   add('Settings', openSettings, { icon: 'settings', keywords: 'preferences dictation shortcut' });
   return out;
 }
@@ -1230,13 +1272,19 @@ $('fragmentMenu').addEventListener('aihio-select', e => {
   e.stopPropagation();
   ({ history: showHistory, copy: copyLink, archive: toggleArchive, trash: trashOpened })[e.detail.value]?.();
 });
-$('vaultMenu').addEventListener('aihio-select', e => switchScope(e.detail.value));
+$('vaultMenu').addEventListener('aihio-select', e => e.detail.value === '@settings' ? openVaultSettings() : switchScope(e.detail.value));
 $('resume').onclick = () => action(() => { mode = 'capture'; paint(); list(); editor.focus(); });
-$('destination').onchange = () => { meta(); paint(); editor.refresh(); rememberDraft(); }; $('save').onclick = save;
+$('destination').onchange = () => {
+  // A new capture whose type is off in the chosen vault starts as that vault's default instead.
+  if (!opened && fresh && !enabledTypes($('destination').value).some(s => s.name === fresh.type)) fresh = { ...blankCapture(), tags: fresh.tags };
+  meta(); paint(); editor.refresh(); rememberDraft();
+}; $('save').onclick = save;
 $('title').oninput = () => { const t = $('title'); if (/[\r\n]/.test(t.value)) t.value = t.value.replace(/\s*[\r\n]+\s*/g, ' '); changed(); };
 $('title').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing && !(e.metaKey || e.ctrlKey)) { e.preventDefault(); editor.focus(); } };
-$('record').onclick = () => {
+$('record').onclick = async () => {
   if (phase === 'recording') return voice.stop();
+  if (phase !== 'idle') return;
+  if (!speech.ready) await checkSpeech(); // whisper.cpp may have been installed since the app started
   if (phase !== 'idle') return;
   if (!speech.ready) return openSettings().catch(status);
   voice.start();
@@ -1245,7 +1293,7 @@ $('cancel').onclick = () => voice.stop(true);
 $('searchForm').onsubmit = e => { e.preventDefault(); clearTimeout(searchTimer); action(search); };
 for (const b of document.querySelectorAll('[data-view]')) b.onclick = () => b.dataset.view === 'capture' ? newCapture() : action(() => navigate(b.dataset.view));
 document.addEventListener('keydown', e => {
-  if (goTo.isOpen || $('settings').hasAttribute('open')) return;
+  if (goTo.isOpen || $('settings').hasAttribute('open') || vaultPanel.isOpen) return;
   if (e.key === 'Escape' && phase === 'recording') return voice.stop(true);
   const ctrl = (e.metaKey || e.ctrlKey) && !e.altKey, k = e.key.toLowerCase();
   if (ctrl && !e.shiftKey) {

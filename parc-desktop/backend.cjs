@@ -42,6 +42,43 @@ function validFields(fields) {
   return fields;
 }
 
+// Vault settings. The server checks meaning (names that exist, values a field has); this checks shape and size.
+const CATEGORIES = ['open', 'active', 'done', 'closed'], KINDS = ['string', 'date', 'enum', 'list'];
+const word = (v, max = 64) => typeof v === 'string' && v.length > 0 && v.length <= max && !/[\s\0]/.test(v);
+function validVaultSettings(changes) {
+  const types = changes?.types;
+  if (!changes || typeof changes !== 'object' || Object.keys(changes).some(k => k !== 'types') || !types || typeof types !== 'object') throw new Error('Invalid vault settings');
+  const out = {};
+  if (types.default !== undefined) out.default = validType(types.default);
+  if (types.disabled !== undefined) {
+    if (!Array.isArray(types.disabled) || types.disabled.length > 256) throw new Error('Invalid vault settings');
+    out.disabled = types.disabled.map(validType);
+  }
+  return { types: out };
+}
+function validSchema(schema) {
+  const ok = schema && typeof schema === 'object' && !Array.isArray(schema) && Array.isArray(schema.fields) && schema.fields.length <= 32
+    && (schema.alias == null || (typeof schema.alias === 'string' && schema.alias.length <= 16))
+    && (schema.editor_skip === undefined || typeof schema.editor_skip === 'boolean');
+  if (!ok) throw new Error('Invalid type definition');
+  const field = f => {
+    const values = f.values ?? null, categories = f.categories ?? null, toggle = f.toggle ?? null;
+    const fine = f && typeof f === 'object' && word(f.name) && KINDS.includes(f.kind) && typeof (f.required ?? false) === 'boolean'
+      && (values === null || (Array.isArray(values) && values.length <= 32 && values.every(v => word(v))))
+      && (f.default == null || (typeof f.default === 'string' && f.default.length <= 200))
+      && (toggle === null || (Array.isArray(toggle) && toggle.length === 2 && toggle.every(v => word(v))))
+      && (categories === null || (typeof categories === 'object' && !Array.isArray(categories) && Object.keys(categories).length <= 32
+        && Object.entries(categories).every(([k, c]) => word(k) && CATEGORIES.includes(c))));
+    if (!fine) throw new Error(`Invalid field${typeof f?.name === 'string' ? ` “${f.name.slice(0, 64)}”` : ''}`);
+    return { name: f.name, kind: f.kind, values, required: !!f.required, default: f.default ?? null, toggle, categories };
+  };
+  return { name: validType(schema.name), alias: schema.alias || null, editor_skip: !!schema.editor_skip, fields: schema.fields.map(field) };
+}
+function validRenames(renames) {
+  if (!Array.isArray(renames) || renames.length > 256 || !renames.every(r => r && word(r.field) && word(r.from) && word(r.to))) throw new Error('Invalid value changes');
+  return renames.map(({ field, from, to }) => ({ field, from, to }));
+}
+
 function archive(vault) {
   if (!path.isAbsolute(vault) || path.basename(vault) !== '.parc') throw new Error('Expected an absolute .parc vault path');
   async function request(method, params) {
@@ -68,7 +105,7 @@ function archive(vault) {
   }
   return {
     async init() {
-      if (!existsSync(vault)) await run(binary('parc'), ['--vault', vault, 'init']);
+      if (!existsSync(vault)) await run(binary('parc'), ['--vault', vault, 'init', '--yes']);
     },
     // Resolves to the saved fragment, or { conflict: true } when the file changed since `expected` (a revision).
     async save({ id, title, body, expected, type, fields, tags }) {
@@ -89,6 +126,14 @@ function archive(vault) {
       return request('fragment.update', params);
     },
     schemas: () => request('schema.list', {}),
+    // Vault settings, kept in the vault for everyone who uses it: which types are on, and what each type holds.
+    vaultSettings: () => request('settings.get', {}),
+    updateVaultSettings: async changes => request('settings.update', validVaultSettings(changes)),
+    schemaUsage: async type => request('schema.usage', { type: validType(type) }),
+    builtinSchema: async type => request('schema.builtin', { type: validType(type) }),
+    // A new type (create) or a changed one; renames move fragments off renamed and removed values.
+    saveSchema: async ({ schema, create = false, renames = [] } = {}) => request('schema.save', { schema: validSchema(schema), create: !!create, renames: validRenames(renames) }),
+    deleteSchema: async type => request('schema.delete', { type: validType(type) }),
     links: () => request('vault.links', {}),
     list: () => request('fragment.search', { query: 'is:all' }),
     search(query) {

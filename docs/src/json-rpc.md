@@ -285,9 +285,11 @@ List all registered fragment types.
 
 **Params:** `{}`
 
-**Result:** Array of `{ "name", "alias", "editor_skip", "fields": [...], "toggle" }`.
+**Result:** Array of `{ "name", "alias", "editor_skip", "fields": [...], "toggle", "enabled", "default", "builtin" }`.
 
-Each field is `{ "name", "kind", "values", "required", "default", "toggle", "type" }`: `kind` is `string`, `date`, `enum` or `list`; `values` lists an enum's values; `toggle` is the field's `[off, on]` pair if it declares one. The schema's `toggle` is `{ "field", "off", "on" }` for the one-key toggle (the TUI's `t`), or `null`. `type` is an older spelling of the field type kept for existing clients.
+Each field is `{ "name", "kind", "values", "required", "default", "toggle", "categories", "type" }`: `kind` is `string`, `date`, `enum` or `list`; `values` lists an enum's values; `toggle` is the field's `[off, on]` pair if it declares one. On the `status` field, `categories` maps every value to what it means (`open`, `active`, `done` or `closed`), with the built-in meanings filled in when the schema declares none; other fields have `null`. The schema's `toggle` is `{ "field", "off", "on" }` for the one-key toggle (the TUI's `t`), or `null`. `type` is an older spelling of the field type kept for existing clients.
+
+`enabled` is `false` for a type turned off in the vault's settings: `fragment.create` refuses it, but its fragments read and update as usual. `default` marks the type captures start as; `builtin` marks the five types parc ships.
 
 ### schema.get
 
@@ -295,7 +297,67 @@ Get a specific schema definition.
 
 **Params:** `{ "type": "<type-name-or-alias>" }`
 
-**Result:** `{ "name", "alias", "editor_skip", "fields": [...], "toggle" }`, as in `schema.list`.
+**Result:** One schema, as in `schema.list`.
+
+### schema.builtin
+
+The definition parc ships for a built-in type (note, todo, decision, risk, idea), to compare with or restore over the vault's copy.
+
+**Params:** `{ "type": "<type-name>" }`
+
+**Result:** One schema, as in `schema.list`.
+
+### schema.usage
+
+How a type is used: its fragments, and how many hold each value of each of its enum fields.
+
+**Params:** `{ "type": "<type-name>" }`
+
+**Result:** `{ "total": <n>, "values": { "<field>": { "<value>": <n> } } }`
+
+### schema.save
+
+Create a type, or change one and bring its fragments along.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `schema` | object | yes | `{ "name", "alias"?, "editor_skip"?, "fields": [...] }`. Each field is `{ "name", "kind", "values"?, "required"?, "default"?, "toggle"?, "categories"? }`, as `schema.list` returns them |
+| `create` | boolean | no | `true` for a new type (refused if the name exists); `false` (default) to change an existing one |
+| `renames` | array | no | `[{ "field", "from", "to" }]`: move fragments holding `from` in an enum field to `to`. Use it for a renamed value, or to say where a removed value's fragments go |
+
+The schema is checked strictly (names, values, defaults, toggle and categories, and that the name and alias don't collide with another type's). The change is refused with nothing written if it would leave a fragment that is valid now invalid; the error names the first few. Moved fragments keep their `updated_at` and go through the usual save, hooks included.
+
+**Result:** `{ "schema": <as in schema.list>, "migrated": <n>, "warnings"?: [...] }`
+
+Send the whole definition: a field left out of `fields` is removed from the type. This renames a bug status, moving the fragments that had it:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"schema.save","params":{"schema":{"name":"bug","alias":"b","fields":[{"name":"status","kind":"enum","values":["new","fixing","fixed"],"required":true,"default":"new","toggle":["new","fixed"],"categories":{"fixing":"active","fixed":"done"}}]},"renames":[{"field":"status","from":"triaged","to":"fixing"}]}}
+```
+
+### schema.delete
+
+Remove a type that no fragment uses. A type with fragments can be turned off instead.
+
+**Params:** `{ "type": "<type-name>" }`
+
+**Result:** `{ "deleted": true }`
+
+### settings.get
+
+The vault's settings from `config.yml`: which types are on.
+
+**Params:** `{}`
+
+**Result:** `{ "types": { "default": "<type>", "disabled": ["<type>", ...] } }`. `default` is the type captures start as.
+
+### settings.update
+
+Change the settings given and keep the others. Only `types` can be changed here; hook and plugin switches are not reachable over RPC.
+
+**Params:** `{ "types": { "default"?: "<type>", "disabled"?: ["<type>", ...] } }`. The default must be a type that is on, and at least one type stays on. Only the `types:` block of `config.yml` is rewritten.
+
+**Result:** As `settings.get`.
 
 ### tags.list
 

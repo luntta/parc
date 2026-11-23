@@ -4,7 +4,15 @@ A local-first Electron workspace for Linux and macOS. Choose a vault from the sw
 
 ### Types and fields
 
-A new capture starts as a note; its badge (**New note ▾**) picks any type the vault's schemas define. The row under the badge holds the type's fields: enum fields such as status, priority, likelihood or impact open a menu of the schema's values, date fields such as due open a calendar, and tags are added with the tag button and removed with their ×. On a saved fragment each field change is saved at once, as it is in `parc tui`; the text keeps its own Save. On a new capture they wait for its first save. When the schema declares a `toggle:` (todos flip open/done, decisions proposed/accepted, risks identified/resolved), the status mark toggles it, and so does **T** outside the editor.
+A new capture starts as the vault's default type (a note unless Vault settings say otherwise); its badge (**New note ▾**) picks any type the vault has switched on. The row under the badge holds the type's fields: enum fields such as status, priority, likelihood or impact open a menu of the schema's values, date fields such as due open a calendar, and tags are added with the tag button and removed with their ×. On a saved fragment each field change is saved at once, as it is in `parc tui`; the text keeps its own Save. On a new capture they wait for its first save. When the schema declares a `toggle:` (todos flip open/done, decisions proposed/accepted, risks identified/resolved), the status mark toggles it, and so does **T** outside the editor.
+
+### Vault settings
+
+**Vault settings…** (in the vault switcher, in Go to…, or from Settings) shows the vault's types. It is kept in the vault itself (`config.yml` and `schemas/`), so everyone who opens the vault, from the app or the CLI, gets the same types.
+
+- **Switch a type off** and new captures can't use it: the type menu, Go to… and quick capture stop offering it, and the CLI and server refuse it. Its fragments stay as they are: they open, change and turn up in searches. The type new captures start as can't be switched off; choose another under **New captures → Start as** first.
+- **Edit** a type to change its fields: add one (Text, Date, Choice or List), make it required, give it a default, or remove it (its values stay in the files). A choice field's values can be renamed, added and removed. Renaming a value moves the fragments that hold it. Removing a value that fragments hold asks where they go; Save refuses to leave a fragment invalid. On the status field, each value says what it means (Open, Active, Done or Closed), which drives status colours, the **Open** filter and the open-work counts in Pulse, and **T toggles** picks the pair the status mark and **T** flip between. Built-in types have **Restore built-in**; a type no fragment uses can be deleted.
+- **New type** starts with a status field (open ⇄ done) that you can change or remove. Its name is fixed once created, because fragments and hooks refer to it; its shortcut (`parc b "…"` in a terminal) can change.
 
 ### History, archive and trash
 

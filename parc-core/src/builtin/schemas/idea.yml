@@ -7,3 +7,7 @@ fields:
     values: [raw, exploring, promoted, parked, discarded]
     required: true
     default: raw
+    categories:
+      active: [exploring]
+      done: [promoted]
+      closed: [parked, discarded]

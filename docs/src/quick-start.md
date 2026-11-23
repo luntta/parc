@@ -18,6 +18,8 @@ parc init
 parc init --global
 ```
 
+`parc init` asks which built-in types (note, todo, decision, risk, idea) you want to use; press Enter to keep them all, or pass `-y` to skip the questions.
+
 parc finds your vault by walking up from the current directory, then falling back to `~/.parc/`. Inside a project-local vault, use `parc -g` or `parc --global` to write to the global vault instead.
 
 ## 2. Capture a thought

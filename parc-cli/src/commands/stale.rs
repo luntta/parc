@@ -39,7 +39,7 @@ pub fn run(
                 date: cutoff.clone(),
             }),
         ];
-        filters.extend(resurfacing::unfinished_status_filters());
+        filters.extend(resurfacing::unfinished_status_filters(vault));
 
         let query = SearchQuery {
             text_terms: Vec::new(),

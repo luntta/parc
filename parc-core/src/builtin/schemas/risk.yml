@@ -8,6 +8,10 @@ fields:
     required: true
     default: identified
     toggle: [identified, resolved]
+    categories:
+      active: [mitigating]
+      done: [resolved]
+      closed: [accepted]
   - name: likelihood
     type: enum
     values: [low, medium, high]

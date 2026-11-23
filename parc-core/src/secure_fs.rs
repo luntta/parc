@@ -55,6 +55,26 @@ pub fn write_private_new(path: &Path, contents: impl AsRef<[u8]>) -> Result<(), 
     Ok(())
 }
 
+/// Replace a file's contents in one step: write a sibling temporary file,
+/// then rename it over `path`, so a reader (or a crash) never sees half a file.
+pub fn write_private_atomic(path: &Path, contents: impl AsRef<[u8]>) -> Result<(), ParcError> {
+    reject_existing_symlink(path)?;
+    let name = path.file_name().ok_or_else(|| {
+        ParcError::ValidationError(format!("not a file path: {}", path.display()))
+    })?;
+    let temp = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        name.to_string_lossy(),
+        ulid::Ulid::new()
+    ));
+    write_private_new(&temp, contents)?;
+    if let Err(err) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(ParcError::Io(err));
+    }
+    Ok(())
+}
+
 pub fn write_private_temp(
     prefix: &str,
     suffix: &str,

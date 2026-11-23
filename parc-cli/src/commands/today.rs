@@ -45,7 +45,7 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
             date: today,
         }),
     ];
-    due_filters.extend(resurfacing::unfinished_status_filters());
+    due_filters.extend(resurfacing::unfinished_status_filters(vault));
     let due = resurfacing::run_search(
         vault,
         &SearchQuery {

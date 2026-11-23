@@ -4,175 +4,125 @@ title: Custom types
 eyebrow: Reference · §04
 ---
 
-Define your own fragment type by dropping a YAML schema into `<vault>/schemas/`. parc validates fragments against the schema on save and on reindex; the search DSL knows about every registered type automatically.
+A type is a YAML schema in `<vault>/schemas/`. The five built-in types are schemas too, copied into each vault by `parc init`, so everything here applies to changing them as well as to adding your own. parc validates fragments against their type's schema on every save, and the search DSL knows every registered type.
+
+The desktop app's **Vault settings** edit these files with a form: add a type, add or remove fields, rename a status (fragments holding it follow), and say what each status means. The rest of this page is the file format behind it.
 
 ## Schema format
 
-A schema describes a single type. The file name (without extension) is the type name.
-
 ```yaml
-# .parc/schemas/meeting.yml
-name: meeting
-title: Meeting
-description: A scheduled or completed meeting
-
-fields:
-  attendees:
-    type: list
-    item_type: string
-    required: false
-
-  scheduled_at:
-    type: datetime
-    required: true
-
-  duration_minutes:
-    type: integer
-    required: false
-    min: 5
-    max: 480
-
-  status:
-    type: enum
-    values: [scheduled, completed, cancelled]
-    default: scheduled
-
-  outcome:
-    type: text
-    required: false
-
-template: |
-  ## Agenda
-
-  - 
-
-  ## Notes
-
-  
-  ## Action items
-
-  - [ ] 
-```
-
-## Field types
-
-| Type | YAML notes | DSL filter |
-|------|------------|------------|
-| `string` | Single-line text | `field:value` |
-| `text` | Multi-line text | Free-text only |
-| `integer` | Whole number, supports `min`/`max` | `field:>=N` |
-| `float` | Decimal number, supports `min`/`max` | `field:>=N.M` |
-| `boolean` | `true` / `false` | `field:true` |
-| `date` | ISO date (no time) | `field:>=2026-03-01` |
-| `datetime` | ISO 8601 with time | `field:>=2026-03-01T10:00:00Z` |
-| `enum` | One of `values:` | `field:value` |
-| `list` | Array of `item_type:` | `field:contains:value` |
-
-Every field accepts:
-
-- `required: true|false` (default `false`)
-- `default: <value>` — applied when the field is omitted on creation
-- `description: <text>` — shown in `parc schema show`
-
-## One-key toggle
-
-An `enum` field can declare `toggle: [off, on]`, the two values the TUI's `t` key flips between. On a fragment whose value is `on`, `t` sets `off`; for any other value it sets `on`, so `t` finishes an in-progress todo rather than reopening it.
-
-```yaml
+# .parc/schemas/bug.yml
+name: bug
+alias: b
+editor_skip: false
 fields:
   - name: status
     type: enum
-    values: [open, in-progress, done, cancelled]
-    default: open
-    toggle: [open, done]
+    values: [new, triaged, fixing, fixed, wontfix]
+    required: true
+    default: new
+    toggle: [new, fixed]
+    categories:
+      active: [triaged, fixing]
+      done: [fixed]
+      closed: [wontfix]
+  - name: severity
+    type: enum
+    values: [low, medium, high]
+    default: medium
+  - name: found_in
+    type: string
+  - name: due
+    type: date
+  - name: reporters
+    type: list
 ```
+
+| Key | Meaning |
+|-----|---------|
+| `name` | The type's name: a letter, then letters, digits, `-` or `_`. Fragments store it in `type:`, so it shouldn't change once fragments use it |
+| `alias` | Optional shortcut: `parc b "Crash on save"` creates a bug, and `b` works wherever a type name does |
+| `editor_skip` | `true` skips `$EDITOR` when `parc new` is given a title (notes do this) |
+| `fields` | A list of fields, in the order they're shown |
+
+## Fields
+
+Each field is `name`, `type`, and optionally `values`, `required`, `default`, `toggle` and `categories`.
+
+| `type` | Holds | Notes |
+|--------|-------|-------|
+| `string` | One line of text | `default` is any line |
+| `date` | `YYYY-MM-DD` | `default` must be a date; `parc new --due` also takes shorthands such as `tomorrow` |
+| `enum` | One of `values:` | Values are single words (letters, digits, `-`, `_`), so the DSL can say `status:wontfix` |
+| `list` | A list of strings | No default |
+
+- `required: true` refuses a save without the field, unless it has a `default`, which new fragments get.
+- A field name can't be one parc uses itself: `id`, `type`, `title`, `tags`, `links`, `attachments`, `created_at`, `updated_at`, `created_by`, `archived`, `body`, and a few names the JSON views use.
+
+The search DSL filters `status:`, `priority:` and `due:` directly. Other fields are stored in the files and shown everywhere, but aren't filters yet.
+
+## What each status means
+
+The `status` field can say what each of its values means with `categories:`, listing the values that are `active` (under way), `done` (finished) or `closed` (dropped). A value listed nowhere is `open`. Done and closed fragments are settled: they leave open-work lists, `due`, `stale` and `review`, and the desktop's **Open** filter. See [What a status means]({{ '/concepts/types/' | url }}#what-a-status-means).
+
+Each value can be in one category at most, and `categories:` is only for the field named `status`. A schema without it gets the built-in meanings of the familiar words (`done`, `cancelled`, `in-progress`…) and treats any other word as open. Give your own words a category.
+
+## One-key toggle
+
+An `enum` field can declare `toggle: [off, on]`, the two values the TUI's `t` key and the desktop's status mark flip between. On a fragment whose value is `on`, the toggle sets `off`; for any other value it sets `on`, so it finishes an in-progress todo rather than reopening it.
 
 Both values must be in `values:`, and the first field that declares `toggle:` wins. The built-in todo, risk and decision types ship with one; idea and note don't. A schema without `toggle:` whose `status` enum has both `open` and `done` toggles between those two, so todo schemas created before `toggle:` existed keep working.
 
 ## Templates
 
-The optional `template:` block is the body parc seeds the editor with for `parc new <type>` (without an inline title). Use it to encode your standard structure for that type — agenda, notes, action items.
+The body a new fragment starts with in `$EDITOR` comes from `<vault>/templates/<type>.md`. A new type gets an empty one; edit it to give the type a standard structure:
 
-If you prefer to keep templates in their own files, drop them in `<vault>/templates/<type>.md` instead. The schema-level `template:` and the file template are merged: the schema block applies first, then the file template overrides any common sections.
+```markdown
+---
+type: bug
+title: ""
+---
 
-## Adding a schema
+## Steps to reproduce
+
+1.
+
+## Expected
+
+## Actual
+```
+
+## Adding a type
+
+Write the schema and register it:
 
 ```bash
-parc schema add ./meeting.yml
+parc schema add ./bug.yml
 ```
 
-`schema add` validates the file against parc's schema-of-schemas, copies it to `<vault>/schemas/meeting.yml`, and refreshes the type registry. After this:
+`schema add` checks the file, copies it to `<vault>/schemas/bug.yml`, and creates `templates/bug.md` if there isn't one. After that:
 
 ```bash
-parc new meeting "Weekly sync"
-parc list meeting
-parc search 'type:meeting status:scheduled'
+parc new bug "Crash on save" --status triaged
+parc b "Toolbar overlaps the title"
+parc list bug
+parc search 'type:bug status:!fixed'
 ```
 
-Add an alias to the vault's `config.yml#aliases` if you want a one-letter shortcut:
+A file you drop into `schemas/` yourself works too; parc reads every `.yml` and `.yaml` file there.
 
-```yaml
-aliases:
-  m: meeting
-```
+## Changing a type
 
-## Removing a schema
+Edit its file in `schemas/`. The change applies to the next save of each fragment, so think about the fragments it already has:
 
-```bash
-parc schema remove meeting
-```
+- **Renaming or removing a value** leaves fragments holding the old one invalid until they're changed. The desktop's Vault settings move them for you (renamed values follow; a removed value asks where its fragments go) and won't save a change that would leave a fragment invalid. Over JSON-RPC, `schema.save` does the same with `renames`.
+- **Adding a required field** needs a `default`, or every existing fragment becomes invalid.
+- **Removing a field** keeps its values in the fragments' files; parc stops showing and checking them.
 
-This deletes `<vault>/schemas/meeting.yml` and unregisters the type. Existing fragments of that type stay on disk but become invalid until you either re-add the schema or change their `type:` field by hand.
+`parc doctor` lists fragments that don't match their schema.
 
-Built-in schemas (`note`, `todo`, `decision`, `risk`, `idea`) cannot be removed — they live inside the parc binary. You *can* override them by dropping a file with the same name into `<vault>/schemas/`, but this is rarely a good idea.
+## Turning a type off, or removing it
 
-## A worked custom type
+A type you no longer want to create can be turned off (`types.disabled` in [`config.yml`]({{ '/configuration/' | url }}#types), or a switch in Vault settings). Its fragments stay readable and editable.
 
-```yaml
-# .parc/schemas/bookmark.yml
-name: bookmark
-title: Bookmark
-description: A URL worth keeping
-
-fields:
-  url:
-    type: string
-    required: true
-    description: Canonical URL
-
-  source:
-    type: enum
-    values: [hn, lobsters, reddit, twitter, mastodon, manual]
-    default: manual
-
-  read:
-    type: boolean
-    default: false
-
-  rating:
-    type: integer
-    min: 1
-    max: 5
-    required: false
-
-template: |
-  > URL goes here
-
-  ## Why I saved it
-
-  
-
-  ## Notes
-
-  
-```
-
-After `parc schema add bookmark.yml`:
-
-```bash
-parc new bookmark "Local-first software" \
-  --field url=https://www.inkandswitch.com/local-first/ \
-  --field source=hn
-
-parc search 'type:bookmark read:false rating:>=4'
-```
+A type nothing uses can be removed: delete its file from `schemas/` (Vault settings offer **Delete type** when no fragment uses it). Fragments of a type without a schema are still read and saved, just not validated.

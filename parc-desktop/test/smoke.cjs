@@ -194,7 +194,33 @@ async function check() {
   await js('document.querySelector("#languageSlot aihio-dropdown-item[value=en]").click()');
   await until('document.querySelector("#languageSlot .language-code")?.textContent === "EN"');
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).speechLanguages, ['fi', 'en']);
-  console.log('PASS: dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to…, sidebar filters, history restore, archive and trash with undo, live search, quick capture, dictation languages and model list');
+  // Vault settings: turn a type off, rename a status (its fragments follow), add a type.
+  const invoice = await prototype.save({ title: 'Settle the invoice', body: '', type: 'todo', fields: { status: 'in-progress' } });
+  await until(idle);
+  await js('document.querySelector("#vaultMenu aihio-dropdown-item[value=\\"@settings\\"]").click()');
+  await until('!!document.querySelector("#vaultSettings[open] .type-row")');
+  await js(`{ const s = document.querySelector(".vs-vault select"), p = [...(s?.options || [])].find(o => o.text === "Prototype")?.value; if (p && s.value !== p) { s.value = p; s.dispatchEvent(new Event("change")); } }`);
+  await until('document.querySelector("#vsDescription").textContent.includes("Prototype") && document.querySelectorAll(".type-row").length === 5');
+  await js('document.querySelector("aihio-switch[aria-label=\\"Use risk for new fragments\\"] input").click()');
+  await until('document.querySelector("#vsMessage")?.textContent.startsWith("Risk is off")');
+  assert.deepEqual((await prototype.vaultSettings()).types.disabled, ['risk']);
+  await js('document.querySelector("aihio-button[aria-label=\\"Edit todo\\"]").click()');
+  await until('document.querySelectorAll(".field-card").length === 4');
+  await js('{ const i = [...document.querySelectorAll(".value-row .vs-input")].find(x => x.value === "in-progress"); i.value = "doing"; i.dispatchEvent(new Event("input")); i.dispatchEvent(new Event("change")); }');
+  await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Save type")).click()');
+  await until('document.querySelector("#vsMessage")?.textContent.includes("moved") && document.querySelectorAll(".type-row").length === 5');
+  assert.equal((await prototype.get(invoice.id)).status, 'doing');
+  await js('[...document.querySelectorAll("#vsBody aihio-button")].find(b => b.textContent.includes("New type")).click()');
+  await until('!!document.querySelector("[data-key=type-name]")');
+  await js('{ const i = document.querySelector("[data-key=type-name]"); i.value = "bug"; i.dispatchEvent(new Event("input")); }');
+  await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Create type")).click()');
+  await until('document.querySelectorAll(".type-row").length === 6');
+  const kinds = await prototype.schemas();
+  assert.equal(kinds.find(k => k.name === 'risk').enabled, false);
+  assert.deepEqual(kinds.find(k => k.name === 'bug').fields[0].categories, { open: 'open', done: 'done' });
+  await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Done")).click()');
+  await until('!document.querySelector("#vaultSettings").hasAttribute("open")');
+  console.log('PASS: dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to…, sidebar filters, history restore, archive and trash with undo, live search, quick capture, dictation languages and model list, vault settings');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

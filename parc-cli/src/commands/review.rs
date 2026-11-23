@@ -86,7 +86,7 @@ pub fn run(vault: &Path, since: Option<String>, json: bool) -> Result<()> {
             date: next_week,
         }),
     ];
-    due_filters.extend(resurfacing::unfinished_status_filters());
+    due_filters.extend(resurfacing::unfinished_status_filters(vault));
     let due = resurfacing::run_search(
         vault,
         &SearchQuery {
@@ -107,7 +107,7 @@ pub fn run(vault: &Path, since: Option<String>, json: bool) -> Result<()> {
             date: stale_cutoff,
         }),
     ];
-    stale_filters.extend(resurfacing::unfinished_status_filters());
+    stale_filters.extend(resurfacing::unfinished_status_filters(vault));
     let stale = resurfacing::run_search(
         vault,
         &SearchQuery {

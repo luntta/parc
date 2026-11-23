@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use parc_core::config::{get_editor, load_config};
+use parc_core::config::load_config;
 use parc_core::fragment::{parse_fragment, read_fragment, serialize_fragment, validate_fragment};
 use parc_core::schema::load_schemas;
 use parc_core::secure_fs;
@@ -14,7 +14,6 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     let schemas = load_schemas(vault)?;
     let original = read_fragment(vault, id)?;
     let content = serialize_fragment(&original);
-    let editor = get_editor(&config);
     let tmp_path = secure_fs::write_private_temp("parc-edit", ".md", content.as_bytes())?;
 
     let mut last_error: Option<String> = None;
@@ -25,10 +24,7 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
             eprintln!("Re-opening editor. Save empty file to abort.");
         }
 
-        let status = std::process::Command::new(&editor)
-            .arg(&tmp_path)
-            .status()
-            .with_context(|| format!("failed to launch editor: {}", editor))?;
+        let status = crate::editor::open(&config, &tmp_path)?;
 
         if !status.success() {
             let _ = std::fs::remove_file(&tmp_path);

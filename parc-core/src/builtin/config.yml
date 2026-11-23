@@ -1,6 +1,6 @@
 # parc vault configuration
 # user: alice
-# editor: vim
+# editor: vim  (read from the global vault, ~/.parc, only; else $EDITOR)
 default_tags: []
 date_format: relative
 id_display_length: 8
@@ -17,3 +17,9 @@ resurfacing:
   stale_days: 30
   review_window: this-week
   today_section_limit: 10
+# Types new fragments can use. A turned-off type keeps its schema and its
+# fragments; nothing new is created as it. `default` is the type a capture
+# starts as when it doesn't pick one.
+types:
+  default: note
+  disabled: []

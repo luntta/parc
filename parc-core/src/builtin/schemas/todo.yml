@@ -8,6 +8,10 @@ fields:
     required: true
     default: open
     toggle: [open, done]
+    categories:
+      active: [in-progress]
+      done: [done]
+      closed: [cancelled]
   - name: due
     type: date
     required: false

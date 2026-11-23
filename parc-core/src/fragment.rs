@@ -445,6 +445,21 @@ pub fn list_fragment_ids(vault: &Path) -> Result<Vec<String>, ParcError> {
     Ok(ids)
 }
 
+/// Every fragment in `fragments/` that can be read, in ID order. Files that
+/// can't be read or parsed are skipped; `parc doctor` reports them.
+pub fn read_all(vault: &Path) -> Result<Vec<Fragment>, ParcError> {
+    let mut fragments = Vec::new();
+    for id in list_fragment_ids(vault)? {
+        let path = vault.join("fragments").join(format!("{}.md", id));
+        if let Ok(bytes) = std::fs::read(&path) {
+            if let Ok(fragment) = parse_fragment_file(&id, &bytes) {
+                fragments.push(fragment);
+            }
+        }
+    }
+    Ok(fragments)
+}
+
 /// Resolve an ID prefix to a full ID.
 pub fn resolve_id(vault: &Path, prefix: &str) -> Result<String, ParcError> {
     let upper_prefix = prefix.to_uppercase();

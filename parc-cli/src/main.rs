@@ -1,4 +1,5 @@
 mod commands;
+mod editor;
 pub mod hooks;
 mod render;
 
@@ -36,9 +37,13 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Commands {
-    /// Initialize a new vault
-    Init,
-    /// Quickly capture a note
+    /// Initialize a new vault, asking which types to turn on
+    Init {
+        /// Don't ask: turn every built-in type on, with notes as the default
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Quickly capture a fragment of the vault's default type (a note unless changed)
     #[command(name = "+")]
     Capture {
         /// Text to capture. Reads stdin when omitted.
@@ -533,11 +538,11 @@ fn main() -> anyhow::Result<()> {
                 commands::today::run(&vault, false)
             }
         }
-        Some(Commands::Init) => {
+        Some(Commands::Init { yes }) => {
             if cli.global_vault && cli.vault.is_some() {
                 anyhow::bail!("--vault and --global/-g are mutually exclusive");
             }
-            commands::init::run(cli.global_vault, cli.vault.as_deref())
+            commands::init::run(cli.global_vault, cli.vault.as_deref(), yes)
         }
         Some(Commands::Completions { shell }) => commands::completions::run(&shell),
         Some(Commands::Version { json }) => commands::version::run(json),
@@ -726,7 +731,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 },
                 Commands::External(args) => run_external_command(&vault, args),
-                Commands::Init
+                Commands::Init { .. }
                 | Commands::Vault { .. }
                 | Commands::Completions { .. }
                 | Commands::Version { .. }

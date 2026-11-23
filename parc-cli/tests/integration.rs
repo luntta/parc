@@ -2861,3 +2861,265 @@ fn test_unindexable_file_is_warned_about_once() {
     assert_eq!(json["fragments_indexed"], 0);
     assert_eq!(json["problems"][0]["file"], format!("fragments/{}.md", id));
 }
+
+// ── Vault settings: types on and off ──
+
+#[test]
+fn test_init_without_a_terminal_takes_the_defaults() {
+    let tmp = TempDir::new().unwrap();
+    // assert_cmd pipes stdin, so nobody is there to answer: no questions.
+    parc()
+        .args(["init"])
+        .current_dir(tmp.path())
+        .write_stdin("n\nn\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized local vault"))
+        .stdout(predicate::str::contains("(Y/n)").not());
+    let config = parc_core::config::load_config(&tmp.path().join(".parc")).unwrap();
+    assert_eq!(config.types, parc_core::vault::default_init_types());
+
+    let tmp = TempDir::new().unwrap();
+    parc()
+        .args(["init", "-y"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    parc()
+        .args(["init", "--yes"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+fn turn_off(vault: &str, disabled: &[&str], default: &str) {
+    parc_core::config::save_types(
+        Path::new(vault),
+        &parc_core::config::TypesConfig {
+            default: Some(default.to_string()),
+            disabled: disabled.iter().map(|s| s.to_string()).collect(),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_turned_off_type_refuses_new_fragments_but_lists_old_ones() {
+    let tmp = TempDir::new().unwrap();
+    let vault = init_vault(&tmp);
+    let id = create_fragment_directly(&tmp, "risk", "Disk fills up", "");
+    turn_off(&vault, &["risk"], "note");
+
+    for args in [
+        vec!["new", "risk", "Another", "--body", "x"],
+        vec!["r", "Another", "--body", "x"],
+    ] {
+        parc()
+            .args(&args)
+            .current_dir(tmp.path())
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("turned off"));
+    }
+    parc()
+        .args(["list", "risk", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&id));
+    parc()
+        .args(["set", &id[..10], "status", "resolved"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let note = create_fragment_directly(&tmp, "note", "Promote me", "");
+    parc()
+        .args(["promote", &note[..10], "risk"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("turned off"));
+}
+
+#[test]
+fn test_types_shows_state_and_capture_uses_the_default_type() {
+    let tmp = TempDir::new().unwrap();
+    let vault = init_vault(&tmp);
+    turn_off(&vault, &["note", "idea"], "todo");
+
+    let out = parc()
+        .args(["types", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let types: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let get = |name: &str| {
+        types
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(get("note")["enabled"], false);
+    assert_eq!(get("todo")["default"], true);
+    assert_eq!(get("todo")["status_categories"]["cancelled"], "closed");
+    parc()
+        .args(["types"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"todo\s+t\s+default").unwrap())
+        .stdout(predicate::str::is_match(r"idea\s+i\s+off").unwrap());
+
+    let out = parc()
+        .args(["+", "Buy milk", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(created["type"], "todo");
+}
+
+#[test]
+fn test_open_work_follows_status_categories() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    // A parked idea is settled (closed), so open-work lists leave it out like a done todo.
+    let parked = create_fragment_directly(&tmp, "idea", "Parked idea", "");
+    let raw = create_fragment_directly(&tmp, "idea", "Raw idea", "");
+    parc()
+        .args(["set", &parked[..10], "status", "parked"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let out = parc()
+        .args(["random", "--type", "idea", "--limit", "10", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains(&raw), "{}", text);
+    assert!(!text.contains(&parked), "{}", text);
+}
+
+/// `EDITOR` may carry arguments (`code --wait`, `omarchy-launch-editor --inline`):
+/// parc splits it into words instead of looking for a program named with spaces.
+#[cfg(unix)]
+#[test]
+fn test_edit_with_an_editor_that_takes_arguments() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    let id = create_fragment_directly(&tmp, "note", "Before", "Body");
+    // A stand-in editor: its first argument is the new title, the last one the file.
+    let script = tmp.path().join("retitle");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nfile=\"$2\"\nsed -i.bak \"s/^title: .*/title: $1/\" \"$file\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    // HOME has no global vault, so $EDITOR decides.
+    parc()
+        .args(["edit", &id[..10]])
+        .env("EDITOR", format!("{} After", script.display()))
+        .env("HOME", tmp.path())
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let out = parc()
+        .args(["show", &id[..10], "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let shown: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(shown["title"], "After");
+
+    parc()
+        .args(["edit", &id[..10]])
+        .env("EDITOR", "vim 'unclosed")
+        .env("HOME", tmp.path())
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unclosed quote"));
+}
+
+/// A project vault's config.yml travels with the repository, so its `editor:`
+/// must not choose the program `parc edit` runs; the global vault's may.
+#[cfg(unix)]
+#[test]
+fn test_only_the_global_vault_chooses_the_editor() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let run = |args: &[&str]| {
+        let mut cmd = parc();
+        cmd.args(args).current_dir(&project).env("HOME", &home);
+        cmd
+    };
+    run(&["init", "-y"]).assert().success();
+    let vault = project.join(".parc");
+    let id = create_fragment_in_vault(&vault, "note", "Before", "Body");
+
+    let script = |name: &str, body: &str| {
+        let path = tmp.path().join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{}\n", body)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path.display().to_string()
+    };
+    let marker = tmp.path().join("pwned");
+    let evil = script("evil", &format!("touch '{}'", marker.display()));
+    let retitle = |title: &str| {
+        script(
+            &format!("retitle-{}", title),
+            &format!("sed -i.bak \"s/^title: .*/title: {}/\" \"$1\"", title),
+        )
+    };
+    let title = |run: &dyn Fn(&[&str]) -> Command| {
+        let out = run(&["show", &id[..10], "--json"]).output().unwrap();
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["title"].clone()
+    };
+
+    // The project vault names a program; $EDITOR runs instead, with a warning.
+    let config = std::fs::read_to_string(vault.join("config.yml")).unwrap();
+    std::fs::write(vault.join("config.yml"), format!("{}editor: {}\n", config, evil)).unwrap();
+    run(&["edit", &id[..10]])
+        .env("EDITOR", retitle("FromEnv"))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ignoring `editor:"));
+    assert!(!marker.exists(), "the vault's editor ran");
+    assert_eq!(title(&run), "FromEnv");
+
+    // The global vault's editor: is the user's own, and applies in every vault.
+    run(&["init", "-g", "-y"]).assert().success();
+    let global = home.join(".parc/config.yml");
+    let text = std::fs::read_to_string(&global).unwrap();
+    std::fs::write(&global, format!("{}editor: {}\n", text, retitle("FromGlobal"))).unwrap();
+    run(&["edit", &id[..10]])
+        .env("EDITOR", retitle("FromEnv2"))
+        .assert()
+        .success();
+    assert!(!marker.exists());
+    assert_eq!(title(&run), "FromGlobal");
+}

@@ -3,7 +3,8 @@
 //! Every frontend (CLI, TUI, server) changes fragments through [`Writer`], so
 //! a save runs the same steps no matter where it came from:
 //!
-//! 1. validate against the type's schema (unknown custom types are accepted)
+//! 1. validate against the type's schema (unknown custom types are accepted);
+//!    a new fragment's type, or a converted one's, must not be turned off
 //! 2. run pre-hooks (scripts, then WASM plugins when enabled); a failing
 //!    pre-hook aborts the save
 //! 3. write the file (`write_fragment` takes the history snapshot)
@@ -32,6 +33,15 @@ pub struct LinkChange {
     pub a: String,
     pub b: String,
     pub changed: bool,
+}
+
+/// Move the fragments holding `from` in a choice field to `to`, when a
+/// schema renames or removes a value. See [`Writer::save_schema`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueRename {
+    pub field: String,
+    pub from: String,
+    pub to: String,
 }
 
 pub struct Writer {
@@ -71,8 +81,12 @@ impl Writer {
         std::mem::take(&mut self.warnings)
     }
 
-    /// Save a new fragment. Fails if a fragment with the same ID exists.
+    /// Save a new fragment. Fails if a fragment with the same ID exists, or
+    /// if its type is turned off in this vault.
     pub fn create(&mut self, fragment: Fragment) -> Result<Fragment, ParcError> {
+        crate::config::load_config(&self.vault)?
+            .types
+            .check_enabled(&fragment.fragment_type)?;
         fragment::validate_fragment_in_vault(&self.vault, &fragment)?;
         let fragment = self.pre_hooks(HookEvent::PreCreate, &fragment)?;
         fragment::create_fragment(&self.vault, &fragment)?;
@@ -84,12 +98,41 @@ impl Writer {
     /// Save changes to an existing fragment. Sets `updated_at` to now.
     pub fn update(&mut self, mut fragment: Fragment) -> Result<Fragment, ParcError> {
         fragment.updated_at = Utc::now();
+        self.rewrite(fragment)
+    }
+
+    /// [`Writer::update`] without touching `updated_at`: for changes parc
+    /// makes on the user's behalf, such as renaming a status in every
+    /// fragment of a type, which shouldn't make them look freshly edited.
+    fn rewrite(&mut self, fragment: Fragment) -> Result<Fragment, ParcError> {
+        self.check_type_change(&fragment)?;
         fragment::validate_fragment_in_vault(&self.vault, &fragment)?;
         let fragment = self.pre_hooks(HookEvent::PreUpdate, &fragment)?;
         fragment::write_fragment(&self.vault, &fragment)?;
         self.index(&fragment)?;
         self.post_hooks(HookEvent::PostUpdate, &fragment);
         Ok(fragment)
+    }
+
+    /// A fragment may keep a type that is turned off, but may not change to
+    /// one: whichever frontend converts it (promote, an edited `type:` line).
+    fn check_type_change(&self, fragment: &Fragment) -> Result<(), ParcError> {
+        let types = crate::config::load_config(&self.vault)?.types;
+        if types.is_enabled(&fragment.fragment_type) {
+            return Ok(());
+        }
+        let path = self
+            .vault
+            .join("fragments")
+            .join(format!("{}.md", fragment.id));
+        let saved_type = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| fragment::parse_fragment_file(&fragment.id, &bytes).ok())
+            .map(|saved| saved.fragment_type);
+        if saved_type.as_deref() == Some(fragment.fragment_type.as_str()) {
+            return Ok(());
+        }
+        types.check_enabled(&fragment.fragment_type)
     }
 
     /// Move a fragment to the trash. Returns the fragment as it was.
@@ -178,9 +221,133 @@ impl Writer {
         let schema = schemas
             .resolve(new_type)
             .ok_or_else(|| ParcError::SchemaNotFound(new_type.to_string()))?;
+        crate::config::load_config(&self.vault)?
+            .types
+            .check_enabled(&schema.name)?;
         let mut fragment = fragment::read_fragment(&self.vault, id_or_prefix)?;
         fragment::apply_promotion(&mut fragment, schema, overrides)?;
         self.update(fragment)
+    }
+
+    /// Write a type's schema and bring its fragments along: each
+    /// [`ValueRename`] moves the fragments holding `from` in `field` to `to`.
+    /// Nothing is written if the change would leave a fragment that is valid
+    /// now invalid (a removed value nobody moved, a new required field
+    /// without a default...); the error names them. Fragments that were
+    /// already invalid are left as they are.
+    ///
+    /// Migrated fragments keep their `updated_at` and go through the usual
+    /// save (hooks, history, index). Returns how many changed; a fragment that
+    /// fails to save (a pre-hook veto) becomes a warning, since the schema is
+    /// already written by then.
+    pub fn save_schema(
+        &mut self,
+        schema: &crate::schema::Schema,
+        create: bool,
+        renames: &[ValueRename],
+    ) -> Result<usize, ParcError> {
+        use crate::schema::FieldType;
+
+        crate::schema::validate_schema(schema)?;
+        for rename in renames {
+            let target = schema
+                .field(&rename.field)
+                .and_then(|f| match &f.field_type {
+                    FieldType::Enum(values) => Some(values),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    ParcError::ValidationError(format!(
+                        "can't move values of '{}': it isn't a choice field of '{}'",
+                        rename.field, schema.name
+                    ))
+                })?;
+            if !target.contains(&rename.to) {
+                return Err(ParcError::ValidationError(format!(
+                    "can't move '{}' to '{}': it isn't a value of field '{}'",
+                    rename.from, rename.to, rename.field
+                )));
+            }
+        }
+
+        let old = crate::schema::load_schemas(&self.vault)?
+            .get_by_name(&schema.name)
+            .cloned();
+        let mut changed = Vec::new();
+        let mut stranded = Vec::new();
+        if !create {
+            for mut fragment in fragment::read_all(&self.vault)? {
+                if fragment.fragment_type != schema.name {
+                    continue;
+                }
+                let valid_before = old
+                    .as_ref()
+                    .is_none_or(|o| fragment::validate_fragment(&fragment, o).is_ok());
+                // One rename per field, so swapping two values (a→b, b→a) doesn't chain.
+                let mut moved = std::collections::BTreeSet::new();
+                for rename in renames {
+                    if moved.contains(&rename.field) {
+                        continue;
+                    }
+                    let field = fragment.extra_fields.get_mut(&rename.field);
+                    if let Some(value) = field.filter(|v| v.as_str() == Some(rename.from.as_str()))
+                    {
+                        *value = Value::String(rename.to.clone());
+                        moved.insert(rename.field.clone());
+                    }
+                }
+                let touched = !moved.is_empty();
+                match fragment::validate_fragment(&fragment, schema) {
+                    Ok(()) if touched => changed.push(fragment),
+                    Ok(()) => {}
+                    Err(e) if valid_before => stranded.push((fragment, e)),
+                    Err(_) => {}
+                }
+            }
+        }
+        if !stranded.is_empty() {
+            let named: Vec<String> = stranded
+                .iter()
+                .take(3)
+                .map(|(f, e)| {
+                    let title = if f.title.is_empty() {
+                        "Untitled"
+                    } else {
+                        &f.title
+                    };
+                    format!("“{}” ({})", title, e)
+                })
+                .collect();
+            let more = stranded.len().saturating_sub(named.len());
+            return Err(ParcError::ValidationError(format!(
+                "this change would make {} {} invalid: {}{}",
+                stranded.len(),
+                if stranded.len() == 1 {
+                    "fragment"
+                } else {
+                    "fragments"
+                },
+                named.join("; "),
+                if more > 0 {
+                    format!("; and {} more", more)
+                } else {
+                    String::new()
+                }
+            )));
+        }
+
+        crate::schema::write_schema(&self.vault, schema, create)?;
+        let mut migrated = 0;
+        for fragment in changed {
+            let id = fragment.id.clone();
+            match self.rewrite(fragment) {
+                Ok(_) => migrated += 1,
+                Err(e) => self
+                    .warnings
+                    .push(format!("{} keeps its old value: {}", id, e)),
+            }
+        }
+        Ok(migrated)
     }
 
     /// Link two fragments in both directions.
@@ -631,5 +798,209 @@ mod tests {
 
         assert!(err.contains("rejected"), "{}", err);
         assert!(fragment::read_fragment(&vault, &id).is_err());
+    }
+
+    fn plain_vault() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+        (tmp, vault)
+    }
+
+    fn turn_off(vault: &Path, name: &str) {
+        let mut types = crate::config::load_config(vault).unwrap().types;
+        types.disabled.push(name.to_string());
+        crate::config::save_types(vault, &types).unwrap();
+    }
+
+    #[test]
+    fn a_turned_off_type_takes_no_new_fragments_but_keeps_its_old_ones() {
+        let (_tmp, vault) = plain_vault();
+        let mut w = Writer::new(&vault, Recorder::default());
+        let old = w.create(new_todo(&vault, "Before")).unwrap();
+        let note = w.create(new_note(&vault, "A note")).unwrap();
+        turn_off(&vault, "todo");
+
+        let err = w.create(new_todo(&vault, "After")).unwrap_err().to_string();
+        assert!(err.contains("turned off"), "{}", err);
+        let err = w
+            .promote(&note.id, "todo", BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("turned off"), "{}", err);
+
+        // The existing todo still edits, and still validates against its schema.
+        let mut edited = old.clone();
+        edited
+            .extra_fields
+            .insert("status".into(), Value::String("done".into()));
+        w.update(edited).unwrap();
+        let mut bad = old.clone();
+        bad.extra_fields
+            .insert("status".into(), Value::String("nope".into()));
+        assert!(w.update(bad).is_err());
+    }
+
+    fn todo_with(vault: &Path, w: &mut Writer, title: &str, status: &str) -> Fragment {
+        let mut f = new_todo(vault, title);
+        f.extra_fields
+            .insert("status".into(), Value::String(status.into()));
+        w.create(f).unwrap()
+    }
+
+    fn status_of(vault: &Path, id: &str) -> String {
+        fragment::read_fragment(vault, id).unwrap().extra_fields["status"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn save_schema_renames_values_in_fragments_without_touching_updated_at() {
+        let (_tmp, vault) = plain_vault();
+        let mut w = Writer::new(&vault, Recorder::default());
+        let doing = todo_with(&vault, &mut w, "Doing", "in-progress");
+        let open = todo_with(&vault, &mut w, "Open", "open");
+        let before = fragment::read_fragment(&vault, &doing.id)
+            .unwrap()
+            .updated_at;
+
+        let mut schema = crate::schema::load_schemas(&vault)
+            .unwrap()
+            .get_by_name("todo")
+            .unwrap()
+            .clone();
+        let status = schema
+            .fields
+            .iter_mut()
+            .find(|f| f.name == "status")
+            .unwrap();
+        status.field_type = crate::schema::FieldType::Enum(vec![
+            "open".into(),
+            "doing".into(),
+            "done".into(),
+            "cancelled".into(),
+        ]);
+        status.categories.as_mut().unwrap().remove("in-progress");
+        status
+            .categories
+            .as_mut()
+            .unwrap()
+            .insert("doing".into(), crate::schema::StatusCategory::Active);
+        let rename = ValueRename {
+            field: "status".into(),
+            from: "in-progress".into(),
+            to: "doing".into(),
+        };
+
+        assert_eq!(w.save_schema(&schema, false, &[rename]).unwrap(), 1);
+        assert_eq!(status_of(&vault, &doing.id), "doing");
+        assert_eq!(status_of(&vault, &open.id), "open");
+        let after = fragment::read_fragment(&vault, &doing.id).unwrap();
+        assert_eq!(after.updated_at, before);
+        let saved = crate::schema::load_schemas(&vault).unwrap();
+        let todo = saved.get_by_name("todo").unwrap();
+        assert_eq!(
+            todo.status_category("doing"),
+            crate::schema::StatusCategory::Active
+        );
+        // The index follows: the renamed value is what a search finds.
+        let conn = index::open_index(&vault).unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM fragments WHERE id = ?1",
+                [&doing.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "doing");
+    }
+
+    #[test]
+    fn save_schema_refuses_to_strand_fragments() {
+        let (_tmp, vault) = plain_vault();
+        let mut w = Writer::new(&vault, Recorder::default());
+        let cancelled = todo_with(&vault, &mut w, "Dropped", "cancelled");
+        let path = vault.join("schemas/todo.yml");
+        let original = std::fs::read_to_string(&path).unwrap();
+
+        let mut schema = crate::schema::load_schemas(&vault)
+            .unwrap()
+            .get_by_name("todo")
+            .unwrap()
+            .clone();
+        let status = schema
+            .fields
+            .iter_mut()
+            .find(|f| f.name == "status")
+            .unwrap();
+        status.field_type = crate::schema::FieldType::Enum(vec![
+            "open".into(),
+            "in-progress".into(),
+            "done".into(),
+        ]);
+        status.categories.as_mut().unwrap().remove("cancelled");
+
+        let err = w.save_schema(&schema, false, &[]).unwrap_err().to_string();
+        assert!(err.contains("1 fragment invalid"), "{}", err);
+        assert!(err.contains("Dropped"), "{}", err);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        // Moving them to a value that stays makes the same change go through.
+        let to_done = ValueRename {
+            field: "status".into(),
+            from: "cancelled".into(),
+            to: "done".into(),
+        };
+        assert_eq!(w.save_schema(&schema, false, &[to_done]).unwrap(), 1);
+        assert_eq!(status_of(&vault, &cancelled.id), "done");
+
+        // Swapping two values moves each fragment once.
+        let open = todo_with(&vault, &mut w, "Open", "open");
+        let swap = [
+            ValueRename {
+                field: "status".into(),
+                from: "open".into(),
+                to: "done".into(),
+            },
+            ValueRename {
+                field: "status".into(),
+                from: "done".into(),
+                to: "open".into(),
+            },
+        ];
+        assert_eq!(w.save_schema(&schema, false, &swap).unwrap(), 2);
+        assert_eq!(status_of(&vault, &open.id), "done");
+        assert_eq!(status_of(&vault, &cancelled.id), "open");
+
+        // A rename into a value the schema doesn't have is refused up front.
+        let stray = ValueRename {
+            field: "status".into(),
+            from: "open".into(),
+            to: "later".into(),
+        };
+        assert!(w.save_schema(&schema, false, &[stray]).is_err());
+    }
+
+    #[test]
+    fn save_schema_creates_a_new_type_that_takes_fragments() {
+        let (_tmp, vault) = plain_vault();
+        let mut w = Writer::new(&vault, Recorder::default());
+        let schema = crate::schema::parse_schema(
+            "name: bug\nalias: b\nfields:\n  - name: status\n    type: enum\n    values: [new, fixed]\n    default: new\n    categories:\n      done: [fixed]\n",
+        )
+        .unwrap();
+        assert_eq!(w.save_schema(&schema, true, &[]).unwrap(), 0);
+        assert!(vault.join("schemas/bug.yml").exists());
+        assert!(vault.join("templates/bug.md").exists());
+        assert!(w.save_schema(&schema, true, &[]).is_err(), "exists already");
+
+        let schemas = crate::schema::load_schemas(&vault).unwrap();
+        let bug = schemas.resolve("b").unwrap();
+        let config = crate::config::load_config(&vault).unwrap();
+        let frag = w
+            .create(fragment::new_fragment("bug", "Crash", bug, &config))
+            .unwrap();
+        assert_eq!(frag.extra_fields["status"], Value::String("new".into()));
     }
 }

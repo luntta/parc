@@ -249,7 +249,7 @@ fn load_today_rows(vault: &Path, config: &Config) -> Result<Vec<Row>> {
             date: today,
         }),
     ];
-    due_filters.extend(resurfacing::unfinished_status_filters());
+    due_filters.extend(resurfacing::unfinished_status_filters(vault));
     push_section(
         &mut rows,
         "Due today / overdue",
@@ -313,7 +313,7 @@ fn load_stale_rows(vault: &Path, config: &Config) -> Result<Vec<Row>> {
                 date: cutoff.clone(),
             }),
         ];
-        filters.extend(resurfacing::unfinished_status_filters());
+        filters.extend(resurfacing::unfinished_status_filters(vault));
         groups.push(resurfacing::run_search(
             vault,
             &SearchQuery {
@@ -344,7 +344,7 @@ fn load_due_rows(vault: &Path) -> Result<Vec<Row>> {
             date: next_week,
         }),
     ];
-    filters.extend(resurfacing::unfinished_status_filters());
+    filters.extend(resurfacing::unfinished_status_filters(vault));
 
     let mut rows = query_rows(
         vault,
@@ -473,7 +473,7 @@ fn load_review_rows(vault: &Path, config: &Config) -> Result<Vec<Row>> {
             date: next_week,
         }),
     ];
-    due_filters.extend(resurfacing::unfinished_status_filters());
+    due_filters.extend(resurfacing::unfinished_status_filters(vault));
     push_section(
         &mut rows,
         "Open todos due soon",
@@ -499,7 +499,7 @@ fn load_review_rows(vault: &Path, config: &Config) -> Result<Vec<Row>> {
             date: stale_cutoff,
         }),
     ];
-    stale_filters.extend(resurfacing::unfinished_status_filters());
+    stale_filters.extend(resurfacing::unfinished_status_filters(vault));
     push_section(
         &mut rows,
         "Stale todos",

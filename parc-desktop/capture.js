@@ -21,13 +21,14 @@ function status(message, error = false) {
 function keep() {
   remember.set(DRAFT, empty() ? null : { vault: $('qVault').value, type: $('qType').value, title: $('qTitle').value, body: $('qBody').value });
 }
+// The vault's types that are on; a capture starts as the vault's default unless a draft chose another.
 async function types(vault, chosen) {
   let list = [];
-  try { list = await api.schemas(vault); } catch { /* an unreadable vault still takes notes */ }
-  const names = list.map(s => s.name);
-  if (!names.includes('note')) names.unshift('note');
+  try { list = (await api.schemas(vault)).filter(s => s.enabled !== false); } catch { /* an unreadable vault still takes notes */ }
+  const names = list.map(s => s.name), start = list.find(s => s.default)?.name || names[0] || 'note';
+  if (!names.length) names.push('note');
   $('qType').replaceChildren(...names.map(n => new Option(capital(n), n)));
-  $('qType').value = names.includes(chosen) ? chosen : 'note';
+  $('qType').value = names.includes(chosen) ? chosen : start;
 }
 async function save() {
   if (busy || empty()) { if (empty()) status('Write something first.', true); return; }

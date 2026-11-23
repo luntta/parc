@@ -3,6 +3,7 @@ pub mod fragment;
 pub mod history;
 pub mod link;
 pub mod schema;
+pub mod settings;
 pub mod tags;
 pub mod trash;
 pub mod vault;

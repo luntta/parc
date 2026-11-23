@@ -101,6 +101,59 @@ test('typed capture, field edits, stale-write conflicts and vault links', async 
 });
 function schemaOf(list, name) { return list.find(s => s.name === name); }
 
+test('vault settings: types turn off, statuses rename with their fragments, new types take captures', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-types-test-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const vault = path.join(dir, '.parc'), store = archive(vault);
+  await store.init();
+
+  // Every built-in type starts on, notes by default; statuses say what they mean.
+  assert.deepEqual(await store.vaultSettings(), { types: { default: 'note', disabled: [] } });
+  const todo = schemaOf(await store.schemas(), 'todo');
+  assert.equal(todo.enabled, true); assert.equal(todo.builtin, true);
+  assert.deepEqual(todo.fields[0].categories, { open: 'open', 'in-progress': 'active', done: 'done', cancelled: 'closed' });
+
+  // A turned-off type keeps its fragments, which still change; new ones are refused.
+  const risk = await store.save({ title: 'Disk fills up', body: '', type: 'risk' });
+  await store.updateVaultSettings({ types: { disabled: ['risk'] } });
+  assert.equal(schemaOf(await store.schemas(), 'risk').enabled, false);
+  await assert.rejects(store.save({ title: 'Another', body: '', type: 'risk' }), /turned off/);
+  assert.equal((await store.update(risk.id, { fields: { status: 'resolved' } })).status, 'resolved');
+  await assert.rejects(store.updateVaultSettings({ types: { default: 'risk' } }), /can.t be turned off/);
+  await assert.rejects(store.updateVaultSettings({ hooks: { enabled: true } }), /Invalid vault settings/);
+  await store.updateVaultSettings({ types: { default: 'todo' } });
+  assert.equal(schemaOf(await store.schemas(), 'todo').default, true);
+
+  // Renaming a status moves the fragments holding it; removing one asks where they go.
+  const doing = await store.get((await store.save({ title: 'Doing', body: '', type: 'todo', fields: { status: 'in-progress' } })).id);
+  assert.deepEqual(await store.schemaUsage('todo'), { total: 1, values: { status: { 'in-progress': 1 }, priority: { medium: 1 } } });
+  const edited = {
+    ...todo, fields: todo.fields.map(f => f.name !== 'status' ? f : {
+      ...f, values: ['open', 'doing', 'done'], categories: { open: 'open', doing: 'active', done: 'done' }
+    })
+  };
+  await assert.rejects(store.saveSchema({ schema: edited, renames: [] }), /invalid/);
+  const saved = await store.saveSchema({ schema: edited, renames: [{ field: 'status', from: 'in-progress', to: 'doing' }] });
+  assert.equal(saved.migrated, 1);
+  assert.deepEqual(saved.schema.fields[0].values, ['open', 'doing', 'done']);
+  assert.equal((await store.get(doing.id)).status, 'doing');
+  assert.equal((await store.get(doing.id)).updated_at, doing.updated_at);
+  assert.equal((await store.builtinSchema('todo')).fields[0].values.length, 4);
+
+  // A new type takes captures at once, and can be deleted while nothing uses it.
+  const bug = { name: 'bug', alias: 'b', fields: [{ name: 'status', kind: 'enum', values: ['new', 'fixed'], required: true, default: 'new', toggle: ['new', 'fixed'], categories: { new: 'open', fixed: 'done' } }] };
+  await store.saveSchema({ schema: bug, create: true });
+  await assert.rejects(store.saveSchema({ schema: bug, create: true }), /exists/);
+  assert.equal((await store.save({ title: 'Crash', body: '', type: 'bug' })).status, 'new');
+  await assert.rejects(store.deleteSchema('bug'), /1 fragment is of type/);
+  await store.saveSchema({ schema: { name: 'chore', fields: [] }, create: true });
+  assert.deepEqual(await store.deleteSchema('chore'), { deleted: true });
+
+  await assert.rejects(store.saveSchema({ schema: { name: 'x', fields: [{ name: 'a', kind: 'number' }] } }), /Invalid field/);
+  await assert.rejects(store.saveSchema({ schema: { name: '../x', fields: [] } }), /Invalid fragment type/);
+  await assert.rejects(store.saveSchema({ schema: bug, renames: [{ field: 'status', from: 'a b', to: 'c' }] }), /Invalid value changes/);
+});
+
 test('no local model leaves speech unavailable', async () => {
   await assert.rejects(speechConfig({}), /speech model/);
   await assert.rejects(speechConfig({}, { whisperModel: 'relative/model.bin' }), /speech model/);

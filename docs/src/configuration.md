@@ -10,7 +10,7 @@ Per-vault settings live in `<vault>/config.yml`. The file is created with sensib
 
 ```yaml
 # user: alice            # used in created_by field; defaults to system user
-# editor: vim            # defaults to $EDITOR
+# editor: vim            # read from ~/.parc/config.yml only; defaults to $EDITOR
 default_tags: []         # auto-applied to new fragments
 date_format: relative    # relative | iso | short
 id_display_length: 8     # ULID chars shown in listings
@@ -32,6 +32,10 @@ resurfacing:
   review_window: this-week # default --since window for `parc review`
   today_section_limit: 10  # max rows per section in `parc today`
 
+types:
+  default: note          # the type a capture starts as when it doesn't pick one
+  disabled: []           # types new fragments can't use; their fragments stay
+
 plugins:                 # per-plugin configuration, passed at init
   # my-plugin:
   #   setting: value
@@ -45,7 +49,9 @@ String. Used in the `created_by` field on new fragments. If unset, parc falls ba
 
 ### `editor`
 
-String. Path to the editor parc invokes for `parc new` (without an inline title) and `parc edit`. If unset, parc reads `$EDITOR`, then `$VISUAL`, then falls back to `nano` on Unix and `notepad` on Windows.
+String. The editor parc opens for `parc new` (without `--body`), `parc edit` and the TUI's edit action, with any arguments it needs: `code --wait`. The value is split into words like a shell would (quotes group them), but no shell runs it, so `$VAR`, `;` and `|` are just text.
+
+parc reads `editor:` **only from the global vault's config** (`~/.parc/config.yml`), and there it applies to every vault. A project vault's `config.yml` travels with the repository, so letting it name a program would let any cloned vault run code on `parc edit`; a project vault that sets `editor:` gets a warning and the setting is ignored. Without a global `editor:`, parc uses `$EDITOR`, then `vim`.
 
 ### `default_tags`
 
@@ -111,6 +117,25 @@ resurfacing:
   today_section_limit: 5
 ```
 
+### `types`
+
+Which types new fragments can use, and which one captures start as. `parc init` asks about both; the desktop app's **Vault settings** change them, and so does editing this block.
+
+| Field | Type | Default | Effect |
+|-------|------|---------|--------|
+| `default` | string | `note` | The type `parc +`, the TUI's capture form and the desktop's new and quick captures start as. Must be a type that is on. Unset or unusable: `note`, or the first type that is on |
+| `disabled` | string[] | `[]` | Types that are **off**. Nothing new is created as them (`parc new`, the type's shortcut, `parc promote`, the desktop, the server and MCP all refuse), and the capture forms don't offer them |
+
+```yaml
+types:
+  default: todo
+  disabled: [risk, idea]
+```
+
+Turning a type off doesn't touch its schema or its fragments: they still open, list, search, validate and change as before, and the type can be turned on again at any time. At least one type stays on.
+
+When parc saves this block itself (the desktop, `settings.update`), only the `types:` block is rewritten; the rest of `config.yml`, comments included, is kept.
+
 ### `plugins`
 
 Per-plugin configuration, keyed by plugin name. parc passes the matching subtree to each plugin's `init` callback at load time. The shape is plugin-specific — see each plugin's manifest.
@@ -128,6 +153,6 @@ These take precedence over `config.yml` for the duration of a single command.
 
 `parc update check` is the only built-in CLI command that makes a network request; it queries the latest GitHub release when run explicitly.
 
-## Schema overrides
+## Schemas
 
-You can also override the built-in schemas by dropping a file with the same name in `<vault>/schemas/`. parc resolves schemas with vault-local overrides taking precedence over built-ins. Use this carefully — fragments created with one schema and read against another can fail validation.
+Every type, the five built-in ones included, is defined by a file in `<vault>/schemas/`, which `parc init` seeds from the built-in definitions. Editing a vault's `todo.yml` changes todos in that vault only. See [Custom types]({{ '/custom-types/' | url }}) for the format; the desktop's **Vault settings** edit these files too, and move fragments along when a value is renamed.

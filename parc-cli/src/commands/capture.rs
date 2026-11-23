@@ -27,9 +27,18 @@ pub fn run(
 
     let (title, body) = split_capture_text(input);
 
+    // A capture that doesn't pick a type starts as the vault's default.
+    let config = parc_core::config::load_config(vault)?;
+    let schemas = parc_core::schema::load_schemas(vault)?;
+    let type_name = config
+        .types
+        .default_type(&schemas)
+        .map(|s| s.name.clone())
+        .unwrap_or_else(|| "note".to_string());
+
     crate::commands::new::run(
         vault,
-        "note",
+        &type_name,
         Some(title),
         Some(body),
         tags,

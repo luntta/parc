@@ -23,7 +23,7 @@ pub fn run(
             negated: false,
         });
         if !include_done && t != "note" {
-            filters.extend(resurfacing::unfinished_status_filters());
+            filters.extend(resurfacing::unfinished_status_filters(vault));
         }
     } else {
         filters.push(Filter::Type {

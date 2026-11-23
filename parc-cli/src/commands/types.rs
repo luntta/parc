@@ -1,10 +1,13 @@
 use std::path::Path;
 
 use anyhow::Result;
+use parc_core::config::load_config;
 use parc_core::schema::{load_schemas, FieldType};
 
 pub fn run(vault: &Path, json: bool) -> Result<()> {
     let schemas = load_schemas(vault)?;
+    let config = load_config(vault)?;
+    let default = config.types.default_type(&schemas).map(|s| s.name.clone());
     let types = schemas.list();
 
     if json {
@@ -22,18 +25,33 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                         })
                     })
                     .collect();
+                let categories: serde_json::Map<String, serde_json::Value> = s
+                    .status_categories()
+                    .into_iter()
+                    .map(|(value, c)| (value, c.as_str().into()))
+                    .collect();
                 serde_json::json!({
                     "name": s.name,
                     "alias": s.alias,
+                    "enabled": config.types.is_enabled(&s.name),
+                    "default": default.as_deref() == Some(s.name.as_str()),
                     "fields": fields,
+                    "status_categories": categories,
                 })
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        println!("{:<12} {:<7} FIELDS", "NAME", "ALIAS");
+        println!("{:<12} {:<7} {:<8} FIELDS", "NAME", "ALIAS", "STATE");
         for schema in types {
             let alias = schema.alias.as_deref().unwrap_or("-");
+            let state = if default.as_deref() == Some(schema.name.as_str()) {
+                "default"
+            } else if config.types.is_enabled(&schema.name) {
+                "on"
+            } else {
+                "off"
+            };
             let fields: Vec<String> = schema
                 .fields
                 .iter()
@@ -56,7 +74,10 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
             } else {
                 fields.join(", ")
             };
-            println!("{:<12} {:<7} {}", schema.name, alias, fields_str);
+            println!(
+                "{:<12} {:<7} {:<8} {}",
+                schema.name, alias, state, fields_str
+            );
         }
     }
 

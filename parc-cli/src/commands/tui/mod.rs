@@ -115,7 +115,7 @@ pub(crate) struct CaptureForm {
 }
 
 impl CaptureForm {
-    pub(crate) fn new(type_choices: Vec<String>) -> Self {
+    pub(crate) fn new(type_choices: Vec<String>, default: Option<&str>) -> Self {
         let type_choices = if type_choices.is_empty() {
             vec!["note".to_string()]
         } else {
@@ -123,7 +123,8 @@ impl CaptureForm {
         };
         let type_index = type_choices
             .iter()
-            .position(|name| name == "note")
+            .position(|name| Some(name.as_str()) == default)
+            .or_else(|| type_choices.iter().position(|name| name == "note"))
             .unwrap_or(0);
 
         Self {

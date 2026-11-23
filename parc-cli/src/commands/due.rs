@@ -38,7 +38,7 @@ pub fn run(vault: &Path, bucket: Option<String>, json: bool) -> Result<()> {
         },
         Filter::Due(due_filter),
     ];
-    filters.extend(resurfacing::unfinished_status_filters());
+    filters.extend(resurfacing::unfinished_status_filters(vault));
 
     let query = SearchQuery {
         text_terms: Vec::new(),
