@@ -32,7 +32,8 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function check() {
   await app.whenReady();
   const win = BrowserWindow.getAllWindows()[0];
-  const js = code => win.webContents.executeJavaScript(code, true);
+  // A script that throws names itself, since the renderer's error doesn't say which one it was.
+  const js = code => win.webContents.executeJavaScript(code, true).catch(err => { throw new Error(`${err.message}\n  in: ${code}`); });
   async function until(code) {
     for (let i = 0; i < 120; i++) { if (await js(code)) return; await delay(100); }
     throw new Error(`Timeout: ${code}. UI: ${await js('document.body.innerText')}`);
@@ -47,29 +48,32 @@ async function check() {
   await until(`document.querySelector("#empty")?.textContent.startsWith("No fragments yet") && ${idle}`);
   // Pulse is home: the first item in the nav, and the view the app opens on.
   assert.equal(await js('document.querySelector("nav button").dataset.view'), 'pulse');
-  assert.equal(await js('document.querySelector("#toolTitle").textContent'), 'Pulse');
+  assert.equal(await js('document.querySelector("[data-current] .tool-title")?.textContent'), 'Pulse');
   assert.equal(await js('document.querySelector("[data-view=pulse]").getAttribute("aria-current")'), 'page');
   await js('document.querySelector("[data-view=capture]").click()');
-  await until(`!document.querySelector("#document").hidden && ${idle}`);
+  await until(`!!document.querySelector("[data-current] .doc") && ${idle}`);
   assert.equal(await js('document.querySelector("#save:defined > button").disabled'), true);
-  assert.equal(await js('getComputedStyle(document.querySelector("#draft")).getPropertyValue("--aihio-color-page-bg").trim() !== ""'), true);
+  assert.equal(await js('getComputedStyle(document.querySelector("[data-current] .draft")).getPropertyValue("--aihio-color-page-bg").trim() !== ""'), true);
+  // The Related panel waits for words; a dictation is searched for as soon as it lands.
+  await until('document.querySelector("[data-current] .related-empty")?.textContent === "Related notes appear here as you write."');
   await js('document.querySelector("#record").click()');
   await until('document.querySelector("#recordLabel").textContent.includes("Stop")');
   await delay(1100);
   await js('document.querySelector("#record").click()');
-  await until('document.querySelector(".cm-content").textContent === "Synthetic transcript"');
+  await until('document.querySelector("[data-current] .cm-content")?.textContent === "Synthetic transcript"');
+  await until('document.querySelector("[data-current] .related-empty")?.textContent === "Nothing in the vault is clearly related."');
   // The renderer converted the recording to WAV itself (no ffmpeg); with no languages set, whisper detects one.
   assert.match(argAfter('-f'), /clip\.wav$/);
   assert.equal(argAfter('-l'), 'auto');
   assert.equal(await js('document.querySelector("#languageSlot").childElementCount'), 0);
   assert.equal(await js('document.querySelectorAll("#recent .row").length'), 0);
-  await js('document.querySelector("#title").value = "Ferry desk"; document.querySelector("#save").click()');
+  await js('document.querySelector("[data-current] .doc-title").value = "Ferry desk"; document.querySelector("#save").click()');
   await until(`document.querySelector("#recent .row")?.textContent.includes("Ferry desk") && ${idle}`);
   await js('document.querySelector("[data-view=capture]").click()');
-  await until('!document.querySelector("#title").value');
+  await until('document.querySelector("[data-current] .doc-title")?.value === ""');
   await js('document.querySelector("#recent .row").click()');
-  await until('document.querySelector("#title").value === "Ferry desk"');
-  await js('document.querySelector(".cm-content").focus()');
+  await until('document.querySelector("[data-current] .doc-title")?.value === "Ferry desk"');
+  await js('document.querySelector("[data-current] .cm-content").focus()');
   await win.webContents.insertText('## Questions\n');
   await until('!!document.querySelector(".cm-line.md-h2")');
   await js('document.querySelector("#save").click()');
@@ -77,57 +81,64 @@ async function check() {
   assert.equal(await js('document.querySelectorAll("#recent .row").length'), 1);
   await js('document.querySelector("[data-view=search]").click()');
   await until(idle);
-  await js('document.querySelector("#query").value = "Questions"; document.querySelector("#searchForm").requestSubmit()');
-  await until('document.querySelector("#results button")?.textContent.includes("Ferry desk")');
+  await js('document.querySelector("[data-current] .query").value = "Questions"; document.querySelector("[data-current] .search-form").requestSubmit()');
+  await until('document.querySelector("[data-current] .view-out button")?.textContent.includes("Ferry desk")');
 
   // A typed capture: pick todo, save with Ctrl+S, then flip its status with the schema's toggle.
   await js('document.querySelector("[data-view=capture]").click()');
-  await until(`!document.querySelector("#title").value && ${idle}`);
-  await js('document.querySelector(".type-menu aihio-dropdown-item[value=todo]").click()');
+  await until(`document.querySelector("[data-current] .doc-title")?.value === "" && ${idle}`);
+  await js('document.querySelector("[data-current] .type-menu aihio-dropdown-item[value=todo]").click()');
   await until('document.querySelector(".crumb .here").textContent === "New todo"');
-  await js('const t = document.querySelector("#title"); t.value = "Call the ferry office"; t.dispatchEvent(new Event("input"))');
+  await js('const t = document.querySelector("[data-current] .doc-title"); t.value = "Call the ferry office"; t.dispatchEvent(new Event("input"))');
   await js(saveKey);
   await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
   const todo = (await prototype.list()).find(r => r.title === 'Call the ferry office');
   assert.equal(todo.type, 'todo'); assert.equal(todo.status, 'open');
-  await js('document.querySelector(".toggle-mark").click()');
+  await js('document.querySelector("[data-current] .toggle-mark").click()');
   await eventually(async () => (await prototype.get(todo.id)).status === 'done');
   // A save from elsewhere reloads the clean open fragment.
   await prototype.update(todo.id, { fields: { priority: 'low' } });
-  await until('document.querySelector(".prop[data-field=priority]")?.textContent.includes("Low priority")');
-  // Unsaved text outlives a reload of the window, and leaving it asks first.
-  await js('document.querySelector(".cm-content").focus()');
+  await until('document.querySelector("[data-current] .prop[data-field=priority]")?.textContent.includes("Low priority")');
+  // Unsaved text outlives a reload of the window, in its tab, with the other tabs as they were; closing it asks first.
+  await js('document.querySelector("[data-current] .cm-content").focus()');
   await win.webContents.insertText('Unsent thought');
   await delay(500);
   win.webContents.reload();
-  await until(`document.querySelector(".cm-content")?.textContent.includes("Unsent thought") && document.querySelector("#status").textContent.startsWith("Restored") && ${idle}`);
-  assert.equal(await js('document.querySelector("#title").value'), 'Call the ferry office');
+  await until(`document.querySelector("[data-current] .cm-content")?.textContent.includes("Unsent thought") && document.querySelector("#status").textContent.startsWith("Restored") && ${idle}`);
+  assert.equal(await js('document.querySelector("[data-current] .doc-title")?.value'), 'Call the ferry office');
+  const tabNames = 'JSON.stringify([...document.querySelectorAll(".pane")].map(p => [...p.querySelectorAll(".tab")].map(t => t.getAttribute("aria-label"))))';
+  assert.deepEqual(JSON.parse(await js(tabNames)), [['Ferry desk', 'Call the ferry office, unsaved']]);
+  // Switching vaults keeps the tabs: a fragment stays in its own vault, and its draft stays unsaved.
   const other = archive(second); await other.init();
   const old = await other.save({ title: 'Old observation', body: 'People asked privately.' });
-  answers.push(1); // Don't save
   await js('document.querySelector(\'#vaultMenu aihio-dropdown-item[value="@all"]\').click()');
   await until(`document.querySelectorAll("#recent .row").length === 3 && ${idle}`);
+  assert.equal(await js('document.querySelector("#revision").textContent'), 'Unsaved');
+  answers.push(1); // Don't save
+  await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "w", ctrlKey: true, bubbles: true }))');
+  await until(`${tabNames} === '[["Ferry desk"]]' && ${idle}`);
+  assert.equal(answers.length, 0);
+  await until('JSON.parse(localStorage.getItem("parc.workspace")).groups[0].tabs.every(t => !t.draft)');
   assert.equal(await js('localStorage.getItem("parc.draft")'), null);
-  assert.equal(await js('document.querySelector("#toolTitle").textContent'), 'Pulse'); // the open fragment stayed behind
   await js('document.querySelector("[data-view=capture]").click()');
-  await until(`!document.querySelector("#document").hidden && ${idle}`);
-  await js('document.querySelector(".cm-content").focus()');
+  await until(`!!document.querySelector("[data-current] .doc") && ${idle}`);
+  await js('document.querySelector("[data-current] .cm-content").focus()');
   // The [[ picker ranks fragments in memory and inserts the shortest unique ID on Enter.
   await win.webContents.insertText('See [[Old obs');
   await until('document.querySelector(".cm-linkoption")?.textContent.includes("Old observation")');
   await delay(120); // past the picker's interaction delay
   for (const type of ['keyDown', 'keyUp']) win.webContents.sendInputEvent({ type, keyCode: 'Return' });
-  await until('!document.querySelector(".cm-tooltip-autocomplete") && document.querySelector(".cm-content").textContent.includes("Old observation")');
+  await until('!document.querySelector(".cm-tooltip-autocomplete") && document.querySelector("[data-current] .cm-content")?.textContent.includes("Old observation")');
   await win.webContents.insertText(` and connection to [[${old.id}]]`);
   assert.equal(await js('document.querySelector("#save > button").disabled'), true);
   await js(`document.querySelector('#destination').value=${JSON.stringify(second)}; document.querySelector('#destination').dispatchEvent(new Event('change')); document.querySelector('#save').click()`);
   await until(`document.querySelectorAll("#recent .row").length === 4 && ${idle}`);
   assert.equal((await other.list()).length, 2);
   // The saved fragment's own Graph section, then the whole scope as a graph.
-  await until('document.querySelector("#docGraph:not([hidden]) .node:not(.center)")?.textContent.includes("Old observation")');
+  await until('document.querySelector("[data-current] .doc-graph:not([hidden]) .node:not(.center)")?.textContent.includes("Old observation")');
   await js('document.querySelector("[data-view=graph]").click()');
-  await until('[...document.querySelectorAll("#results .vg-node")].some(n => n.getAttribute("aria-label").startsWith("Old observation"))');
-  assert.equal(await js('document.querySelectorAll("#results .vg-edges line").length'), 1);
+  await until('[...document.querySelectorAll("[data-current] .view-out .vg-node")].some(n => n.getAttribute("aria-label").startsWith("Old observation"))');
+  assert.equal(await js('document.querySelectorAll("[data-current] .view-out .vg-edges line").length'), 1);
   // Go to… (Ctrl+K) finds a fragment by title, shows it on the right as it reads, and opens it with the caret in its text.
   const goTo = async text => {
     await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))');
@@ -140,7 +151,7 @@ async function check() {
   await until('document.querySelector(".pv-title")?.textContent === "Ferry desk" && document.querySelector(".palette-preview .cm-content")?.textContent.includes("Questions")');
   assert.equal(await js('document.querySelector(".palette-preview .cm-content").contentEditable'), 'false');
   await paletteKey('Enter');
-  await until(`document.querySelector("#title").value === "Ferry desk" && ${idle}`);
+  await until(`document.querySelector("[data-current] .doc-title")?.value === "Ferry desk" && ${idle}`);
   await until('document.activeElement?.classList.contains("cm-content")');
   // "/" greps inside fragments: each matching line under its fragment with line:column, the match marked in the
   // preview, and Enter selects it in the editor.
@@ -207,7 +218,7 @@ async function check() {
   const shiftKey = key => js(`document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "${key}", shiftKey: true, bubbles: true }))`);
   const lanes = 'JSON.stringify([...document.querySelectorAll(".lane")].map(l => [l.dataset.status, [...l.querySelectorAll(".card-title")].map(t => t.textContent)]))';
   await js('document.querySelector(\'#recent [data-group="type:todo"] .group-head\').click()');
-  await until(`document.querySelector("#toolTitle").textContent === "Todos" && ${idle}`);
+  await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Todos" && ${idle}`);
   assert.equal(await js('document.querySelector(\'#recent [data-group="type:todo"] .group-head\').getAttribute("aria-current")'), 'page');
   assert.deepEqual(JSON.parse(await js(lanes)), [['open', []], ['in-progress', []], ['done', ['Call the ferry office']], ['cancelled', []]]);
   await dragTo('.lane[data-status="done"] .card', '.lane[data-status="in-progress"]');
@@ -247,17 +258,19 @@ async function check() {
   assert.deepEqual(JSON.parse(await js('localStorage.getItem("parc.typeViews")')), { risk: { lens: 'board' } });
   // Pulse's counts of open work open the type's view.
   await js('document.querySelector("[data-view=pulse]").click()');
-  await until(`document.querySelector("#toolTitle").textContent === "Pulse" && ${idle}`);
+  await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Pulse" && ${idle}`);
   await js('[...document.querySelectorAll(".figure")].find(f => f.textContent.startsWith("Open risks")).click()');
-  await until(`document.querySelector("#toolTitle").textContent === "Risks" && ${idle}`);
+  await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Risks" && ${idle}`);
   assert.equal((await prototype.get(strike.id)).likelihood, 'high');
   // History lists the version before "## Questions" was added; restoring it brings that text back.
+  await js('[...document.querySelectorAll("#recent .row")].find(r => r.textContent.includes("Ferry desk")).click()');
+  await until(`document.querySelector("[data-current] .doc-title")?.value === "Ferry desk" && ${idle}`);
   await js('document.querySelector("#fragmentMenu aihio-dropdown-item[value=history]").click()');
   await until(`document.querySelectorAll(".version").length >= 1 && ${idle}`);
   await js('[...document.querySelectorAll(".version")].at(-1).click()');
   await until('document.querySelector(".diff")?.textContent.includes("Questions")');
   await js('document.querySelector(".compare-head aihio-button").click()');
-  await until(`document.querySelector("#title").value === "Ferry desk" && !document.querySelector(".cm-content").textContent.includes("Questions") && ${idle}`);
+  await until(`document.querySelector("[data-current] .doc-title")?.value === "Ferry desk" && document.querySelector("[data-current] .cm-content")?.textContent.includes("Questions") === false && ${idle}`);
   // Archive, then trash with Undo.
   const ferry = (await prototype.list()).find(r => r.title === 'Ferry desk');
   await js('document.querySelector("#fragmentMenu aihio-dropdown-item[value=archive]").click()');
@@ -271,12 +284,12 @@ async function check() {
   await until(`document.querySelector("#status").textContent.startsWith("Moved") && ${idle}`);
   await assert.rejects(prototype.get(ferry.id));
   await js('document.querySelector(".status-action").click()'); // Undo
-  await until(`document.querySelector("#title").value === "Ferry desk" && ${idle}`);
+  await until(`document.querySelector("[data-current] .doc-title")?.value === "Ferry desk" && ${idle}`);
   assert.equal((await prototype.get(ferry.id)).title, 'Ferry desk');
   // Live search as you type.
   await js('document.querySelector("[data-view=search]").click()'); await until(idle);
-  await js('{ const q = document.querySelector("#query"); q.value = "ferry office"; q.dispatchEvent(new Event("input", { bubbles: true })); }');
-  await until('document.querySelector("#results .row-title")?.textContent === "Call the ferry office"');
+  await js('{ const q = document.querySelector("[data-current] .query"); q.value = "ferry office"; q.dispatchEvent(new Event("input", { bubbles: true })); }');
+  await until('document.querySelector("[data-current] .view-out .row-title")?.textContent === "Call the ferry office"');
   // The quick capture window saves a typed fragment and closes.
   await js('document.querySelector("#quickCapture").click()');
   let quick; await eventually(async () => !!(quick = BrowserWindow.getAllWindows().find(w => w !== win)));
@@ -320,7 +333,7 @@ async function check() {
   await until('document.querySelector("#recordLabel").textContent.includes("Stop")');
   await delay(600);
   await js('document.querySelector("#record").click()');
-  await until(`document.querySelector(".cm-content").textContent.includes("Synthetic transcript") && ${idle}`);
+  await until(`document.querySelector("[data-current] .cm-content")?.textContent.includes("Synthetic transcript") && ${idle}`);
   assert.equal(argAfter('-l'), 'fi');
   await js('document.querySelector("#languageSlot aihio-dropdown-item[value=en]").click()');
   await until('document.querySelector("#languageSlot .language-code")?.textContent === "EN"');
@@ -354,7 +367,116 @@ async function check() {
   assert.deepEqual(kinds.find(k => k.name === 'bug').fields[0].categories, { open: 'open', done: 'done' });
   await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Done")).click()');
   await until('!document.querySelector("#vaultSettings").hasAttribute("open")');
-  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings');
+  // Related: as you write, fragments that share your words, tags or links appear beside the text, saying why and
+  // quoting where. Typing on keeps those still related in their places; newcomers join below. One opens in place,
+  // and Link puts it in the draft at the caret.
+  await js('document.querySelector("[data-view=capture]").click()');
+  await until(`!!document.querySelector("[data-current] .doc") && document.querySelector("[data-current] .doc-title")?.value === "" && ${idle}`);
+  await until('document.querySelector("[data-current] .related-empty")?.textContent === "Related notes appear here as you write."');
+  await js('document.querySelector("[data-current] .cm-content").focus()');
+  await win.webContents.insertText('Read the synthetic transcript from the ferry');
+  const ferryItem = '[...document.querySelectorAll("[data-current] .rel-item")].find(li => li.querySelector(".rel-title").textContent === "Ferry desk")';
+  await until(`!!${ferryItem}`);
+  assert.equal(await js(`${ferryItem}.querySelector(".rel-why").textContent`), 'Shares ferry, synthetic, transcript');
+  assert.deepEqual(await js(`[...${ferryItem}.querySelectorAll(".rel-quote mark")].map(m => m.textContent)`), ['Synthetic', 'transcript']);
+  const relatedTitles = () => js('[...document.querySelectorAll("[data-current] .rel-item .rel-title")].map(t => t.textContent)');
+  const before = await relatedTitles();
+  assert.ok(!before.includes('Call the ferry office'), 'one shared word is not enough');
+  await win.webContents.insertText(', then call the office');
+  await until(`document.querySelectorAll("[data-current] .rel-item").length > ${before.length}`);
+  const after = await relatedTitles();
+  assert.deepEqual(after.slice(0, before.length), before);
+  assert.equal(after.at(-1), 'Call the ferry office');
+  assert.equal(await js('!!document.activeElement?.closest(".cm-editor")'), true); // typing keeps the caret; the panel never takes it
+  await js(`${ferryItem}.querySelector(".rel-head").click()`);
+  await until(`${ferryItem}.querySelector(".rel-body")?.textContent.includes("Synthetic transcript")`);
+  await js(`[...${ferryItem}.querySelectorAll(".rel-actions aihio-button")].find(b => b.textContent === "Link").click()`);
+  await until(`${ferryItem}.querySelector(".rel-why").textContent.startsWith("Linked · ")`);
+  // The link shows what it resolves to: as a chip, or as a hint beside its source while the caret is on its line.
+  await until('[...document.querySelectorAll("[data-current] .cm-content :is(.md-wiki, .md-wikihint)")].some(n => n.textContent.includes("Ferry desk"))');
+  // Tabs and groups, as in a code editor. Start from one empty group: Close all asks about each unsaved tab.
+  assert.equal(await js('document.querySelectorAll(".pane").length'), 1);
+  for (let n = await js('document.querySelectorAll(".tab[data-dirty]").length'); n > 0; n--) answers.push(1); // Discard / Don't save
+  await js('document.querySelector(".pane[data-active] .tab[aria-selected=true]").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 300, clientY: 60 }))');
+  await until('!!document.querySelector(".tab-menu")');
+  await js('[...document.querySelectorAll(".tab-menu-item")].find(b => b.textContent === "Close all").click()');
+  await until(`!document.querySelector(".tab") && ${idle}`);
+  assert.equal(answers.length, 0);
+  assert.equal(await js('document.querySelector(".pane-empty:not([hidden]) .watermark-title")?.textContent'), 'Nothing open in this group');
+  // A click in the list opens a fragment as the group's preview (~), which the next click replaces; a double-click
+  // keeps it. Ctrl+click opens beside, in a new group that becomes current.
+  const tabs = 'JSON.stringify([...document.querySelectorAll(".pane")].map(p => [...p.querySelectorAll(".tab")].map(t => (t.hasAttribute("data-preview") ? "~" : "") + t.querySelector(".tab-label").textContent)))';
+  const rowNamed = t => `[...document.querySelectorAll("#recent .row")].find(r => r.querySelector(".row-title").textContent === ${JSON.stringify(t)})`;
+  const tabsAre = async expected => {
+    for (let i = 0; i < 120; i++) { if (await js(`${tabs} === ${JSON.stringify(JSON.stringify(expected))} && ${idle}`)) return; await delay(100); }
+    assert.deepEqual(JSON.parse(await js(tabs)), expected);
+    throw new Error('Timeout: the tabs are right but the app is still busy');
+  };
+  await js(`${rowNamed('Ferry desk')}.click()`);
+  await tabsAre([['~Ferry desk']]);
+  await js(`${rowNamed('Call the ferry office')}.click()`);
+  await tabsAre([['~Call the ferry office']]);
+  await js(`${rowNamed('Call the ferry office')}.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`);
+  await tabsAre([['Call the ferry office']]);
+  await js(`${rowNamed('Ferry desk')}.click()`);
+  await tabsAre([['Call the ferry office', '~Ferry desk']]);
+  await js(`${rowNamed('Old observation')}.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true, detail: 1 }))`);
+  await tabsAre([['Call the ferry office', '~Ferry desk'], ['Old observation']]);
+  assert.equal(await js('document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[1]'), true);
+  assert.equal(await js('document.querySelector("[data-current] .doc-title").value'), 'Old observation');
+  assert.equal(await js('document.querySelector("#crumb .vault").textContent'), 'Research');
+  // Ctrl+Alt+← moves the tab into the group on the left; the group it leaves empty goes.
+  await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", ctrlKey: true, altKey: true, bubbles: true }))');
+  await tabsAre([['Call the ferry office', '~Ferry desk', 'Old observation']]);
+  // Tabs drag: onto a group's right third to open a new group there, and along a strip to a place in it.
+  const dragTab = (label, target, fx) => js(`{
+    const tab = [...document.querySelectorAll(".tab")].find(t => t.querySelector(".tab-label").textContent === ${JSON.stringify(label)});
+    const zone = ${target}, r = zone.getBoundingClientRect(), at = { clientX: r.left + r.width * ${fx}, clientY: r.top + r.height / 2 }, dt = new DataTransfer();
+    tab.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: dt }));
+    for (const type of ["dragenter", "dragover", "drop"]) zone.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, ...at }));
+    tab.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer: dt }));
+  }`);
+  await dragTab('Call the ferry office', 'document.querySelectorAll(".pane")[0].querySelector(".drop-overlay")', 0.9);
+  await tabsAre([['~Ferry desk', 'Old observation'], ['Call the ferry office']]);
+  await dragTab('Old observation', 'document.querySelectorAll(".pane")[1].querySelector(".tabs")', 0.01);
+  await tabsAre([['~Ferry desk'], ['Old observation', 'Call the ferry office']]);
+  // A fragment dragged from the list opens where it is dropped, and stays.
+  await js(`{
+    const row = ${rowNamed('Settle the invoice')}, zone = document.querySelectorAll(".pane")[0].querySelector(".drop-overlay"), dt = new DataTransfer();
+    const r = zone.getBoundingClientRect(), at = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    row.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: dt }));
+    for (const type of ["dragenter", "dragover", "drop"]) zone.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, ...at }));
+    row.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer: dt }));
+  }`);
+  await tabsAre([['~Ferry desk', 'Settle the invoice'], ['Old observation', 'Call the ferry office']]);
+  // A view opens in the current group too, and a fragment already open elsewhere is shown where it is.
+  await js('document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "p", bubbles: true }))');
+  await tabsAre([['~Pulse', 'Settle the invoice'], ['Old observation', 'Call the ferry office']]);
+  await js(`${rowNamed('Call the ferry office')}.click()`);
+  await until(`document.querySelector("[data-current] .doc-title")?.value === "Call the ferry office" && ${idle}`);
+  assert.equal(await js('document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[1]'), true);
+  // Ctrl+W closes the tab, Ctrl+Shift+T brings it back; Ctrl+1 goes to the first group.
+  await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "w", ctrlKey: true, bubbles: true }))');
+  await tabsAre([['~Pulse', 'Settle the invoice'], ['Old observation']]);
+  await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "T", ctrlKey: true, shiftKey: true, bubbles: true }))');
+  await tabsAre([['~Pulse', 'Settle the invoice'], ['Old observation', 'Call the ferry office']]);
+  await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", code: "Digit1", ctrlKey: true, bubbles: true }))');
+  await until(`document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[0] && document.querySelector("[data-current] .tool-title")?.textContent === "Pulse"`);
+  // Unsaved text in a tab that isn't current shows on its tab; the window's layout and the draft come back after a reload.
+  await js('document.querySelectorAll(".pane")[1].querySelector(".tab[aria-selected=true]").click()');
+  await until(`document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[1] && ${idle}`);
+  await js('document.querySelector("[data-current] .cm-content").focus()');
+  await win.webContents.insertText('Unsent in a split. ');
+  await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", code: "Digit1", ctrlKey: true, bubbles: true }))');
+  await until('document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[0]');
+  assert.equal(await js('[...document.querySelectorAll(".tab[data-dirty]")].map(t => t.querySelector(".tab-label").textContent).join()'), 'Call the ferry office');
+  await delay(400);
+  win.webContents.reload();
+  await until(`document.querySelectorAll(".pane").length === 2 && document.querySelector("#status").textContent.startsWith("Restored") && ${idle}`);
+  await tabsAre([['~Pulse', 'Settle the invoice'], ['Old observation', 'Call the ferry office']]);
+  assert.equal(await js('document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[0]'), true);
+  assert.equal(await js('document.querySelectorAll(".pane")[1].querySelector(".scroll:not([hidden]) .cm-content").textContent.includes("Unsent in a split.")'), true);
+  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs (preview, keep, beside, move, drag to split and along a strip, drop from the list, close, reopen, groups by key) and the layout and drafts across a reload');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

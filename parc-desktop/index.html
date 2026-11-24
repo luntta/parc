@@ -59,7 +59,6 @@
       </div>
       <aihio-cluster gap="sm" align="center" class="actions">
         <span id="revision" class="save-state"></span>
-        <aihio-button id="resume" variant="ghost" size="sm" hidden><i data-icon="back" class="icon"></i>Return to draft</aihio-button>
         <span id="recTime" class="rec-time" hidden>0:00</span>
         <aihio-button id="cancel" variant="ghost" size="sm" hidden>Discard</aihio-button>
         <span id="languageSlot" class="language-slot"></span>
@@ -77,42 +76,57 @@
       </aihio-cluster>
     </header>
 
-    <div class="scroll" id="scroller">
-      <article id="document" class="page" aria-label="Fragment editor">
-        <div id="meta" class="doc-meta"></div>
-        <label class="sr" for="title">Fragment title</label>
-        <textarea id="title" rows="1" placeholder="Untitled" autocomplete="off"></textarea>
-        <div id="draft"></div>
-        <section id="docGraph" class="doc-graph" aria-labelledby="docGraphTitle" hidden>
-          <h2 id="docGraphTitle" class="section-label">Graph<small id="docGraphNote"></small></h2>
-          <div id="docGraphBody"></div>
-        </section>
-        <datalist id="tagOptions"></datalist>
-      </article>
-
-      <section id="tool" class="page wide" aria-labelledby="toolTitle" hidden>
-        <header class="tool-head">
-          <h1 id="toolTitle"></h1>
-          <p id="intro"></p>
-        </header>
-        <form id="searchForm" role="search" hidden>
-          <div class="search-row">
-            <div class="search-field">
-              <aihio-input id="query" name="q" type="search" size="lg" aria-label="Search the archive" placeholder="Words, #tags, or type:decision" autocomplete="off"></aihio-input>
-            </div>
-            <aihio-button type="submit" size="lg">Search</aihio-button>
-          </div>
-          <div class="hints" id="hints"><span class="hints-label" id="hintsLabel">Filters</span></div>
-        </form>
-        <div id="results"></div>
-      </section>
-    </div>
+    <div id="groups" class="panes"></div>
 
     <footer class="statusbar">
       <p id="status" role="status"></p>
       <p id="stats" class="stats"></p>
     </footer>
   </main>
+  <datalist id="tagOptions"></datalist>
+
+  <!-- A tab's content. Each tab gets its own copy; its ids gain the tab's number (title → title-3). -->
+  <template id="docTemplate">
+    <div class="scroll">
+      <div class="doc-layout">
+        <article id="document" class="page doc" aria-label="Fragment editor">
+          <div id="meta" class="doc-meta"></div>
+          <label class="sr" for="title">Fragment title</label>
+          <textarea id="title" class="doc-title" rows="1" placeholder="Untitled" autocomplete="off"></textarea>
+          <div id="draft" class="draft"></div>
+          <section id="docGraph" class="doc-graph" aria-labelledby="docGraphTitle" hidden>
+            <h2 id="docGraphTitle" class="section-label">Graph<small id="docGraphNote"></small></h2>
+            <div id="docGraphBody"></div>
+          </section>
+        </article>
+        <aside id="related" class="related" aria-labelledby="relatedTitle" data-count="0">
+          <h2 id="relatedTitle" class="section-label">Related</h2>
+          <p class="related-empty" hidden></p>
+          <ol class="related-list" aria-labelledby="relatedTitle"></ol>
+        </aside>
+      </div>
+    </div>
+  </template>
+  <template id="viewTemplate">
+    <div class="scroll">
+      <section id="tool" class="page wide tool" aria-labelledby="toolTitle">
+        <header class="tool-head">
+          <h1 id="toolTitle" class="tool-title"></h1>
+          <p id="intro" class="intro"></p>
+        </header>
+        <form id="searchForm" class="search-form" role="search" hidden>
+          <div class="search-row">
+            <div class="search-field">
+              <aihio-input id="query" class="query" name="q" type="search" size="lg" aria-label="Search the archive" placeholder="Words, #tags, or type:decision" autocomplete="off"></aihio-input>
+            </div>
+            <aihio-button type="submit" size="lg">Search</aihio-button>
+          </div>
+          <div class="hints" id="hints"><span class="hints-label" id="hintsLabel">Filters</span></div>
+        </form>
+        <div id="results" class="view-out"></div>
+      </section>
+    </div>
+  </template>
 
   <aihio-dialog id="settings">
     <aihio-dialog-header>

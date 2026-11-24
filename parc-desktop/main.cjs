@@ -27,6 +27,11 @@ function openWindow() {
   window = new BrowserWindow({ width: 1200, height: 800, minWidth: 640, minHeight: 480,
     title: 'parc Capture', autoHideMenuBar: true, show: false, backgroundColor: canvas(), webPreferences });
   guard(window);
+  // Ctrl+W (⌘W) closes a tab, not the window: the menu's shortcut stands aside and the page handles the key.
+  const contents = window.webContents;
+  contents.on('before-input-event', (_event, input) => {
+    contents.setIgnoreMenuShortcuts(input.type === 'keyDown' && (input.control || input.meta) && !input.alt && input.key.toLowerCase() === 'w');
+  });
   // Drafts survive a restart; only work that cannot be resumed holds the window open.
   window.webContents.on('will-prevent-unload', event => {
     const choice = dialog.showMessageBoxSync(window, { message: 'Leave this workspace?', detail: 'A recording, transcription or save is still in progress and will be lost.', buttons: ['Stay', 'Leave'], defaultId: 0, cancelId: 0 });
@@ -223,6 +228,7 @@ else app.whenReady().then(() => {
   handle('list', (p, query) => query ? store(p).search(query) : store(p).list());
   handle('note', (p, id) => store(p).get(id));
   handle('grep', (p, pattern) => store(p).grep(pattern));
+  handle('recall', (p, seed) => store(p).recall(seed));
   handle('save', (p, data) => store(p).save(data));
   handle('update', (p, id, changes, expected) => store(p).update(id, changes, expected));
   handle('archive', (p, id, archived, expected) => store(p).archive(id, archived, expected));

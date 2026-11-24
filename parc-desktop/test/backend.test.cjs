@@ -36,6 +36,28 @@ test('explicit save is readable from a separate RPC process in an isolated vault
   assert.match(await fs.readFile(path.join(vault, 'fragments', note.id + '.md'), 'utf8'), /Volunteer orientation/);
 });
 
+test('recall finds what a draft or a saved fragment relates to, and checks what it sends', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-recall-test-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const store = archive(path.join(dir, '.parc'));
+  await store.init();
+  const ferry = await store.save({ title: 'Ferry desk', body: 'The queue was watching.\nA route card to mark in private worked.' });
+  const capture = await store.save({ title: 'Orientation', body: 'Try private route cards.' });
+  await store.save({ title: 'Kitchen timer', body: 'Broken again.' });
+  // A draft that isn't saved: the related fragment, why, and the line that says so.
+  const draft = await store.recall({ text: 'Nobody asks in front of everyone. Private route cards?' });
+  assert.deepEqual(draft.sources.map(s => s.title).sort(), ['Ferry desk', 'Orientation']);
+  const source = draft.sources.find(s => s.id === ferry.id);
+  assert.deepEqual(source.reasons.shared_words, ['private', 'route']);
+  assert.deepEqual(source.excerpts.map(e => [e.line, e.text]), [[2, 'A route card to mark in private worked.']]);
+  // A saved fragment, as a draft of itself: never in its own list.
+  const saved = await store.recall({ id: capture.id, text: 'Orientation\nTry private route cards.', limit: 1 });
+  assert.deepEqual(saved.sources.map(s => s.id), [ferry.id]);
+  for (const bad of [{}, { text: 'x', limit: 0 }, { text: 'x', limit: 21 }, { id: 'nope', text: 'x' }, { text: 'x', tags: ['two words'] }, { text: 'x'.repeat(1000001) }]) {
+    await assert.rejects(store.recall(bad), JSON.stringify(bad).slice(0, 60));
+  }
+});
+
 test('workspace lists archived and non-note fragments and editing preserves their metadata', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-workspace-test-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

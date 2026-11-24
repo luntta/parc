@@ -145,6 +145,17 @@ function archive(vault) {
       if (typeof pattern !== 'string' || pattern.length > 1000) throw new Error('Invalid search text');
       return request('fragment.grep', { pattern, limit: 300 });
     },
+    // Fragments related to a saved fragment (id) or to unsaved text (text and tags, with the id of the fragment
+    // it is a draft of, if any): what the Related panel shows as you write.
+    async recall({ id = null, text = null, tags = [], limit = 5 } = {}) {
+      if (id == null && text == null) throw new Error('Nothing to recall from');
+      if (text != null && (typeof text !== 'string' || text.length > 1000000)) throw new Error('Invalid draft text');
+      if (!Number.isInteger(limit) || limit < 1 || limit > 20) throw new Error('Invalid limit');
+      const params = { limit };
+      if (id != null) params.id = validId(id);
+      if (text != null) { params.text = text; params.tags = validTags(tags ?? []); }
+      return request('recall.context', params);
+    },
     get: id => request('fragment.get', { id: validId(id) }),
     async archive(id, archived, expected) {
       if (typeof archived !== 'boolean') throw new Error('Invalid archive flag');

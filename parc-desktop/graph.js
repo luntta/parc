@@ -188,7 +188,7 @@ export function vaultGraph(rows, edges, o) {
   nodeLayer.addEventListener('focusout', () => focus(null));
   nodeLayer.addEventListener('keydown', e => {
     const g = e.target.closest('.vg-node');
-    if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); o.open(byKey.get(g.dataset.key)); }
+    if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); o.open(byKey.get(g.dataset.key), e); }
   });
 
   // Drag to pan, wheel to zoom about the pointer, click a node to open it.
@@ -209,7 +209,7 @@ export function vaultGraph(rows, edges, o) {
     if (!drag) return;
     const { node, moved } = drag;
     drag = null; delete root.dataset.panning;
-    if (e.type === 'pointerup' && node && !moved) o.open(byKey.get(node.dataset.key));
+    if (e.type === 'pointerup' && node && !moved) o.open(byKey.get(node.dataset.key), e);
   };
   canvas.addEventListener('pointerup', release);
   canvas.addEventListener('pointercancel', release);

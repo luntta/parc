@@ -9,6 +9,8 @@ import { diffLines, fold as foldDiff, stat } from './diff.js';
 import { LANGUAGES } from './languages.cjs';
 import { vaultSettings } from './vaultsettings.js';
 import { typeView, dragging } from './board.js';
+import { relatedPanel } from './related.js';
+import { workspace, FRAGMENT } from './tabs.js';
 
 const $ = id => document.getElementById(id), api = window.parc;
 hydrateIcons();
@@ -16,23 +18,21 @@ const isMac = /Mac/.test(navigator.platform), mod = isMac ? '⌘' : 'Ctrl';
 $('saveKey').textContent = isMac ? '⌘S' : 'Ctrl S';
 $('save').title = `Save fragment (${mod}+S)`;
 
-let vaults = [], suggested = [], scope = '', rows = [], opened = null, mode = 'capture', phase = 'loading', dirty = false;
-let fresh = null;                          // a new capture's type, schema fields and tags until its first save
-let viewType = null;                       // the type whose own view (board, matrix or cards) mode 'type' shows
+let vaults = [], suggested = [], scope = '', rows = [], phase = 'loading';
 let speech = { ready: true };              // dictation: { ready, problem?, language, languages, warning? }; checked at launch and after Settings
 const schemas = new Map();                 // vault path → schema.list
 const changedVaults = new Set();           // vaults whose fragments changed on disk, waiting for an idle moment
+const outside = new Map();                 // vault path → rows, for open tabs whose vault is outside the scope
 const key = r => JSON.stringify([r.vault, r.id]);
 const name = p => vaults.find(v => v.path === p)?.name || 'All vaults';
-const labels = { capture: 'New capture', search: 'Search', graph: 'Graph', agent: 'Agent', pulse: 'Pulse', history: 'History' };
+const labels = { search: 'Search', graph: 'Graph', agent: 'Agent', pulse: 'Pulse', history: 'History' };
 // A type's view is named for what it holds: Todos, Risks, Ideas.
 const plural = t => { const w = typeLabel(t); return /(s|x|z|ch|sh)$/i.test(w) ? `${w}es` : /[^aeiou]y$/i.test(w) ? `${w.slice(0, -1)}ies` : `${w}s`; };
-const viewLabel = () => mode === 'type' ? plural(viewType) : labels[mode];
-const blankCapture = () => ({ type: defaultType(scope || $('destination').value), fields: {}, tags: [] });
+const blocking = () => !['idle', 'loading'].includes(phase);
 
-// Per-viewer memory: last vault, an unsaved draft, the sidebar's shape, filter, grouping, order and folded groups.
-// The app works without it.
-const DRAFT = 'parc.draft', SCOPE = 'parc.scope', SIDE = 'parc.sidebar', OPEN_ONLY = 'parc.openOnly', LIST_VIEW = 'parc.listView', FOLDED = 'parc.folded', TYPE_VIEWS = 'parc.typeViews';
+// Per-viewer memory: last vault, the open tabs and their unsaved text, the sidebar's shape, filter, grouping, order
+// and folded groups. The app works without it.
+const WORKSPACE = 'parc.workspace', DRAFT = 'parc.draft', SCOPE = 'parc.scope', SIDE = 'parc.sidebar', OPEN_ONLY = 'parc.openOnly', LIST_VIEW = 'parc.listView', FOLDED = 'parc.folded', TYPE_VIEWS = 'parc.typeViews';
 const remember = {
   get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch { /* not persisted */ } }
@@ -119,67 +119,293 @@ const settledValues = (vault, type) => [...new Set(typesIn(vault).filter(s => !t
 const fieldValues = field => [...new Set(typesIn(scope).flatMap(s => s.fields.filter(f => f.name === field && f.values).flatMap(f => f.values)))];
 const allTags = () => [...new Set(rows.flatMap(r => r.tags || []))].sort();
 
-// ── Editor ──
+// ── Tabs ──
+// Each tab is a fragment in the editor or a view. A fragment tab (kind 'doc') has its own text, editor and Related
+// panel: `opened` is the saved fragment, or null for a new capture, whose type, fields and tags wait in `fresh`
+// until its first save (`dest`: the vault chosen for it when the scope is every vault); `dirty` while its text has
+// unsaved changes. A view tab (kind 'view') shows `view`: pulse, search, graph, agent, history (of `target`) or type
+// (`viewType`'s board, matrix or cards). A fragment is open in at most one tab. The current group's shown tab (`tab`)
+// is what the bar, the keys and Go to… act on; `recentDoc` is the fragment tab used last (the Agent view's subject).
+let tab = null, recentDoc = null, tabSeq = 0, keepNext = null;
+const cur = () => tab?.kind === 'doc' ? tab : null;
+const modeOf = t => !t ? 'empty' : t.kind === 'doc' ? 'capture' : t.view;
+const docTabs = () => ws.tabs().filter(t => t.kind === 'doc');
+const viewTabs = () => ws.tabs().filter(t => t.kind === 'view');
+const tabOf = r => docTabs().find(d => d.opened && d.opened.vault === r.vault && d.opened.id === r.id) || null;
+const viewLabel = t => t.view === 'type' ? plural(t.viewType) : t.view === 'history' ? `History of ${t.target?.title || 'Untitled'}` : labels[t.view];
+const blankCapture = d => ({ type: defaultType(scope || d?.dest), fields: {}, tags: [] });
+const isEmpty = d => !d.ui.title.value.trim() && !d.editor.text().trim();
+const destination = d => d.opened?.vault || scope || d.dest;
+
+// A tab's content from its template: each id gains the tab's number, and so do the attributes that name it.
+function instance(template, n) {
+  const root = document.importNode($(template).content, true).firstElementChild, ui = { scroller: root }, ids = new Set();
+  for (const node of root.querySelectorAll('[id]')) { ids.add(node.id); ui[node.id] = node; node.id = `${node.id}-${n}`; }
+  for (const node of root.querySelectorAll('[for], [aria-labelledby], [aria-describedby], [aria-controls]')) {
+    for (const attr of ['for', 'aria-labelledby', 'aria-describedby', 'aria-controls']) {
+      const v = node.getAttribute(attr);
+      if (v) node.setAttribute(attr, v.split(/\s+/).map(x => ids.has(x) ? `${x}-${n}` : x).join(' '));
+    }
+  }
+  hydrateIcons(root);
+  return { root, ui };
+}
+function docTab(note = null) {
+  const n = ++tabSeq, { root, ui } = instance('docTemplate', n);
+  const d = { kind: 'doc', n, panel: root, ui, opened: null, fresh: null, dirty: false, dest: '' };
+  d.links = linksFor(d);
+  d.editor = markdownEditor(ui.draft, () => changed(d), d.links);
+  // Fragments that bear on what is being written, from the open fragment's vault, or from every vault in view
+  // for a new capture. Asked again as you type or dictate; see related.js.
+  d.related = relatedPanel(ui.related, {
+    seed: () => recallSeed(d), recall: api.recall, note: api.note,
+    open: s => openRow({ vault: s.vault, id: s.id }),
+    link: s => { d.editor.insert(`[[${d.links.shortId(s)}]]`); status(`Linked “${s.title || 'Untitled'}”.`); },
+    date: iso => { const t = new Date(iso); return t.getFullYear() === new Date().getFullYear() ? shortDate.format(t) : monthYear.format(t); }
+  });
+  ui.title.oninput = () => { const t = ui.title; if (/[\r\n]/.test(t.value)) t.value = t.value.replace(/\s*[\r\n]+\s*/g, ' '); changed(d); };
+  ui.title.onkeydown = e => { if (e.key === 'Enter' && !e.isComposing && !(e.metaKey || e.ctrlKey)) { e.preventDefault(); d.editor.focus(); } };
+  load(d, note);
+  return d;
+}
+function viewTab(view, { type = null, target = null, query = '' } = {}) {
+  const n = ++tabSeq, { root, ui } = instance('viewTemplate', n);
+  const v = { kind: 'view', n, view, viewType: type, target, panel: root, ui, stale: true, rendering: null, everything: false };
+  root.tabIndex = -1; // a view's page takes focus, so it scrolls from the keyboard
+  ui.tool.dataset.view = view;
+  ui.searchForm.hidden = view !== 'search';
+  if (view === 'search') {
+    ui.query.value = query;
+    searchAssist(ui.query, { id: `queryAssist-${n}`, values: assistValues, describe: f => FILTER_HINTS[f] });
+    // Results follow the box as you type; a search you typed keeps its tab.
+    let timer = 0;
+    ui.query.addEventListener('input', () => {
+      clearTimeout(timer); ws.keep(v); ws.update(v); rememberWorkspace();
+      timer = setTimeout(() => { if (ws.shown(v) && !halfTyped(ui.query.value.trim())) action(() => search(v)); }, 160);
+    });
+    ui.searchForm.onsubmit = e => { e.preventDefault(); clearTimeout(timer); action(() => search(v)); };
+  }
+  return v;
+}
+const VIEW_ICONS = { pulse: 'pulse', search: 'search', graph: 'graph', agent: 'agent', history: 'history' };
+function tabLabel(t) {
+  if (t.kind === 'doc') {
+    const type = t.opened?.type ?? t.fresh?.type, title = t.ui.title.value.trim();
+    const text = title || (t.opened ? 'Untitled' : `New ${type || 'note'}`);
+    return { text, glyph: typeIcon(type), dirty: t.dirty, title: `${text}\n${t.opened ? `${typeLabel(type)} in ${name(t.opened.vault)}` : 'Not saved yet'}` };
+  }
+  const q = t.view === 'search' ? t.ui.query.value.trim() : '';
+  const text = q ? `Search: ${q}` : t.view === 'history' ? `History: ${t.target?.title || 'Untitled'}` : viewLabel(t);
+  return { text, glyph: t.view === 'type' ? typeIcon(t.viewType) : icon(VIEW_ICONS[t.view]), title: t.view === 'history' ? viewLabel(t) : text };
+}
+// What an empty group shows: how to fill it.
+function emptyGroup() {
+  const box = el('div', 'watermark'), dl = el('dl');
+  const keys = [['Open a fragment here', 'Click it in the list'], ['Open beside', `${mod}+click, or ${mod} ↵`], ['Go to…', `${mod} K`], ['New capture', `${mod} N`], ['Move a tab between groups', `${mod} Alt ← →`], ['Close a tab', `${mod} W`]];
+  for (const [what, how] of keys) dl.append(el('dt', '', what), el('dd', '', how));
+  box.append(el('p', 'watermark-title', 'Nothing open in this group'), dl, el('p', 'watermark-hint', 'Or drag a tab, or a fragment from the list, here.'));
+  return box;
+}
+// Tab commands in a tab's context menu, beside the layout's own.
+function tabMenu(t) {
+  if (t.kind !== 'doc' || !t.opened) return [];
+  return [
+    { label: 'Copy link', run: () => copyLink(t) },
+    { label: 'History', run: () => showHistory(t) }
+  ];
+}
+const closedTabs = []; // what Reopen closed tab brings back, newest last
+const ws = workspace($('groups'), {
+  label: tabLabel,
+  canClose: async t => !blocking() && (t.kind !== 'doc' || await canLeave(t)),
+  closed(t) {
+    if (recentDoc === t) recentDoc = null;
+    const saved = saveTab(t);
+    if (t.kind === 'view' || t.opened) { closedTabs.push({ ...saved, draft: null }); if (closedTabs.length > 20) closedTabs.shift(); }
+    discard(t);
+  },
+  activate: (t, { focus }) => activated(t, focus),
+  changed: () => rememberWorkspace(),
+  drop: (r, { group, index }) => openRow(r, { group, index, focus: true }),
+  menu: tabMenu,
+  empty: emptyGroup,
+  busy: blocking
+});
+// The current group's shown tab changed. Whatever is on screen in any group is brought up to date: a view whose
+// fragments changed while hidden redraws, and a fragment's Related panel asks again if its text or vault moved on.
+function activated(t, focus) {
+  tab = t;
+  if (t?.kind === 'doc') recentDoc = t;
+  for (const g of ws.groups) {
+    const s = g.shown;
+    if (s?.kind === 'view' && s.stale) draw(s);
+    else if (s?.kind === 'doc') s.related.now();
+  }
+  paint(); list();
+  if (focus) focusTab(t);
+}
+function focusTab(t) {
+  if (!t) { ws.group?.empty.querySelector('.watermark')?.focus?.(); return; }
+  if (t.kind === 'doc') { if (t.opened || t.ui.title.value) t.editor.focus(); else t.ui.title.focus(); }
+  else if (t.view === 'search') t.ui.query.focus();
+  else t.ui.scroller.focus({ preventScroll: true });
+}
+// A tab that never joined the layout, or left it: its editor and Related panel stop.
+function discard(t) { if (t.kind === 'doc') { t.related.reset(); t.editor.destroy(); } }
+// Ctrl+W closes the current tab, or the current group when it is empty and not the only one.
+function closeTab(t = tab) {
+  if (blocking()) return;
+  if (t) return ws.close(t);
+  ws.closeEmpty();
+}
+function reopenTab() {
+  const saved = closedTabs.pop();
+  if (!saved) return;
+  return action(async () => {
+    const t = await restoreTab(saved);
+    if (!t) { status('That tab’s fragment is gone; it may have been moved to the trash.'); return; }
+    if (t.kind === 'doc' && t.opened && tabOf(t.opened)) { discard(t); ws.activate(tabOf(t.opened)); return; }
+    ws.open(t, { focus: true });
+    if (t.kind === 'doc') await loadNeighbors(t);
+  });
+}
+
+// ── Remembering the workspace ──
+// Which tabs are open where, and each one's unsaved text, are kept locally as they change, so quitting or a crash
+// loses nothing: the next launch puts them back. A draft's `base` is the revision its text was written against, so
+// restoring an old draft over a newer file still ends in the overwrite question.
+function saveTab(t) {
+  if (t.kind === 'view') {
+    return { view: t.view, ...(t.viewType ? { type: t.viewType } : {}), ...(t.target ? { target: t.target } : {}), ...(t.view === 'search' ? { query: t.ui.query.value } : {}) };
+  }
+  const draft = t.dirty && !isEmpty(t) ? { title: t.ui.title.value, body: t.editor.text(), base: t.opened?.revision ?? null, at: new Date().toISOString() } : null;
+  return t.opened ? { vault: t.opened.vault, id: t.opened.id, draft } : { vault: destination(t) || '', fresh: t.fresh, draft };
+}
+let saveTimer = 0, restoring = true;
+function rememberWorkspace(now = false) {
+  clearTimeout(saveTimer);
+  if (restoring) return;
+  const write = () => remember.set(WORKSPACE, {
+    groups: ws.groups.map(g => ({ size: g.size, shown: g.tabs.indexOf(g.shown), tabs: g.tabs.map(t => ({ ...saveTab(t), ...(t.preview ? { preview: true } : {}) })) })),
+    current: ws.groups.indexOf(ws.group)
+  });
+  if (now) write(); else saveTimer = setTimeout(write, 300);
+}
+// A tab as it was remembered, or null when it can't come back (its vault is gone, or its fragment without a draft).
+async function restoreTab(e) {
+  const known = p => vaults.some(v => v.path === p);
+  if (e.view) {
+    if (!labels[e.view] && e.view !== 'type') return null;
+    if (e.view === 'type' && typeof e.type !== 'string') return null;
+    if (e.view === 'history' && !(e.target?.id && known(e.target.vault))) return null;
+    return viewTab(e.view, { type: e.type, target: e.target, query: typeof e.query === 'string' ? e.query : '' });
+  }
+  if (e.vault && !known(e.vault)) return null;
+  const draft = e.draft && typeof e.draft.body === 'string' ? e.draft : null;
+  let full = null;
+  if (e.id) { try { full = await api.note(e.vault, e.id); } catch { if (!draft) return null; } }
+  const d = docTab(full ? { ...full, vault: e.vault } : null);
+  if (!full) { if (!scope && e.vault) d.dest = e.vault; d.fresh = { ...blankCapture(d), ...(e.fresh || {}) }; meta(d); }
+  if (draft) {
+    if (full) d.opened = { ...d.opened, revision: /^[0-9a-f]{16}$/.test(draft.base || '') ? draft.base : full.revision };
+    d.ui.title.value = draft.title || ''; d.editor.load(draft.body); d.dirty = true;
+    d.restored = { at: draft.at, orphan: !!e.id && !full };
+  }
+  return d;
+}
+async function restoreWorkspace(saved) {
+  const shown = new Map(), groups = Array.isArray(saved?.groups) ? saved.groups : [];
+  let wanted = null;
+  for (const [i, sg] of groups.entries()) {
+    const g = i < ws.groups.length ? ws.groups[i] : ws.addGroup();
+    g.size = Number(sg?.size) > 0 ? Number(sg.size) : 1;
+    if (i === saved.current) wanted = g;
+    for (const [j, entry] of (Array.isArray(sg?.tabs) ? sg.tabs : []).entries()) {
+      const t = await restoreTab(entry || {}).catch(() => null);
+      if (!t) continue;
+      if (t.kind === 'doc' && t.opened && tabOf(t.opened)) { discard(t); continue; }
+      ws.open(t, { group: g, preview: !!entry.preview && !t.dirty, activate: false });
+      if (j === sg.shown) shown.set(g, t);
+    }
+  }
+  ws.prune(); // groups whose tabs couldn't come back go
+  const current = ws.groups.includes(wanted) ? wanted : ws.groups[0];
+  for (const g of ws.groups) if (g !== current) { const t = shown.get(g) ?? g.shown; if (t?.group) ws.activate(t); }
+  const t = shown.get(current) ?? current.shown;
+  if (t?.group) ws.activate(t); else ws.focusGroup(ws.groups.indexOf(current));
+  for (const d of docTabs()) loadNeighbors(d).catch(() => {});
+  const drafts = docTabs().filter(d => d.restored);
+  if (drafts.length === 1) {
+    const { at, orphan } = drafts[0].restored;
+    status(orphan ? 'Restored your unsaved draft. Its fragment was deleted, so it will save as a new capture.' : `Restored your unsaved draft from ${stamp.format(new Date(at))}.`);
+  } else if (drafts.length) status(`Restored ${drafts.length} unsaved drafts.`);
+  return ws.tabs().length > 0;
+}
+
+// ── Editor links ──
 // A prefix resolves only when it names exactly one fragment; ULIDs made within ~256ms share 8 characters.
-// Links resolve inside one vault: the open fragment's, the scope's, or the chosen save destination.
-const linkVault = () => opened?.vault ?? (scope || $('destination').value);
-const linkable = () => { const v = linkVault(); return rows.filter(r => !v || r.vault === v); };
-const shortId = (id, pool = linkable()) => { let n = 8; while (n < id.length && pool.some(r => r.id !== id && r.id.startsWith(id.slice(0, n)))) n++; return id.slice(0, n); };
-const links = {
-  find(prefix) { const hits = linkable().filter(r => r.id.startsWith(prefix)); return hits.length === 1 ? hits[0] : null; },
-  resolve(prefix) { const r = links.find(prefix); return r ? { title: r.title, type: r.type } : null; },
-  open(prefix) { const r = links.find(prefix); if (r) action(() => openFragment(r)); },
-  pool: () => linkable().filter(r => !(opened && key(opened) === key(r))),
-  // Unique where it will be resolved (the link scope, which may span vaults) and in its own vault.
-  shortId: r => shortId(r.id, [...linkable(), ...rows.filter(x => x.vault === r.vault)]),
-  describe: r => [typeLabel(r.type), ...(linkVault() ? [] : [name(r.vault)]), age(r.updated_at)]
-};
-const editor = markdownEditor($('draft'), changed, links);
+// Links resolve inside one vault: the tab's fragment's, the scope's, or the chosen save destination.
+const inScope = p => !scope || scope === p;
+const rowsIn = p => inScope(p) ? rows.filter(r => r.vault === p) : outside.get(p) || [];
+const linkVault = d => d.opened?.vault ?? (scope || d.dest);
+const linkable = d => { const v = linkVault(d); return v ? rowsIn(v) : rows; };
+const shortId = (id, pool) => { let n = 8; while (n < id.length && pool.some(r => r.id !== id && r.id.startsWith(id.slice(0, n)))) n++; return id.slice(0, n); };
+function linksFor(d) {
+  const links = {
+    find(prefix) { const hits = linkable(d).filter(r => r.id.startsWith(prefix)); return hits.length === 1 ? hits[0] : null; },
+    resolve(prefix) { const r = links.find(prefix); return r ? { title: r.title, type: r.type } : null; },
+    open(prefix, e) { const r = links.find(prefix); if (r) openRow(r, clickHow(e)); },
+    pool: () => linkable(d).filter(r => !(d.opened && key(d.opened) === key(r))),
+    // Unique where it will be resolved (the link scope, which may span vaults) and in its own vault.
+    shortId: r => shortId(r.id, [...linkable(d), ...rowsIn(r.vault)]),
+    describe: r => [typeLabel(r.type), ...(linkVault(d) ? [] : [name(r.vault)]), age(r.updated_at)]
+  };
+  return links;
+}
+// Tabs on a vault outside the scope keep its rows, so their links still resolve.
+async function syncOutside() {
+  const need = new Set(docTabs().map(d => d.opened?.vault).filter(p => p && !inScope(p)));
+  for (const p of outside.keys()) if (!need.has(p)) outside.delete(p);
+  const missing = [...need].filter(p => !outside.has(p));
+  if (!missing.length) return;
+  await Promise.all(missing.map(async p => { try { outside.set(p, await listVault(p)); } catch { /* asked again next time */ } }));
+  for (const d of docTabs()) d.editor.refresh();
+}
+
+// ── Related ──
+function recallSeed(d) {
+  if (!ws.shown(d) || !vaults.length) return null;
+  return {
+    vaults: d.opened ? [d.opened.vault] : scope ? [scope] : vaults.map(v => v.path),
+    vault: d.opened?.vault ?? null, id: d.opened?.id ?? null,
+    text: `${d.ui.title.value}\n${d.editor.text()}`, tags: (d.opened ? d.opened.tags : d.fresh?.tags) || []
+  };
+}
 let statsFrame = 0;
-function changed() { dirty = true; paint(); rememberDraft(); }
+function changed(d) {
+  d.dirty = true; ws.keep(d);
+  if (d === tab) paint(); else ws.update(d);
+  rememberWorkspace(); d.related.changed();
+}
 function stats() {
   cancelAnimationFrame(statsFrame);
   statsFrame = requestAnimationFrame(() => {
-    if (mode !== 'capture') { $('stats').textContent = ''; return; }
-    const n = words(`${$('title').value} ${editor.text()}`);
+    const d = cur();
+    if (!d) { $('stats').textContent = ''; return; }
+    const n = words(`${d.ui.title.value} ${d.editor.text()}`);
     $('stats').replaceChildren(el('span', '', `${n.toLocaleString()} ${n === 1 ? 'word' : 'words'}`));
-    if (opened && !dirty) {
+    if (d.opened && !d.dirty) {
       // The last edit opens the fragment's history.
-      const t = el('button', 'edited', edited(opened.updated_at)); t.type = 'button';
-      t.title = `${stamp.format(new Date(opened.updated_at))}. Show history`;
-      t.onclick = showHistory;
+      const t = el('button', 'edited', edited(d.opened.updated_at)); t.type = 'button';
+      t.title = `${stamp.format(new Date(d.opened.updated_at))}. Show history`;
+      t.onclick = () => showHistory(d);
       $('stats').append(t);
     }
   });
 }
-const isEmpty = () => !$('title').value.trim() && !editor.text().trim();
-const destination = () => opened?.vault || scope || $('destination').value;
-
-// ── Drafts ──
-// The editor's unsaved state is written locally as it changes, so quitting or a crash keeps it. One draft:
-// leaving a dirty fragment still asks to save or discard. `base` is the revision the text was written
-// against, so restoring an old draft over a newer file still ends in the overwrite question.
-let draftTimer = 0;
-function rememberDraft(now = false) {
-  clearTimeout(draftTimer);
-  const write = () => remember.set(DRAFT, dirty && !isEmpty() ? {
-    vault: destination() || '', id: opened?.id ?? null, base: opened?.revision ?? null, fresh: opened ? null : fresh,
-    title: $('title').value, body: editor.text(), at: new Date().toISOString()
-  } : null);
-  if (now) write(); else draftTimer = setTimeout(write, 300);
-}
-async function restoreDraft(draft) {
-  let full = null;
-  if (draft.id) { try { full = await api.note(draft.vault, draft.id); } catch { /* deleted since: keep the words as a new capture */ } }
-  const base = /^[0-9a-f]{16}$/.test(draft.base || '') ? draft.base : full?.revision;
-  if (full) reset({ ...full, vault: draft.vault, revision: base });
-  else { reset(); fresh = { ...blankCapture(), ...(draft.fresh || {}) }; if (!scope && draft.vault) $('destination').value = draft.vault; meta(); }
-  $('title').value = draft.title; editor.load(draft.body); dirty = true; paint(); rememberDraft(true);
-  if (full) await loadNeighbors();
-  status(draft.id && !full ? 'Restored your unsaved draft. Its fragment was deleted, so it will save as a new capture.' : `Restored your unsaved draft from ${stamp.format(new Date(draft.at))}.`);
-}
 
 // ── Dictation ──
+// It writes into the fragment tab it started in; tabs don't switch while it records or transcribes.
 let recordStart = 0, recordTimer = 0;
 function setPhase(value) {
   if (value === 'recording' && phase !== 'recording') {
@@ -190,7 +416,7 @@ function setPhase(value) {
   phase = value; paint();
   if (value === 'idle' && changedVaults.size) setTimeout(flushChanges);
 }
-const voice = dictation(api, setPhase, status, text => editor.append(text));
+const voice = dictation(api, setPhase, status, text => { const d = cur(); if (!d) return; d.editor.append(text); d.related.now(); });
 async function checkSpeech() {
   try { speech = await api.speechStatus(); } catch (err) { speech = { ready: false, problem: cleanError(err) }; }
   languageSwitch(); paint();
@@ -212,13 +438,13 @@ function languageSwitch() {
   slot.append(dd);
 }
 
-// ── Paint: every control's state from (phase, mode, dirty, opened, scope) ──
+// ── Paint: the bar and window from (phase, the current tab, scope) ──
 function paint() {
-  const blocking = !['idle', 'loading'].includes(phase), recording = phase === 'recording', capture = mode === 'capture';
+  const busy = blocking(), recording = phase === 'recording', d = cur(), capture = !!d, mode = modeOf(tab);
   document.body.dataset.phase = phase;
   $('main').setAttribute('aria-busy', String(['loading', 'saving', 'transcribing'].includes(phase)));
-  $('scope').toggleAttribute('disabled', blocking || !vaults.length);
-  $('destination').disabled = blocking;
+  $('scope').toggleAttribute('disabled', busy || !vaults.length);
+  $('destination').disabled = busy;
   $('record').hidden = !capture; $('save').hidden = !capture;
   $('record').toggleAttribute('disabled', phase === 'saving'); // its click handler ignores every other non-idle phase
   $('record').toggleAttribute('loading', phase === 'transcribing' || phase === 'starting');
@@ -233,34 +459,33 @@ function paint() {
     const next = icon(recording ? 'stop' : 'mic'); next.id = 'recordIcon'; next.dataset.name = recording ? 'stop' : 'mic'; glyph.replaceWith(next);
   }
   $('cancel').hidden = !recording; $('recTime').hidden = !recording;
-  const unsavable = blocking || !dirty || !destination() || isEmpty();
+  const unsavable = busy || !d?.dirty || !destination(d) || isEmpty(d);
   $('save').toggleAttribute('disabled', unsavable);
   $('save').setAttribute('variant', unsavable && phase !== 'saving' ? 'outline' : 'default'); // a disabled primary reads as a grey slab
   $('save').toggleAttribute('loading', phase === 'saving');
-  $('fragmentMenu').hidden = !(capture && opened);
-  $('archiveLabel').textContent = opened?.archived ? 'Unarchive' : 'Archive';
-  $('document').hidden = !capture; $('tool').hidden = capture;
-  $('destinationLabel').hidden = !capture || !!scope || !!opened;
+  $('fragmentMenu').hidden = !d?.opened;
+  $('archiveLabel').textContent = d?.opened?.archived ? 'Unarchive' : 'Archive';
+  $('destinationLabel').hidden = !d || !!scope || !!d.opened;
+  if (d && !d.opened) $('destination').value = d.dest;
   $('destination').toggleAttribute('data-empty', !$('destination').value);
-  $('resume').hidden = !dirty || capture;
   const rev = $('revision');
-  rev.textContent = phase === 'saving' ? 'Saving…' : dirty ? 'Unsaved' : capture && opened ? 'Saved' : '';
-  rev.dataset.state = phase === 'saving' ? 'saving' : dirty ? 'dirty' : 'saved';
+  rev.textContent = phase === 'saving' ? 'Saving…' : d?.dirty ? 'Unsaved' : d?.opened ? 'Saved' : '';
+  rev.dataset.state = phase === 'saving' ? 'saving' : d?.dirty ? 'dirty' : 'saved';
   rev.hidden = !rev.textContent || ['recording', 'transcribing', 'starting', 'stopping'].includes(phase); // the recording state speaks for the draft
-  crumb(capture);
-  for (const b of document.querySelectorAll('[data-view]')) {
-    b.toggleAttribute('disabled', blocking);
-    const current = b.dataset.view === mode && !(opened && capture);
-    if (current) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  crumb();
+  for (const b of $('sidebar').querySelectorAll('[data-view]')) {
+    b.toggleAttribute('disabled', busy);
+    if (b.dataset.view === mode && !d?.opened) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   }
   // The window's title names what is open, with a dot while it has unsaved changes.
-  const here = capture ? $('title').value.trim() || (opened ? 'Untitled' : `New ${fresh?.type || 'note'}`) : viewLabel();
-  document.title = `${dirty ? '• ' : ''}${here} — parc`;
+  const here = d ? d.ui.title.value.trim() || (d.opened ? 'Untitled' : `New ${d.fresh?.type || 'note'}`) : tab ? viewLabel(tab) : '';
+  document.title = here ? `${d?.dirty ? '• ' : ''}${here} — parc` : 'parc';
+  if (tab) ws.update(tab);
   stats();
 }
-function crumb(capture) {
-  const where = capture && opened ? opened.vault : scope;
-  const here = capture ? opened ? typeLabel(opened.type) : `New ${fresh?.type || 'note'}` : viewLabel();
+function crumb() {
+  const d = cur(), where = d?.opened ? d.opened.vault : scope;
+  const here = d ? d.opened ? typeLabel(d.opened.type) : `New ${d.fresh?.type || 'note'}` : tab ? viewLabel(tab) : 'Empty group';
   $('crumb').replaceChildren(el('span', 'vault', name(where)), el('span', 'sep', '/'), el('span', 'here', here));
 }
 
@@ -299,9 +524,10 @@ function options() {
   $('destination').replaceChildren(new Option('Choose vault…', ''), ...vaults.map(v => new Option(v.name, v.path)));
   $('destination').value = chosen;
 }
+// The scope is what the list and the views show. Open tabs stay: fragments keep their own vault, and views redraw for
+// the new scope. A fragment from a vault the new scope leaves out gives way to the new vault's Pulse.
 function switchScope(target) {
   return action(async () => {
-    if (!await canLeave()) return;
     let next = target === '@all' ? '' : target;
     if (target === '@open' || target.startsWith('@suggest:')) {
       const picked = await api.openVault(target === '@open' ? undefined : target.slice(9));
@@ -313,19 +539,26 @@ function switchScope(target) {
     try { rows = await collect(); } catch (e) { scope = old; throw e; }
     await loadSchemas((scope ? [scope] : vaults.map(v => v.path)).filter(p => !schemas.has(p)));
     remember.set(SCOPE, scope);
-    // Views that read the whole scope stay; so does a blank new capture. Anything tied to the old vault goes home.
-    const stay = ['pulse', 'type', 'graph'].includes(mode) ? mode : mode === 'capture' && !opened ? null : 'pulse';
-    options(); $('query').value = ''; await refilter(); reset();
-    if (stay) await navigate(stay);
+    for (const d of docTabs()) {
+      if (!d.opened && !d.dirty && !enabledTypes(destination(d)).some(s => s.name === d.fresh.type)) d.fresh = { ...blankCapture(d), tags: d.fresh.tags };
+      meta(d);
+    }
+    options(); await refilter(); await syncOutside();
+    rowsChanged(true);
+    if (cur()?.opened && !inScope(cur().opened.vault)) await openView('pulse');
+    status(); paint();
   });
 }
 
 // ── Fragment rows ──
+const listVault = async (p, query = '') => (await api.list(p, query)).map(r => ({ ...r, vault: p }));
 async function collect(query = '') {
   const paths = scope ? [scope] : vaults.map(v => v.path);
-  const groups = await Promise.all(paths.map(async p => (await api.list(p, query)).map(r => ({ ...r, vault: p }))));
+  const groups = await Promise.all(paths.map(p => listVault(p, query)));
   return groups.flat().sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.title.localeCompare(b.title));
 }
+// The list changed: the sidebar and the views that show it follow.
+function rowsChanged(all = false) { list(); refreshViews(all); }
 // FTS snippets are raw Markdown with »matches« marked; show them as prose.
 const prose = text => text.split('\n').map(l => l.replace(/^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)/, ''))
   .join(' ').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\*\*|__|~~|`/g, '').replace(/\s+/g, ' ').trim();
@@ -336,10 +569,30 @@ function snippet(text) {
   });
   return p;
 }
-// Opening from the keyboard puts the caret in the text; from the pointer it leaves focus where it was.
-function openRow(r, focus = false) {
-  return action(() => openFragment(r)).then(() => { if (focus && opened && key(opened) === key(r) && mode === 'capture') editor.focus(); });
+// How a click asks to open a fragment: Ctrl (⌘) opens it beside, in the next group; the middle button in a tab of
+// its own; a keyboard click puts the caret in its text. Otherwise it opens as the group's preview.
+function clickHow(e) {
+  if (!e || typeof e !== 'object') return { focus: e === true };
+  return { focus: e.detail === 0, side: !!(e.ctrlKey || e.metaKey), tab: e.button === 1 };
 }
+function openRow(r, how = {}) {
+  return action(() => openFragment(r, how)).then(() => { const d = tabOf(r); if (how.focus && d && d === tab) d.editor.focus(); });
+}
+// A fragment row opens on click, stays open on a double-click (its tab stops being the preview), opens in a tab of
+// its own on a middle click, and drags into a group (or beside one) to open there.
+function rowEvents(b, r) {
+  b.onclick = e => openRow(r, clickHow(e));
+  b.ondblclick = () => { const d = tabOf(r); if (d) ws.keep(d); else keepNext = key(r); };
+  b.onmousedown = e => { if (e.button === 1) e.preventDefault(); };
+  b.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openRow(r, { tab: true }); } };
+  b.draggable = true;
+  b.ondragstart = e => {
+    e.dataTransfer.effectAllowed = 'copyMove';
+    e.dataTransfer.setData(FRAGMENT, JSON.stringify({ vault: r.vault, id: r.id }));
+    e.dataTransfer.setData('text/plain', r.title || 'Untitled');
+  };
+}
+const isOpenHere = r => { const d = cur(); return !!d?.opened && key(d.opened) === key(r); };
 // A fragment row in results: type glyph, title and age, then type, state and tags.
 const createdAt = r => r.created_at || r.updated_at;
 function timeOf(r, created) { // the last edit, or the creation when the list is in creation order
@@ -360,8 +613,8 @@ function row(r, { withSnippet = false } = {}) {
   b.append(typeIcon(r.type), main);
   if (withSnippet && r.snippet) b.append(snippet(r.snippet));
   if (r.archived) b.dataset.archived = '';
-  if (opened && key(opened) === key(r) && mode === 'capture') b.setAttribute('aria-current', 'page');
-  b.onclick = e => openRow(r, e.detail === 0);
+  if (isOpenHere(r)) b.setAttribute('aria-current', 'page');
+  rowEvents(b, r);
   return b;
 }
 function rowList(items, options) {
@@ -385,12 +638,12 @@ function sideRow(r, { created = false, mark = 'type' } = {}) {
   b.append(lead, el('span', 'row-title' + (r.title ? '' : ' untitled'), r.title || 'Untitled'), end);
   b.title = [r.title || 'Untitled', [...facts, ...(r.tags || []).map(t => `#${t}`)].join(' · ')].filter(Boolean).join('\n');
   if (r.archived) b.dataset.archived = '';
-  if (opened && key(opened) === key(r) && mode === 'capture') b.setAttribute('aria-current', 'page');
-  b.onclick = e => openRow(r, e.detail === 0);
+  if (isOpenHere(r)) b.setAttribute('aria-current', 'page');
+  else if (tabOf(r)) b.dataset.open = ''; // open in another tab
+  rowEvents(b, r);
   return b;
 }
 const sideItem = (r, options) => { const li = el('li'); li.append(sideRow(r, options)); return li; };
-
 // ── Sidebar filter ──
 // Plain words filter the list as you type, by title, type, status, tags and vault. Anything in the search
 // language (type:todo, #tag, due:overdue) asks the vault instead. "Open" hides settled and archived work.
@@ -480,8 +733,8 @@ function groupItem(g, options) {
   head.append(g.glyph(), el('span', 'group-name', g.label), el('span', 'group-count', g.items.length.toLocaleString()));
   if (type) {
     head.title = `Open ${plural(type)}`;
-    head.onclick = () => openTypeView(type);
-    if (mode === 'type' && viewType === type) head.setAttribute('aria-current', 'page');
+    head.onclick = e => openTypeView(type, clickHow(e));
+    if (tab?.kind === 'view' && tab.view === 'type' && tab.viewType === type) head.setAttribute('aria-current', 'page');
   } else { head.setAttribute('aria-expanded', String(open)); head.onclick = () => foldGroup(g.id); }
   bar.dataset.open = String(open);
   bar.append(head, fold); li.append(bar);
@@ -524,7 +777,7 @@ function list() {
   $('count').textContent = count;
   $('filterBox').style.setProperty('--count-ch', count.length);
   // A fragment opened from elsewhere (Go to…, a link, the graph) is scrolled into view once.
-  const current = opened && mode === 'capture' ? key(opened) : null;
+  const current = cur()?.opened ? key(cur().opened) : null;
   if (current !== revealed) $('recent').querySelector('.row[aria-current]')?.scrollIntoView({ block: 'nearest' });
   revealed = current;
   $('empty').textContent = !rows.length
@@ -537,8 +790,12 @@ function list() {
   $('empty').hidden = !!shown.length;
   $('openOnly').setAttribute('aria-pressed', String(openOnly));
   $('tagOptions').replaceChildren(...allTags().map(t => new Option(t)));
-  editor.refresh();
-  if (opened) { const fid = $('meta').querySelector('.fid'), short = shortId(opened.id); if (fid && fid.textContent !== short) { fid.textContent = short; fid.title = `Link to this fragment with [[${short}]]`; } }
+  // A new fragment can resolve a link, or lengthen the prefix that names another.
+  for (const d of docTabs()) {
+    d.editor.refresh();
+    const fid = d.opened && d.ui.meta.querySelector('.fid'), short = fid && shortId(d.opened.id, linkable(d));
+    if (fid && fid.textContent !== short) { fid.textContent = short; fid.title = `Link to this fragment with [[${short}]]`; }
+  }
 }
 
 // ── Sidebar shape: drag its edge to resize, Ctrl+\ to hide ──
@@ -582,11 +839,11 @@ function resizeTo(width) {
 // ── Document metadata ──
 // The type's enum and date fields are controls. On a saved fragment each change is its own save, like
 // the TUI's: the text keeps its separate Save. On a new capture they wait for the first save.
-function describe() {
-  if (opened) return { isNew: false, vault: opened.vault, type: opened.type, schema: schemaFor(opened.vault, opened.type), values: opened, tags: opened.tags || [] };
-  const vault = scope || $('destination').value, schema = schemaFor(vault, fresh.type), defaults = {};
+function describe(d) {
+  if (d.opened) return { d, isNew: false, vault: d.opened.vault, type: d.opened.type, schema: schemaFor(d.opened.vault, d.opened.type), values: d.opened, tags: d.opened.tags || [] };
+  const vault = scope || d.dest, schema = schemaFor(vault, d.fresh.type), defaults = {};
   for (const f of schema?.fields || []) if (f.default != null) defaults[f.name] = f.default;
-  return { isNew: true, vault, type: fresh.type, schema, values: { ...defaults, ...fresh.fields }, tags: fresh.tags };
+  return { d, isNew: true, vault, type: d.fresh.type, schema, values: { ...defaults, ...d.fresh.fields }, tags: d.fresh.tags };
 }
 const editable = schema => (schema?.fields || []).filter(f => (f.kind === 'enum' && f.values?.length) || f.kind === 'date');
 function menu(trigger, items, onPick, className) {
@@ -612,11 +869,11 @@ function typeMenu(c) {
   if (!types.some(s => s.name === c.type)) types.unshift({ name: c.type });
   return menu([el('span', 'sr', 'Type: '), typeIcon(c.type), el('span', '', `New ${c.type}`)],
     types.map(s => [s.name, typeLabel(s.name), s.name === c.type, typeIcon(s.name)]),
-    type => setType(type), 'prop type-menu');
+    type => setType(c.d, type), 'prop type-menu');
 }
-function setType(type) {
-  if (opened || type === fresh.type) return;
-  fresh = { type, fields: {}, tags: fresh.tags }; meta(); paint(); rememberDraft();
+function setType(d, type) {
+  if (d.opened || type === d.fresh.type) return;
+  d.fresh = { type, fields: {}, tags: d.fresh.tags }; meta(d); paint(); ws.update(d); rememberWorkspace();
 }
 function enumControl(field, c) {
   const value = c.values[field.name] ?? null, toggle = c.schema?.toggle?.field === field.name ? c.schema.toggle : null;
@@ -627,7 +884,7 @@ function enumControl(field, c) {
   trigger.push(el('span', value ? '' : 'unset', value ? shown : capital(field.name)), ...(value ? [] : [el('span', 'sr', ' not set')]));
   const items = field.values.map(v => [v, capital(v), v === value]);
   if (!field.required && value) items.push(null, ['', 'Clear']);
-  const dd = menu(trigger, items, v => setField(field.name, v === '' ? null : v), 'prop');
+  const dd = menu(trigger, items, v => setField(c.d, field.name, v === '' ? null : v), 'prop');
   dd.dataset.field = field.name;
   if (field.name === 'priority' && ['high', 'critical'].includes(value)) dd.dataset.emphasis = '';
   if (!toggle) return dd;
@@ -635,7 +892,7 @@ function enumControl(field, c) {
   const next = value === toggle.on ? toggle.off : toggle.on, mark = el('button', 'toggle-mark');
   mark.type = 'button'; mark.dataset.tone = tone(c.vault, c.type, value);
   mark.title = `Mark ${capital(next).toLowerCase()} (T)`; mark.setAttribute('aria-label', `Mark ${next}`);
-  mark.onclick = () => setField(toggle.field, next);
+  mark.onclick = () => setField(c.d, toggle.field, next);
   const group = el('span', 'prop-group'); group.append(mark, dd);
   return group;
 }
@@ -650,7 +907,7 @@ function dateControl(field, c) {
     picker.setAttribute('size', 'sm'); picker.setAttribute('aria-label', `${capital(field.name)} date`);
     if (value) picker.setAttribute('value', value);
     let settledPick = false;
-    const done = next => { if (settledPick) return; settledPick = true; if (next !== undefined && next !== value) setField(field.name, next); else meta(); };
+    const done = next => { if (settledPick) return; settledPick = true; if (next !== undefined && next !== value) setField(c.d, field.name, next); else meta(c.d); };
     picker.addEventListener('aihio-change', e => done(e.detail.value || null));
     wrap.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(); } });
     wrap.addEventListener('focusout', e => { if (!wrap.contains(e.relatedTarget)) setTimeout(() => { if (!wrap.contains(document.activeElement)) done(); }); });
@@ -661,7 +918,7 @@ function dateControl(field, c) {
   if (value && !field.required) {
     const clear = el('button', 'prop-clear'); clear.type = 'button';
     clear.title = `Remove ${field.name.replace(/[-_]/g, ' ')} date`; clear.setAttribute('aria-label', clear.title);
-    clear.append(icon('x')); clear.onclick = () => setField(field.name, null);
+    clear.append(icon('x')); clear.onclick = () => setField(c.d, field.name, null);
     wrap.append(clear);
   }
   return wrap;
@@ -671,7 +928,7 @@ function tagEditor(c) {
   for (const t of c.tags) {
     const chip = el('span', 'tag'), remove = el('button', 'tag-x');
     remove.type = 'button'; remove.title = `Remove #${t}`; remove.setAttribute('aria-label', remove.title);
-    remove.append(icon('x')); remove.onclick = () => setTags(c.tags.filter(x => x !== t));
+    remove.append(icon('x')); remove.onclick = () => setTags(c.d, c.tags.filter(x => x !== t));
     chip.append(`#${t}`, remove);
     box.append(chip);
   }
@@ -684,7 +941,7 @@ function tagEditor(c) {
     const finish = keep => {
       if (finished) return; finished = true;
       const tag = input.value.trim().replace(/^#+/, '').replace(/\s+/g, '-');
-      if (keep && tag && !c.tags.some(t => t.toLowerCase() === tag.toLowerCase())) setTags([...c.tags, tag]); else meta();
+      if (keep && tag && !c.tags.some(t => t.toLowerCase() === tag.toLowerCase())) setTags(c.d, [...c.tags, tag]); else meta(c.d);
     };
     input.onkeydown = e => {
       if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); finish(true); }
@@ -696,153 +953,188 @@ function tagEditor(c) {
   box.append(add);
   return box;
 }
-function meta() {
-  const box = $('meta'), c = describe();
+function meta(d) {
+  const box = d.ui.meta, c = describe(d);
   box.replaceChildren();
   if (c.isNew) box.append(typeMenu(c));
   else {
     const b = document.createElement('aihio-badge'); b.setAttribute('variant', 'outline'); b.append(typeIcon(c.type), typeLabel(c.type));
     box.append(b);
-    if (opened.archived) { const a = document.createElement('aihio-badge'); a.setAttribute('variant', 'secondary'); a.append(icon('archive'), 'Archived'); box.append(a); }
+    if (d.opened.archived) { const a = document.createElement('aihio-badge'); a.setAttribute('variant', 'secondary'); a.append(icon('archive'), 'Archived'); box.append(a); }
   }
   for (const f of editable(c.schema)) box.append(f.kind === 'date' ? dateControl(f, c) : enumControl(f, c));
   if (!c.schema && c.values.status) box.append(state(c.vault, c.type, c.values.status)); // a type without a schema here: shown, not edited
   box.append(tagEditor(c));
   if (!c.isNew) {
-    const short = shortId(opened.id), id = el('span', 'fid', short); id.title = `Link to this fragment with [[${short}]]`;
+    const short = shortId(d.opened.id, linkable(d)), id = el('span', 'fid', short); id.title = `Link to this fragment with [[${short}]]`;
     box.append(id);
   }
 }
-function setField(field, value) {
-  if (!opened) { fresh.fields = { ...fresh.fields, [field]: value }; meta(); rememberDraft(); return; }
-  const shown = /^\d{4}-\d{2}-\d{2}$/.test(value) ? dayLabel(value) : capital(value).toLowerCase(), f = opened;
-  return applyChange(rev => api.update(f.vault, f.id, { fields: { [field]: value } }, rev),
+function setField(d, field, value) {
+  if (!d.opened) { d.fresh.fields = { ...d.fresh.fields, [field]: value }; meta(d); rememberWorkspace(); return; }
+  const shown = /^\d{4}-\d{2}-\d{2}$/.test(value) ? dayLabel(value) : capital(value).toLowerCase(), f = d.opened;
+  return applyChange(d, rev => api.update(f.vault, f.id, { fields: { [field]: value } }, rev),
     value == null ? `${capital(field)} cleared.` : `${capital(field)} set to ${shown}.`);
 }
-function setTags(tags) {
-  if (!opened) { fresh.tags = tags; meta(); rememberDraft(); return; }
-  const f = opened;
-  return applyChange(rev => api.update(f.vault, f.id, { tags }, rev), 'Tags saved.');
+function setTags(d, tags) {
+  if (!d.opened) { d.fresh.tags = tags; meta(d); rememberWorkspace(); d.related.changed(); return; }
+  const f = d.opened;
+  return applyChange(d, rev => api.update(f.vault, f.id, { tags }, rev), 'Tags saved.');
 }
-function toggleField() {
-  const c = describe(), t = c.schema?.toggle;
+function toggleField(d = cur()) {
+  if (!d) return;
+  const c = describe(d), t = c.schema?.toggle;
   if (!t) return;
-  setField(t.field, c.values[t.field] === t.on ? t.off : t.on);
+  setField(d, t.field, c.values[t.field] === t.on ? t.off : t.on);
 }
-function toggleArchive() {
-  const f = opened;
+function toggleArchive(d = cur()) {
+  const f = d?.opened;
   if (!f) return;
   const archived = !f.archived;
-  return applyChange(rev => api.archive(f.vault, f.id, archived, rev),
+  return applyChange(d, rev => api.archive(f.vault, f.id, archived, rev),
     archived ? 'Archived: it leaves default searches; find it with is:archived.' : 'Unarchived.',
-    { label: 'Undo', run: () => { if (opened && key(opened) === key(f)) toggleArchive(); } });
+    { label: 'Undo', run: () => { const t = tabOf(f); if (t) toggleArchive(t); } });
 }
 // A field-level save names the revision it was based on. If the file moved on and the text is clean, reload
 // and apply the change to the newer file. If the text has edits, apply the change (it touches nothing else)
 // but keep the text's base, so saving the text still asks before overwriting.
-function applyChange(send, done, undo) {
+function applyChange(d, send, done, undo) {
   return action(async () => {
-    const f = opened;
+    const f = d.opened;
     let note = await send(f.revision), base = null;
-    if (note.conflict && !dirty) { await reload(f); note = await send(opened.revision); }
+    if (note.conflict && !d.dirty) { await reload(d); note = await send(d.opened.revision); }
     else if (note.conflict) { base = f.revision; note = await send(null); }
     if (note.conflict) throw new Error('This fragment keeps changing on disk. Try again in a moment.');
-    opened = { ...note, vault: f.vault, ...(base ? { revision: base } : {}) };
-    meta(); paint();
+    d.opened = { ...note, vault: f.vault, ...(base ? { revision: base } : {}) };
+    meta(d); paint(); ws.update(d); d.related.changed();
     status(note.warnings?.join('; ') || (base ? `${done} It also changed outside parc: saving your text will ask before overwriting.` : done), undo);
-    rows = await collect(); await refilter(); list();
+    rows = await collect(); await refilter(); rowsChanged();
   });
 }
 
 // ── Document ──
-function load(note) { // puts a fragment, or a blank capture, in the editor without changing the view
-  if (!note || note.id !== opened?.id) $('docGraph').hidden = true;
-  $('document').toggleAttribute('data-saved', !!note);
-  opened = note; dirty = false; fresh = note ? null : blankCapture(); $('title').value = note?.title || '';
-  editor.load((note?.body || '').replace(/^\n/, '')); $('destination').value = ''; meta(); rememberDraft(true);
+function load(d, note) { // puts a fragment, or a blank capture, in a tab's editor
+  if (!note || note.id !== d.opened?.id) d.ui.docGraph.hidden = true;
+  d.ui.document.toggleAttribute('data-saved', !!note);
+  d.opened = note; d.dirty = false; d.dest = ''; d.fresh = note ? null : blankCapture(d); d.ui.title.value = note?.title || '';
+  d.editor.load((note?.body || '').replace(/^\n/, '')); meta(d); ws.update(d); rememberWorkspace();
+  d.related.now();
 }
-function reset(note = null) { load(note); mode = 'capture'; status(); paint(); list(); }
-async function reload(f = opened) { const full = await api.note(f.vault, f.id); load({ ...full, vault: f.vault }); paint(); list(); }
-// Asks before dropping unsaved work. Resolves true when it is fine to move on.
-async function canLeave() {
-  if (!dirty) return true;
-  const choice = await api.discard({ title: $('title').value, canSave: !!destination() && !isEmpty() });
-  if (choice === 'save') return commit();
-  if (choice === 'discard') { dirty = false; rememberDraft(true); return true; }
+async function reload(d) { const f = d.opened, full = await api.note(f.vault, f.id); load(d, { ...full, vault: f.vault }); paint(); list(); }
+// Asks before dropping a tab's unsaved work, showing it first. Resolves true when it is fine to let it go.
+async function canLeave(d) {
+  if (!d.dirty) return true;
+  if (d !== tab && d.group) ws.activate(d);
+  const choice = await api.discard({ title: d.ui.title.value, canSave: !!destination(d) && !isEmpty(d) });
+  if (choice === 'save') return commit(d);
+  if (choice === 'discard') { d.dirty = false; ws.update(d); rememberWorkspace(true); return true; }
   return false;
 }
-// Serialize navigation, RPC reads and saves. No late response may overwrite a newer draft.
+// Serialize navigation, RPC reads and saves. No late response may overwrite a newer draft: the current tab's
+// text waits while it runs.
 async function action(fn) {
   if (phase !== 'idle') return;
-  setPhase('loading'); $('title').readOnly = true; editor.lock(true);
+  const d = cur();
+  setPhase('loading');
+  if (d) { d.ui.title.readOnly = true; d.editor.lock(true); }
   try { await fn(); } catch (err) { status(err); }
-  finally { $('title').readOnly = false; editor.lock(false); setPhase('idle'); }
+  finally { if (d) { d.ui.title.readOnly = false; d.editor.lock(false); } setPhase('idle'); }
 }
-async function openFragment(r) {
-  if (opened && key(opened) === key(r)) { mode = 'capture'; status(); paint(); list(); return; }
-  if (!await canLeave()) return;
-  const full = await api.note(r.vault, r.id); reset({ ...full, vault: r.vault });
-  $('scroller').scrollTop = 0;
-  await loadNeighbors();
+// Where a tab opens: beside (`side`: the next group, opened if there is none), where it was dropped (`group`,
+// `index`), or in the current group, as its preview unless it should stay (`keep`, or a tab of its own: `tab`).
+function placement(how = {}) {
+  let group = how.group ?? ws.group ?? undefined;
+  if (how.side && group?.tabs.length) {
+    const i = ws.groups.indexOf(group);
+    group = ws.groups[i + 1] ?? ws.split(group, 'right') ?? ws.groups[i - 1] ?? group;
+  }
+  return { group, index: how.index, preview: !(how.keep || how.tab || how.side || how.group), focus: !!how.focus };
 }
-// Saves the editor; resolves true when it did. A save based on an older revision than the file asks first.
-async function commit(force = false) {
+// Opens a fragment in a tab, or shows the tab it is already open in (moving it where it was asked to go).
+async function openFragment(r, how = {}) {
+  const here = tabOf(r), k = key(r);
+  if (here) {
+    if (how.keep || how.tab) ws.keep(here);
+    if (how.group && here.group !== how.group) ws.move(here, how.group, how.index);
+    else if (how.side && here.group === ws.group && here.group.tabs.length > 1) ws.toNeighbour(here, 1);
+    else ws.activate(here);
+    return here;
+  }
+  const full = await api.note(r.vault, r.id), d = docTab({ ...full, vault: r.vault });
+  ws.open(d, placement(how));
+  if (keepNext === k) ws.keep(d);
+  keepNext = null;
+  status();
+  if (!inScope(r.vault)) await syncOutside();
+  await loadNeighbors(d);
+  return d;
+}
+// Saves a tab's text; resolves true when it did. A save based on an older revision than the file asks first.
+async function commit(d, force = false) {
   const before = phase; setPhase('saving');
   try {
-    const p = destination(), f = opened, title = $('title').value, body = editor.text();
+    const p = destination(d), f = d.opened, title = d.ui.title.value, body = d.editor.text();
     const note = await api.save(p, f
       ? { id: f.id, title, body, expected: force ? null : f.revision }
-      : { title, body, type: fresh.type, fields: fresh.fields, tags: fresh.tags });
+      : { title, body, type: d.fresh.type, fields: d.fresh.fields, tags: d.fresh.tags });
     if (note.conflict) {
       const choice = await api.conflict({ title: title || f.title });
-      if (choice === 'overwrite') return await commit(true);
-      if (choice === 'reload') { await reload(f); await loadNeighbors(); status('Reloaded the version saved outside parc.'); }
+      if (choice === 'overwrite') return await commit(d, true);
+      if (choice === 'reload') { await reload(d); await loadNeighbors(d); status('Reloaded the version saved outside parc.'); }
       else status('Not saved: this fragment changed outside parc. Save again to choose.');
       return false;
     }
-    load({ ...note, vault: p }); $('title').value = note.title;
-    status(note.warnings?.join('; ') || `Saved to ${name(p)}.`); rows = await collect(); await refilter(); list(); await loadNeighbors();
+    load(d, { ...note, vault: p }); d.ui.title.value = note.title; ws.update(d);
+    status(note.warnings?.join('; ') || `Saved to ${name(p)}.`); rows = await collect(); await refilter(); rowsChanged(); await loadNeighbors(d);
     return true;
   } finally { setPhase(before); }
 }
 async function save() {
-  if ($('save').hasAttribute('disabled') || mode !== 'capture') return;
-  await action(() => commit());
+  const d = cur();
+  if (!d || $('save').hasAttribute('disabled')) return;
+  await action(() => commit(d));
 }
-function newCapture(type, fields) { // fields: preset values, e.g. the status of the board column it was started from
+// A new capture opens as the current group's preview, or reuses a blank one there. `fields`: preset values,
+// e.g. the status of the board column it was started from.
+function newCapture(type, fields) {
   return action(async () => {
-    if (!await canLeave()) return;
-    reset();
-    if (type) setType(type);
-    if (fields && Object.keys(fields).length) { fresh.fields = { ...fresh.fields, ...fields }; meta(); }
-  }).then(() => { if (mode === 'capture' && !opened) $('title').focus(); });
+    const blank = t => t?.kind === 'doc' && !t.opened && !t.dirty && isEmpty(t);
+    let d = blank(tab) ? tab : ws.group?.tabs.find(blank);
+    if (d) { ws.activate(d); d.fresh = blankCapture(d); }
+    else { d = docTab(null); ws.open(d, { preview: true }); }
+    if (type) d.fresh.type = type;
+    if (fields && Object.keys(fields).length) d.fresh.fields = { ...fields };
+    meta(d); paint(); status();
+  }).then(() => { const d = cur(); if (d && !d.opened) d.ui.title.focus(); });
 }
-function copyLink() {
-  if (!opened) return;
-  const link = `[[${shortId(opened.id, rows.filter(r => r.vault === opened.vault))}]]`;
+function copyLink(d = cur()) {
+  if (!d?.opened) return;
+  const link = `[[${shortId(d.opened.id, rowsIn(d.opened.vault))}]]`;
   api.copyText(link).then(() => status(`Copied ${link}. Paste it into another fragment to link the two.`), status);
 }
-// Moving to the trash asks first, then offers Undo until the next message.
-function trashOpened() {
-  const f = opened;
+// Moving to the trash asks first and closes the fragment's tab, then offers Undo until the next message.
+function trashOpened(d = cur()) {
+  const f = d?.opened;
   if (!f) return;
   return action(async () => {
-    if (!await canLeave()) return;
+    if (!await canLeave(d)) return;
     const { deleted } = await api.remove(f.vault, f.id, f.title);
     if (!deleted) return;
-    rows = await collect(); await refilter(); reset();
+    for (const v of viewTabs()) if (v.view === 'history' && key(v.target) === key(f)) ws.remove(v); // History goes with it
+    ws.remove(d);
+    rows = await collect(); await refilter(); rowsChanged();
     status(`Moved “${f.title || 'Untitled'}” to the trash.`, { label: 'Undo', run: () => action(async () => {
-      if (!await canLeave()) return;
       const back = await api.untrash(f.vault, f.id);
-      rows = await collect(); await refilter(); reset({ ...back, vault: f.vault }); await loadNeighbors();
+      rows = await collect(); await refilter(); rowsChanged();
+      await openFragment({ vault: f.vault, id: back.id ?? f.id }, { keep: true });
       status(`Restored “${back.title || 'Untitled'}” from the trash.`);
     }) });
   });
 }
 
 // ── Changes made outside this window ──
-// The main process watches each vault's fragments/. Refreshing waits for an idle moment and never takes the
-// editor away: a clean open fragment reloads, an edited one only warns (its save will ask).
+// The main process watches each vault's fragments/. Refreshing waits for an idle moment and never takes a tab's
+// text away: a clean fragment reloads, an edited one only warns (its save will ask).
 let refreshing = false;
 async function flushChanges() {
   if (refreshing || phase !== 'idle' || !changedVaults.size) return;
@@ -853,24 +1145,26 @@ async function flushChanges() {
 }
 async function refreshVault(p) {
   const view = scope;
-  if (!view || view === p) {
+  if (inScope(p)) {
     const next = await collect();
-    if (scope === view) { rows = next; await refilter(); list(); renderTypeView(); if (mode === 'pulse') await renderPulse(); }
-  }
-  const f = opened;
-  if (!f || f.vault !== p) return;
+    if (scope === view) { rows = next; await refilter(); rowsChanged(); }
+  } else if (outside.has(p)) { outside.set(p, await listVault(p)); for (const d of docTabs()) d.editor.refresh(); }
+  for (const d of docTabs().filter(t => t.opened?.vault === p)) await refreshDoc(d);
+}
+async function refreshDoc(d) {
+  const f = d.opened, which = d === tab ? 'This fragment' : `“${f.title || 'Untitled'}”`;
   let latest;
   try { latest = await api.note(f.vault, f.id); } catch {
-    if (opened === f) status('This fragment was moved to the trash outside parc. Copy anything you need; saving it will fail.');
+    if (d.opened === f) status(`${which} was moved to the trash outside parc. Copy anything you need; saving it will fail.`);
     return;
   }
-  if (opened !== f || latest.revision === f.revision) return;
-  if (dirty || phase !== 'idle') { status('This fragment changed outside parc while you were editing. Saving will ask before overwriting.'); return; }
-  load({ ...latest, vault: f.vault }); paint(); list();
-  await loadNeighbors();
-  status('Reloaded: this fragment changed outside parc.');
+  if (d.opened !== f || latest.revision === f.revision) return;
+  if (d.dirty || phase !== 'idle') { status(`${which} changed outside parc while you were editing. Saving will ask before overwriting.`); return; }
+  load(d, { ...latest, vault: f.vault }); paint(); list();
+  await loadNeighbors(d);
+  status(`Reloaded: ${which === 'This fragment' ? 'this fragment' : which} changed outside parc.`);
 }
-api.onVaultChanged(p => { changedVaults.add(p); flushChanges(); });
+api.onVaultChanged(p => { changedVaults.add(p); flushChanges(); for (const d of docTabs()) d.related.refresh(); });
 
 // ── Graphs ──
 const TYPE_ORDER = ['decision', 'risk', 'todo', 'idea', 'note'];
@@ -888,7 +1182,7 @@ function graph(seed, items) {
     const b = el('button', center ? 'node center' : `node ${anchor}`.trim()); b.type = 'button';
     b.style.setProperty('--x', x); b.style.setProperty('--y', y);
     b.append(typeIcon(r.type), el('span', '', r.title || 'Untitled')); b.title = r.title || 'Untitled';
-    b.onclick = e => openRow(r, e.detail === 0);
+    b.onclick = e => openRow(r, clickHow(e));
     return b;
   };
   // One neighbour sits beside the centre, which shifts left to balance it. Up to six go round an
@@ -910,22 +1204,23 @@ function graph(seed, items) {
   box.append(svg, node(seed, cx, 50, true), ...placed);
   return box;
 }
-// The open fragment's Graph section: what links to it and what it links to, as saved.
-async function loadNeighbors() {
-  const f = opened, section = $('docGraph');
+// A fragment tab's Graph section: what links to it and what it links to, as saved.
+async function loadNeighbors(d) {
+  const f = d.opened, section = d.ui.docGraph;
   if (!f) { section.hidden = true; return; }
   const items = (await api.list(f.vault, `is:all linked:${f.id}`)).map(r => ({ ...r, vault: f.vault }));
-  if (opened !== f) return;
+  if (d.opened !== f) return;
   section.hidden = false;
-  $('docGraphNote').textContent = items.length ? `${items.length} linked, as saved` : '';
-  if (items.length) { $('docGraphBody').replaceChildren(graph(f, items)); return; }
-  const prefix = shortId(f.id, rows.filter(r => r.vault === f.vault)), hint = el('p', 'graph-none');
+  d.ui.docGraphNote.textContent = items.length ? `${items.length} linked, as saved` : '';
+  if (items.length) { d.ui.docGraphBody.replaceChildren(graph(f, items)); return; }
+  const prefix = shortId(f.id, rowsIn(f.vault)), hint = el('p', 'graph-none');
   hint.append('No links yet. Type ', el('code', '', '[['), ' to link another fragment from here, or mention ', el('code', '', `[[${prefix}]]`), ' in one.');
-  $('docGraphBody').replaceChildren(hint);
+  d.ui.docGraphBody.replaceChildren(hint);
 }
 
 // ── History ──
-// Versions newest first, each compared with the current one: what restoring it would bring back.
+// A view of its own, about one fragment: versions newest first, each compared with the current one, i.e. what
+// restoring it would bring back.
 const SAME = new Set(['id', 'body', 'revision', 'created_at', 'updated_at', 'attachments', 'links', 'vault', 'warnings']);
 const show = v => v == null || v === '' ? '—' : Array.isArray(v) ? v.join(', ') || '—' : String(v);
 function differences(version, current) {
@@ -935,22 +1230,30 @@ function differences(version, current) {
   const lines = diffLines((current.body || '').replace(/^\n/, ''), (version.body || '').replace(/^\n/, ''));
   return { fields, lines, ...stat(lines) };
 }
-function showHistory() { if (opened) action(() => navigate('history')); }
-async function historyView() {
-  const f = opened, out = $('results'), intro = $('intro');
-  if (!f) { intro.textContent = ''; out.append(emptyState('Open a fragment first', 'History belongs to a saved fragment.')); return; }
-  intro.textContent = `Earlier versions of “${f.title || 'Untitled'}”, newest first. Every save keeps the version it replaced.`;
-  const [listing, current] = await Promise.all([api.history(f.vault, f.id), api.note(f.vault, f.id)]);
+function showHistory(d = cur()) {
+  const f = d?.opened;
+  if (f) action(() => openView('history', { target: { vault: f.vault, id: f.id, title: f.title } }));
+}
+async function historyView(v) {
+  const f = v.target, out = v.ui.results, intro = v.ui.intro;
+  let listing, current;
+  try { [listing, current] = await Promise.all([api.history(f.vault, f.id), api.note(f.vault, f.id)]); } catch {
+    intro.textContent = '';
+    out.replaceChildren(emptyState(`“${f.title || 'Untitled'}” is gone`, 'It may have been moved to the trash. Its versions come back with it.'));
+    return;
+  }
+  if (current.title !== f.title) { v.target = { ...f, title: current.title }; v.ui.toolTitle.textContent = viewLabel(v); ws.update(v); }
+  intro.textContent = `Earlier versions of “${current.title || 'Untitled'}”, newest first. Every save keeps the version it replaced.`;
   const versions = listing.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 60);
-  if (!versions.length) { out.append(emptyState('No earlier versions yet', 'Each save keeps the version it replaces, so they appear here after the next change.')); return; }
-  const loaded = (await Promise.all(versions.map(v => api.version(f.vault, f.id, v.timestamp).then(frag => ({ ...v, frag }), () => null)))).filter(Boolean);
+  if (!versions.length) { out.replaceChildren(emptyState('No earlier versions yet', 'Each save keeps the version it replaces, so they appear here after the next change.')); return; }
+  const loaded = (await Promise.all(versions.map(x => api.version(f.vault, f.id, x.timestamp).then(frag => ({ ...x, frag }), () => null)))).filter(Boolean);
   const wrap = el('div', 'history'), choices = el('ul', 'versions'), view = el('div', 'version-view');
   choices.setAttribute('role', 'listbox'); choices.setAttribute('aria-label', 'Versions');
-  const buttons = loaded.map((v, i) => {
-    const d = differences(v.frag, current), li = el('li'), b = el('button', 'version'); b.type = 'button';
+  const buttons = loaded.map((ver, i) => {
+    const diff = differences(ver.frag, current), li = el('li'), b = el('button', 'version'); b.type = 'button';
     b.setAttribute('role', 'option');
-    const when = new Date(v.frag.updated_at);
-    const summary = [d.added || d.removed ? `+${d.added} −${d.removed}` : '', ...d.fields.map(capital)].filter(Boolean).join(', ') || 'Same as now';
+    const when = new Date(ver.frag.updated_at);
+    const summary = [diff.added || diff.removed ? `+${diff.added} −${diff.removed}` : '', ...diff.fields.map(capital)].filter(Boolean).join(', ') || 'Same as now';
     b.append(el('span', 'version-when', stamp.format(when)), el('span', 'version-what', summary));
     b.onclick = () => pick(i);
     li.append(b); choices.append(li);
@@ -964,37 +1267,42 @@ async function historyView() {
     buttons.forEach((b, j) => b.setAttribute('aria-selected', String(i === j)));
     view.replaceChildren(compare(loaded[i], current, f));
   }
-  wrap.append(choices, view); out.append(wrap);
+  wrap.append(choices, view); out.replaceChildren(wrap);
   pick(0);
 }
-function compare(v, current, f) {
-  const box = el('div', 'compare'), d = differences(v.frag, current), when = stamp.format(new Date(v.frag.updated_at));
+// Restoring a version asks about the fragment's unsaved text first, then shows the fragment as restored.
+function compare(ver, current, f) {
+  const box = el('div', 'compare'), diff = differences(ver.frag, current), when = stamp.format(new Date(ver.frag.updated_at));
   const head = el('div', 'compare-head'), restore = document.createElement('aihio-button');
   restore.setAttribute('variant', 'outline'); restore.setAttribute('size', 'sm'); restore.append(icon('history'), 'Restore this version');
   restore.onclick = () => action(async () => {
-    if (!await canLeave()) return;
-    await api.restoreVersion(f.vault, f.id, v.timestamp);
+    const d = tabOf(f);
+    if (d && !await canLeave(d)) return;
+    await api.restoreVersion(f.vault, f.id, ver.timestamp);
     const full = await api.note(f.vault, f.id);
-    rows = await collect(); await refilter(); reset({ ...full, vault: f.vault }); await loadNeighbors();
+    rows = await collect(); await refilter(); rowsChanged();
+    for (const v of viewTabs()) if (v.view === 'history' && key(v.target) === key(f)) v.stale = true;
+    if (d?.group) { load(d, { ...full, vault: f.vault }); ws.activate(d); await loadNeighbors(d); }
+    else await openFragment(f);
     status(`Restored the version saved ${when}. The one it replaced is in History.`);
   });
   head.append(el('h2', '', `Saved ${when}`), restore);
   box.append(head);
-  if (!d.fields.length && !d.added && !d.removed) { box.append(el('p', 'compare-same', 'This version matches the current one.')); return box; }
-  if (d.fields.length) {
+  if (!diff.fields.length && !diff.added && !diff.removed) { box.append(el('p', 'compare-same', 'This version matches the current one.')); return box; }
+  if (diff.fields.length) {
     const table = el('table', 'compare-fields'), thead = el('thead'), tr = el('tr');
     tr.append(el('th', '', 'Field'), el('th', '', 'Now'), el('th', '', 'This version'));
     for (const th of tr.children) th.scope = 'col';
     thead.append(tr); table.append(thead);
     const tbody = el('tbody');
-    for (const k of d.fields) { const r = el('tr'), th = el('th', '', capital(k)); th.scope = 'row'; r.append(th, el('td', '', show(current[k])), el('td', '', show(v.frag[k]))); tbody.append(r); }
+    for (const k of diff.fields) { const r = el('tr'), th = el('th', '', capital(k)); th.scope = 'row'; r.append(th, el('td', '', show(current[k])), el('td', '', show(ver.frag[k]))); tbody.append(r); }
     table.append(tbody); box.append(table);
   }
-  if (d.added || d.removed) {
+  if (diff.added || diff.removed) {
     const legend = el('p', 'diff-legend');
     legend.append(el('span', 'diff-key del', '− Only now'), el('span', 'diff-key ins', '+ Only in this version'));
     const pre = el('div', 'diff'); pre.setAttribute('role', 'region'); pre.setAttribute('aria-label', 'Text differences'); pre.tabIndex = 0;
-    for (const line of foldDiff(d.lines)) {
+    for (const line of foldDiff(diff.lines)) {
       if (line.op === '…') { pre.append(el('div', 'diff-fold', `${line.count} unchanged ${line.count === 1 ? 'line' : 'lines'}`)); continue; }
       const row = el('div', `diff-line ${line.op === '+' ? 'ins' : line.op === '-' ? 'del' : ''}`.trim());
       row.append(el('span', 'diff-op', line.op === ' ' ? '' : line.op === '-' ? '−' : '+'), el('span', 'diff-text', line.text || ' '));
@@ -1011,35 +1319,36 @@ function compare(v, current, f) {
 // viewer, like the sidebar's grouping. Archived fragments stay out, as they do in default searches.
 const typeViews = (() => { const saved = remember.get(TYPE_VIEWS); return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}; })();
 const enumValues = (type, field) => schemaFor(scope, type)?.fields.find(f => f.name === field && f.kind === 'enum')?.values || [];
-function typeContext(type) {
+function typeContext(v) {
+  const type = v.viewType;
   const status = schemaFor(scope, type)?.fields.find(f => f.name === 'status' && f.kind === 'enum' && f.values?.length) || null;
   const likelihood = enumValues(type, 'likelihood'), impact = enumValues(type, 'impact');
   const axes = likelihood.length && impact.length ? { likelihood, impact } : null;
   const lenses = [...(axes ? [['matrix', 'Matrix', 'matrix']] : []), ...(status ? [['board', 'Board', 'board']] : [])];
-  const pref = typeViews[type] || {}, prefer = change => { typeViews[type] = { ...pref, ...change }; remember.set(TYPE_VIEWS, typeViews); renderTypeView(); };
+  const pref = typeViews[type] || {}, prefer = change => { typeViews[type] = { ...pref, ...change }; remember.set(TYPE_VIEWS, typeViews); refreshTypeViews(null, type); };
   return {
     type, plural: plural(type), items: rows.filter(r => r.type === type && !r.archived),
     status: status && { values: status.values, categories: status.categories || {} }, axes, lenses,
-    lens: lenses.some(([v]) => v === pref.lens) ? pref.lens : lenses[0]?.[0] || 'cards', settled: pref.settled === true,
-    many: !scope, movable: true, current: opened ? key(opened) : null,
+    lens: lenses.some(([x]) => x === pref.lens) ? pref.lens : lenses[0]?.[0] || 'cards', settled: pref.settled === true,
+    many: !scope, movable: true, current: recentDoc?.opened ? key(recentDoc.opened) : null,
     key, order: ordered, tone: r => tone(r.vault, r.type, r.status), values: field => enumValues(type, field),
     overdue: r => overdue({ ...r, due: r.fields?.due }), dayLabel, time: r => timeOf(r, listView.sort === 'created'), hue, vaultName: name,
-    open: openRow, move: moveFragment,
+    open: (r, e) => openRow(r, clickHow(e)), move: moveFragment,
     create: enabledTypes(scope).some(s => s.name === type) ? fields => newCapture(type, fields) : null,
-    setLens: lens => prefer({ lens }), setSettled: settled => prefer({ settled }), rerender: () => renderTypeView()
+    setLens: lens => prefer({ lens }), setSettled: settled => prefer({ settled }), rerender: () => renderTypeView(v)
   };
 }
-function openTypeView(type) { return action(() => { viewType = type; return navigate('type'); }); }
+function openTypeView(type, how = {}) { return action(() => openView('type', { type, how })); }
 // Re-rendered in place when its fragments change, keeping focus on the same card (or control) and the board's scroll.
-function renderTypeView(focus) {
-  if (mode !== 'type') return;
-  if (dragging()) { setTimeout(() => renderTypeView(focus), 200); return; } // never pull the card out from under the pointer
-  const ctx = typeContext(viewType), out = $('results'), where = scope ? name(scope) : 'your opened vaults', active = document.activeElement;
+function renderTypeView(v, focus) {
+  if (!v.group) return;
+  if (dragging()) { setTimeout(() => renderTypeView(v, focus), 200); return; } // never pull the card out from under the pointer
+  const ctx = typeContext(v), out = v.ui.results, where = scope ? name(scope) : 'your opened vaults', active = document.activeElement;
   focus ??= out.contains(active) ? active.closest('[data-key]') ? `[data-key="${CSS.escape(active.closest('[data-key]').dataset.key)}"]`
     : active.dataset.lens ? `[data-lens="${active.dataset.lens}"]` : active.closest('.view-bar .chip') ? '.view-bar .chip' : null : null;
   const x = out.querySelector('.board')?.scrollLeft || 0, kind = ctx.type, many = ctx.plural.toLowerCase();
-  $('toolTitle').textContent = ctx.plural;
-  $('intro').textContent = ctx.lens === 'matrix'
+  v.ui.toolTitle.textContent = ctx.plural;
+  v.ui.intro.textContent = ctx.lens === 'matrix'
     ? `${ctx.settled ? 'All' : 'Open'} ${many} in ${where} by likelihood and impact; the most serious sit top right. Drag one to another cell (or press Shift with an arrow) to reassess it. Select one to open it.`
     : ctx.lens === 'board' ? `Every ${kind} in ${where} by status. Drag a card to another column (or press Shift with ← or →) to change its status. Select one to open it.`
       : `Every ${kind} in ${where}. Select one to open it.`;
@@ -1047,6 +1356,14 @@ function renderTypeView(focus) {
   const board = out.querySelector('.board');
   if (board) board.scrollLeft = x;
   if (focus) out.querySelector(focus)?.focus({ preventScroll: true });
+}
+// Every type view (of `type`, if given) redraws: those on screen at once, keeping focus on `focus` in the current
+// tab; the others when next shown.
+function refreshTypeViews(focus, type) {
+  for (const v of viewTabs()) {
+    if (v.view !== 'type' || (type && v.viewType !== type)) continue;
+    if (ws.shown(v)) renderTypeView(v, v === tab ? focus : undefined); else v.stale = true;
+  }
 }
 
 // ── Moving a fragment on a board or the matrix ──
@@ -1065,7 +1382,7 @@ function moveFragment(r, fields) {
   const was = Object.fromEntries(Object.keys(fields).map(k => [k, (k === 'status' ? r.status : r.fields?.[k]) ?? null]));
   if (Object.keys(fields).every(k => was[k] === (fields[k] ?? null))) return;
   for (const row of [...rows, ...(filtered || [])]) if (key(row) === key(r)) patchRow(row, fields);
-  list(); renderTypeView(`[data-key="${CSS.escape(key(r))}"]`);
+  list(); refreshTypeViews(`[data-key="${CSS.escape(key(r))}"]`);
   moves.push({ vault: r.vault, id: r.id, title: r.title, fields, was });
   drainMoves();
 }
@@ -1085,13 +1402,14 @@ async function drainMoves() {
         while (moves.length) {
           const m = moves[0], note = await api.update(m.vault, m.id, { fields: m.fields }, null);
           moves.shift(); last = m;
-          // The open fragment follows the move, unless its text has edits: then saving them still asks first.
-          if (opened?.vault === m.vault && opened.id === m.id && !dirty) { opened = { ...note, vault: m.vault }; meta(); }
+          // A tab on the fragment follows the move, unless its text has edits: then saving them still asks first.
+          const d = tabOf(m);
+          if (d && !d.dirty) { d.opened = { ...note, vault: m.vault }; meta(d); ws.update(d); }
           if (note.warnings?.length) status(note.warnings.join('; '));
         }
       } finally {
         moves.length = 0; // after a failed save, what the vault holds is shown again
-        rows = await collect(); await refilter(); list(); renderTypeView();
+        rows = await collect(); await refilter(); list(); refreshTypeViews();
       }
       const m = last;
       status(movedMessage(m), { label: 'Undo', run: () => { const r = rows.find(x => x.vault === m.vault && x.id === m.id); if (r) moveFragment(r, m.was); } });
@@ -1100,7 +1418,7 @@ async function drainMoves() {
   if (moves.length) drainMoves();
 }
 
-// ── Tool views ──
+// ── Views ──
 function section(text, aside) { const h = el('h2', 'section-label', text); if (aside) h.append(el('small', '', aside)); return h; }
 function emptyState(title, body, code) {
   const p = el('div', 'empty'); p.append(el('strong', '', title), body);
@@ -1108,13 +1426,14 @@ function emptyState(title, body, code) {
   return p;
 }
 // Runs until the results match what is in the box, so typing fast never leaves stale results behind.
-async function search() {
-  const out = $('results');
+async function search(v) {
+  const out = v.ui.results, input = v.ui.query;
   let q, found, failure = null;
   do {
-    q = $('query').value.trim();
+    q = input.value.trim();
     try { found = await collect(q); failure = null; } catch (err) { failure = err; }
-  } while ($('query').value.trim() !== q);
+  } while (input.value.trim() !== q);
+  ws.update(v);
   if (failure) {
     // A query the DSL cannot parse is answered where the results would be, not only in the status bar.
     const alert = document.createElement('aihio-alert'), text = cleanError(failure).replace(/^parse error:\s*/i, '');
@@ -1127,22 +1446,21 @@ async function search() {
   if (!found.length) { out.append(q ? emptyState(`Nothing matches “${q}”`, 'Try fewer words, or drop a filter.') : emptyState('No fragments yet', 'Captures you save will be searchable here.')); return; }
   out.append(section(q ? `${found.length} ${found.length === 1 ? 'match' : 'matches'}` : 'Every fragment', q ? '' : 'Newest first'), rowList(found, { withSnippet: true }));
 }
-function searchFor(query) {
-  return action(async () => { $('query').value = query; await navigate('search'); if (!query) await search(); });
-}
-function hints() {
+// A search for `query`; with none, the list of every fragment.
+function searchFor(query) { return action(() => openView('search', { query, everything: !query })); }
+function hints(v) {
   const tagCounts = new Map();
   for (const r of rows) for (const t of r.tags || []) tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
   const top = [...tagCounts].sort((a, b) => b[1] - a[1])[0]?.[0];
   const tokens = ['type:decision', 'status:open', 'due:this-week', 'updated:this-week', 'has:links', top && `#${top}`].filter(Boolean);
-  const box = $('hints');
+  const box = v.ui.hints;
   box.querySelectorAll('.hint').forEach(n => n.remove());
   box.append(...tokens.map(t => {
-    const b = el('button', 'hint', t); b.type = 'button'; b.setAttribute('aria-describedby', 'hintsLabel');
+    const b = el('button', 'hint', t); b.type = 'button'; b.setAttribute('aria-describedby', v.ui.hintsLabel.id);
     b.onclick = () => {
-      const q = $('query').value.trim();
-      if (!q.split(/\s+/).includes(t)) $('query').value = q ? `${q} ${t}` : t;
-      action(search);
+      const q = v.ui.query.value.trim();
+      if (!q.split(/\s+/).includes(t)) v.ui.query.value = q ? `${q} ${t}` : t;
+      ws.keep(v); action(() => search(v));
     };
     return b;
   }));
@@ -1160,8 +1478,7 @@ function highlight(json) {
   return pre;
 }
 // Each count opens the search that lists what it counts.
-function pulse(overdueCount) {
-  const out = $('results');
+function pulse(out, overdueCount) {
   const openOf = type => rows.filter(r => r.type === type && !settled(r)).length;
   const known = type => typesIn(scope).some(s => s.name === type) || rows.some(r => r.type === type);
   const figures = el('div', 'figures');
@@ -1171,7 +1488,7 @@ function pulse(overdueCount) {
     if (alert) b.dataset.tone = 'alert';
     b.append(el('span', 'figure-label', label), el('span', 'figure-value', value.toLocaleString()));
     b.title = type ? `Open ${plural(type)}` : query ? `Search ${query}` : 'List every fragment';
-    b.onclick = () => type ? openTypeView(type) : searchFor(query);
+    b.onclick = e => type ? openTypeView(type, clickHow(e)) : searchFor(query);
     return b;
   };
   figures.append(figure('Fragments', rows.length, ''));
@@ -1183,7 +1500,7 @@ function pulse(overdueCount) {
   const meters = el('dl', 'meters');
   for (const [type, count] of [...byType].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))) {
     const share = count / rows.length * 100, dt = el('dt'), link = el('button', 'meter-link'), bar = el('dd', 'meter'), fill = el('i');
-    link.type = 'button'; link.title = `Open ${plural(type)}`; link.onclick = () => openTypeView(type);
+    link.type = 'button'; link.title = `Open ${plural(type)}`; link.onclick = e => openTypeView(type, clickHow(e));
     link.append(typeIcon(type), typeLabel(type)); dt.append(link);
     fill.style.setProperty('--v', share.toFixed(1)); bar.append(fill);
     bar.setAttribute('aria-hidden', 'true');
@@ -1216,46 +1533,75 @@ function pulse(overdueCount) {
     section('Recently edited'), rowList(rows.slice(0, 6)));
 }
 // Pulse is home: drawn on arrival, and again in place when the vault changes (keeping focus on the same control).
-async function renderPulse() {
-  const out = $('results'), where = name(scope), buttons = () => [...out.querySelectorAll('button')], at = buttons().indexOf(document.activeElement);
-  $('intro').textContent = `Where ${scope ? where : 'your opened vaults'} stand${scope ? 's' : ''} today. Select a count to see what it counts.`;
+async function renderPulse(v) {
+  const out = v.ui.results, where = name(scope), buttons = () => [...out.querySelectorAll('button')], at = buttons().indexOf(document.activeElement);
+  v.ui.intro.textContent = `Where ${scope ? where : 'your opened vaults'} stand${scope ? 's' : ''} today. Select a count to see what it counts.`;
   const late = rows.length ? (await collect('due:overdue')).filter(r => !settled(r)).length : 0;
-  if (mode !== 'pulse') return;
+  if (!v.group) return;
   out.replaceChildren();
   if (!rows.length) { out.append(emptyState('Nothing to measure yet', 'Capture a few fragments and their counts will show here.')); return; }
-  pulse(late);
+  pulse(out, late);
   if (at >= 0) buttons()[at]?.focus({ preventScroll: true });
 }
-async function navigate(view) {
-  if (view === 'capture') { if (await canLeave()) { reset(); $('title').focus(); } return; }
-  if (view === 'history' && !opened) return;
-  if (view === 'type' && !viewType) view = 'pulse';
-  mode = view; queryAssist.hide(); paint(); list(); status();
-  const where = name(scope), out = $('results');
-  $('tool').dataset.view = view;
-  $('toolTitle').textContent = view === 'history' ? `History of ${opened.title || 'Untitled'}` : viewLabel();
-  $('searchForm').hidden = view !== 'search'; out.replaceChildren();
-  const intro = $('intro');
+// Views follow the list. Those on screen redraw at once, the others when next shown: Pulse and the type views
+// always; the rest (search, graph, agent) when the scope changed (`all`). History waits until it is shown again.
+function refreshViews(all = false) {
+  for (const v of viewTabs()) {
+    if (v.view === 'type') continue;
+    const live = ['pulse'].includes(v.view) || (all && v.view !== 'history');
+    if (!live) { if (v.view === 'history') v.stale = true; continue; }
+    if (ws.shown(v)) draw(v); else v.stale = true;
+  }
+  refreshTypeViews();
+}
+const draw = v => { v.rendering = renderView(v).catch(status); return v.rendering; };
+// Opens a view in the current group: its tab there if it has one (a type's view per type, History per fragment),
+// redrawn with what is in the vault now; otherwise a new tab, the group's preview unless asked to stay.
+async function openView(view, { type = null, target = null, query, everything = false, how = {} } = {}) {
+  if (view === 'type' && !type) view = 'pulse';
+  const same = t => t.kind === 'view' && t.view === view && (view !== 'type' || t.viewType === type) && (view !== 'history' || key(t.target) === key(target));
+  let v = how.side || how.group ? null : (ws.group?.tabs || []).find(same);
+  if (v) {
+    if (query != null) v.ui.query.value = query;
+    v.everything = everything; v.stale = true;
+    if (how.keep || how.tab) ws.keep(v);
+    ws.activate(v, { focus: true });
+  } else {
+    v = viewTab(view, { type, target, query: query ?? '' });
+    v.everything = everything;
+    ws.open(v, { ...placement(how), focus: true });
+  }
+  status();
+  await v.rendering;
+}
+async function renderView(v) {
+  v.stale = false;
+  const { ui } = v, out = ui.results, intro = ui.intro, where = name(scope), view = v.view;
+  ui.toolTitle.textContent = viewLabel(v);
+  ws.update(v);
   if (view === 'search') {
     intro.textContent = `Titles, bodies and fields in ${scope ? where : 'every opened vault'}. Combine words with filters; every term must match. Tab completes filters.`;
-    hints(); $('query').focus(); if ($('query').value.trim()) await search(); return;
+    hints(v);
+    if (ui.query.value.trim() || v.everything) await search(v); else out.replaceChildren();
+    return;
   }
-  if (view === 'history') { await historyView(); return; }
-  if (view === 'type') { renderTypeView(); $('scroller').scrollTop = 0; return; }
-  if (view === 'pulse') { await renderPulse(); return; }
+  if (view === 'history') { await historyView(v); return; }
+  if (view === 'type') { renderTypeView(v); return; }
+  if (view === 'pulse') { await renderPulse(v); return; }
+  out.replaceChildren();
   if (view === 'graph') {
-    intro.textContent = `Every fragment in ${scope ? where : 'your opened vaults'} and the links between them. Select one to open it; scroll to zoom, drag to pan.`;
+    intro.textContent = `Every fragment in ${scope ? where : 'your opened vaults'} and the links between them. Select one to open it (${mod}+click: beside); scroll to zoom, drag to pan.`;
     if (!rows.length) { out.append(emptyState('Nothing to draw yet', 'Capture a few fragments and link them with [[ to see them here.')); return; }
-    const paths = scope ? [scope] : vaults.map(v => v.path);
+    const paths = scope ? [scope] : vaults.map(x => x.path);
     const edges = (await Promise.all(paths.map(async p => (await api.links(p)).map(e => [key({ vault: p, id: e.source }), key({ vault: p, id: e.target })])))).flat();
-    out.append(vaultGraph(rows, edges, {
-      key, current: opened ? key(opened) : null, settled, open: r => openRow(r, true),
+    out.replaceChildren(vaultGraph(rows, edges, {
+      key, current: recentDoc?.opened ? key(recentDoc.opened) : null, settled, open: (r, e) => openRow(r, clickHow(e)),
       label: r => r.title || 'Untitled', describe: r => [typeLabel(r.type), r.status && capital(r.status), !scope && name(r.vault)].filter(Boolean).join(', ')
     }));
     return;
   }
-  const seed = opened || rows[0];
-  if (!seed) { intro.textContent = 'The context an agent can read.'; out.append(emptyState('Capture a fragment first', 'This view works from the open fragment, or the most recent one.')); return; }
+  const seed = recentDoc?.opened || rows[0];
+  if (!seed) { intro.textContent = 'The context an agent can read.'; out.append(emptyState('Capture a fragment first', 'This view works from the fragment you used last, or the most recent one.')); return; }
   const note = await api.note(seed.vault, seed.id);
   intro.textContent = 'Exactly what an agent would read from this fragment. No model is connected, and nothing leaves this device.';
   const card = document.createElement('aihio-card'); card.className = 'context-card';
@@ -1264,7 +1610,7 @@ async function navigate(view) {
   desc.textContent = `Saved ${typeLabel(note.type).toLowerCase()} in ${name(seed.vault)}, ${stamp.format(new Date(note.updated_at))}. Unsaved edits are not included.`;
   header.append(title, desc);
   content.append(highlight(JSON.stringify({ vault: name(seed.vault), id: note.id, type: note.type, title: note.title, body: (note.body || '').replace(/^\n/, ''), links: note.links }, null, 2)));
-  card.append(header, content); out.append(card);
+  card.append(header, content); out.replaceChildren(card);
 }
 
 // ── Settings ──
@@ -1433,20 +1779,23 @@ $('settingsSave').addEventListener('click', async () => {
 
 // ── Vault settings: types, their fields and statuses (vaultsettings.js) ──
 // Kept in the vault itself. After a change, the vault's types and rows reload; a type change may have moved
-// fragments to renamed statuses, so the open fragment reloads too unless it has unsaved edits.
+// fragments to renamed statuses, so its open fragments reload too unless they have unsaved edits.
 async function reloadVault(p) {
   await loadSchemas([p]);
-  if (!scope || scope === p) { rows = await collect(); await refilter(); }
-  if (opened?.vault === p && !dirty) { try { const full = await api.note(p, opened.id); load({ ...full, vault: p }); } catch { /* moved away: left as it is */ } }
-  if (!opened && fresh && !dirty && !enabledTypes(destination()).some(s => s.name === fresh.type)) fresh = { ...blankCapture(), tags: fresh.tags };
-  options(); meta(); paint(); list(); renderTypeView();
+  if (inScope(p)) { rows = await collect(); await refilter(); }
+  for (const d of docTabs()) {
+    if (d.opened?.vault === p && !d.dirty) { try { const full = await api.note(p, d.opened.id); load(d, { ...full, vault: p }); } catch { /* moved away: left as it is */ } }
+    if (!d.opened && d.fresh && !d.dirty && !enabledTypes(destination(d)).some(s => s.name === d.fresh.type)) d.fresh = { ...blankCapture(d), tags: d.fresh.tags };
+    meta(d); ws.update(d);
+  }
+  options(); paint(); rowsChanged();
 }
 const vaultPanel = vaultSettings({
   api,
   vaults: () => vaults,
   schemasOf: p => schemas.get(p),
   async counts(p) {
-    const list = !scope || scope === p ? rows.filter(r => r.vault === p) : await api.list(p, '');
+    const list = inScope(p) ? rows.filter(r => r.vault === p) : await api.list(p, '');
     const n = new Map(); for (const r of list) n.set(r.type, (n.get(r.type) || 0) + 1);
     return n;
   },
@@ -1454,7 +1803,7 @@ const vaultPanel = vaultSettings({
   notify: message => status(message)
 });
 async function openVaultSettings() {
-  const target = opened?.vault || scope || vaults[0]?.path;
+  const target = cur()?.opened?.vault || scope || vaults[0]?.path;
   if (!schemas.has(target)) await loadSchemas([target]);
   return vaultPanel.open(target).catch(status);
 }
@@ -1463,29 +1812,42 @@ $('vaultSettingsLink').addEventListener('click', () => { $('settings').close(); 
 // ── Go to… (Ctrl+K) ──
 function commands() {
   const out = [], add = (label, run, extra = {}) => out.push({ label, run, ...extra });
-  const startAs = defaultType(scope);
+  const startAs = defaultType(scope), d = cur();
   add('New capture', () => newCapture(), { icon: 'plus', keys: `${mod} N`, keywords: `${startAs} create` });
   for (const s of enabledTypes(scope)) if (s.name !== startAs) add(`New ${s.name}`, () => newCapture(s.name), { glyph: typeIcon(s.name), keywords: 'create capture' });
-  add('Search', () => action(() => navigate('search')), { icon: 'search', keys: `${mod} F` });
+  add('Search', () => action(() => openView('search')), { icon: 'search', keys: `${mod} F` });
   add('Search inside fragments', () => goTo.open('/'), { icon: 'search', keys: `${mod} Shift F`, keywords: 'grep text find lines body content' });
-  add('Graph of the vault', () => action(() => navigate('graph')), { icon: 'graph', keys: 'G', keywords: 'links' });
-  add('Pulse', () => action(() => navigate('pulse')), { icon: 'pulse', keys: 'P', keywords: 'stats counts home' });
+  add('Graph of the vault', () => action(() => openView('graph')), { icon: 'graph', keys: 'G', keywords: 'links' });
+  add('Pulse', () => action(() => openView('pulse')), { icon: 'pulse', keys: 'P', keywords: 'stats counts home' });
   // Each type's own view, for the types in scope that are on or that fragments still use.
   for (const s of typesIn(scope)) {
     if (s.enabled === false && !rows.some(r => r.type === s.name)) continue;
-    const lenses = typeContext(s.name).lenses.map(([, label]) => label.toLowerCase());
+    const lenses = typeContext({ viewType: s.name }).lenses.map(([, label]) => label.toLowerCase());
     add(plural(s.name), () => openTypeView(s.name), { glyph: typeIcon(s.name), keywords: `view type ${lenses.join(' ')} ${lenses.includes('board') ? 'kanban columns' : 'cards'}` });
   }
-  add('Agent context', () => action(() => navigate('agent')), { icon: 'agent', keys: 'A' });
-  if (dirty && mode === 'capture') add('Save', save, { icon: 'check', keys: `${mod} S` });
-  if (opened) {
-    const t = schemaFor(opened.vault, opened.type)?.toggle;
-    if (t) { const next = opened[t.field] === t.on ? t.off : t.on; add(`Mark ${next}`, toggleField, { icon: 'check', keys: 'T', keywords: t.field }); }
-    add('History of this fragment', showHistory, { icon: 'history', keywords: 'versions restore' });
-    add('Copy link to this fragment', copyLink, { icon: 'copy', keywords: 'wiki id' });
-    add(opened.archived ? 'Unarchive this fragment' : 'Archive this fragment', toggleArchive, { icon: 'archive' });
-    add('Move this fragment to the trash', trashOpened, { icon: 'trash', keywords: 'delete remove' });
+  add('Agent context', () => action(() => openView('agent')), { icon: 'agent', keys: 'A' });
+  if (d?.dirty) add('Save', save, { icon: 'check', keys: `${mod} S` });
+  if (d?.opened) {
+    const t = schemaFor(d.opened.vault, d.opened.type)?.toggle;
+    if (t) { const next = d.opened[t.field] === t.on ? t.off : t.on; add(`Mark ${next}`, () => toggleField(d), { icon: 'check', keys: 'T', keywords: t.field }); }
+    add('History of this fragment', () => showHistory(d), { icon: 'history', keywords: 'versions restore' });
+    add('Copy link to this fragment', () => copyLink(d), { icon: 'copy', keywords: 'wiki id' });
+    add(d.opened.archived ? 'Unarchive this fragment' : 'Archive this fragment', () => toggleArchive(d), { icon: 'archive' });
+    add('Move this fragment to the trash', () => trashOpened(d), { icon: 'trash', keywords: 'delete remove' });
   }
+  // Tabs and groups.
+  const g = ws.group, tabWords = { keywords: 'tab tabs editor' };
+  if (tab) {
+    add('Close tab', () => closeTab(tab), { icon: 'x', keys: `${mod} W`, ...tabWords });
+    if (tab.preview) add('Keep this tab open', () => ws.keep(tab), { icon: 'check', keywords: 'tab pin preview' });
+    if (g.tabs.length > 1) add('Close other tabs', () => ws.closeAll(g.tabs.filter(x => x !== tab)), { icon: 'x', ...tabWords });
+    const i = ws.groups.indexOf(g), alone = g.tabs.length === 1;
+    if (ws.groups[i + 1] || !alone) add(ws.groups[i + 1] ? 'Move tab to the right group' : 'Move tab to a new group on the right', () => ws.toNeighbour(tab, 1), { icon: 'split', keys: `${mod} Alt →`, keywords: 'tab split side beside' });
+    if (ws.groups[i - 1] || !alone) add(ws.groups[i - 1] ? 'Move tab to the left group' : 'Move tab to a new group on the left', () => ws.toNeighbour(tab, -1), { icon: 'split', keys: `${mod} Alt ←`, keywords: 'tab split side beside' });
+  }
+  if (g && ws.groups.length < 4) add('Split right', () => { const n = ws.split(g, 'right'); if (n) ws.focusGroup(ws.groups.indexOf(n)); }, { icon: 'split', keywords: 'group side beside columns tabs' });
+  if (ws.groups.length > 1) add('Next group', () => ws.focusGroup((ws.groups.indexOf(g) + 1) % ws.groups.length), { icon: 'split', keys: `${mod} 1–4`, keywords: 'focus tabs' });
+  if (closedTabs.length) add('Reopen closed tab', reopenTab, { icon: 'back', keys: `${mod} Shift T`, keywords: 'tab undo restore' });
   for (const v of vaults) if (v.path !== scope) add(`Switch to ${v.name}`, () => switchScope(v.path), { glyph: vaultMark(v.path), keywords: 'vault' });
   if (scope && vaults.length > 1) add('Switch to all opened vaults', () => switchScope('@all'), { icon: 'layers', keywords: 'vault' });
   for (const s of suggested) add(`Open ${s.name} vault (${s.hint})`, () => switchScope(`@suggest:${s.path}`), { icon: 'folder', keywords: 'vault' });
@@ -1493,8 +1855,8 @@ function commands() {
   add(side.collapsed ? 'Show sidebar' : 'Hide sidebar', toggleSidebar, { icon: 'sidebar', keys: `${mod} \\` });
   add(openOnly ? 'Show every fragment in the list' : 'Show only open fragments in the list', toggleOpenOnly, { icon: 'check', keywords: 'filter done' });
   const sidebar = { icon: 'sort', keywords: 'sidebar list group sort order' };
-  for (const [g, label] of Object.entries({ type: 'Group the list by type', tag: 'Group the list by tag', none: 'Ungroup the list' })) {
-    if (g !== listView.group) add(label, () => setListView({ group: g }), sidebar);
+  for (const [gr, label] of Object.entries({ type: 'Group the list by type', tag: 'Group the list by tag', none: 'Ungroup the list' })) {
+    if (gr !== listView.group) add(label, () => setListView({ group: gr }), sidebar);
   }
   for (const [s, label] of Object.entries(SORTS)) if (s !== listView.sort) add(label.replace('Sort by', 'Sort the list by'), () => setListView({ sort: s }), sidebar);
   const flip = listView.dir === 'asc' ? 'desc' : 'asc';
@@ -1529,7 +1891,7 @@ function previewLinks(r) {
   const find = prefix => { const hits = rows.filter(x => x.vault === r.vault && x.id.startsWith(prefix)); return hits.length === 1 ? hits[0] : null; };
   return {
     resolve(prefix) { const t = find(prefix); return t ? { title: t.title, type: t.type } : null; },
-    open(prefix) { const t = find(prefix); if (t) { goTo.close(false); openRow(t, true); } },
+    open(prefix, e) { const t = find(prefix); if (t) { goTo.close(false); openRow(t, { ...clickHow(e), focus: true }); } },
     pool: () => [], shortId: x => x.id, describe: () => []
   };
 }
@@ -1537,8 +1899,8 @@ const goTo = palette({
   fragments: () => rows, commands,
   describe: r => [typeLabel(r.type), !scope && name(r.vault), age(r.updated_at)].filter(Boolean).join(' · '),
   facts: r => [typeLabel(r.type), r.status && capital(r.status), r.archived && 'Archived', !scope && name(r.vault), edited(r.updated_at)].filter(Boolean),
-  // A grep match opens with the match selected, the caret ready to edit there.
-  open: (r, at) => openRow(r, true).then(() => { if (at && opened && key(opened) === key(r) && mode === 'capture') editor.reveal(at); }),
+  // A grep match opens with the match selected, the caret ready to edit there. Ctrl+Enter opens it beside.
+  open: (r, at, how = {}) => openRow(r, { focus: true, side: !!how.side }).then(() => { const d = tabOf(r); if (at && d && d === tab) d.editor.reveal(at); }),
   load: loadNote, grep: grepScope, linksFor: previewLinks
 });
 
@@ -1546,25 +1908,22 @@ const goTo = palette({
 const DATES = ['today', 'yesterday', 'tomorrow', 'this-week', 'last-week', 'next-week', 'this-month', 'last-month', 'overdue'];
 const FILTER_HINTS = { type: 'fragment type', status: 'state', priority: 'low … critical', tag: 'a tag, or #tag', due: 'due date', created: 'date created', updated: 'date edited', has: 'links, due, attachments', is: 'archived, all', by: 'author', linked: 'links to an ID' };
 const assistValues = field => ({ type: typesIn(scope).map(s => s.name), tag: allTags(), due: DATES, created: DATES, updated: DATES, has: ['links', 'due', 'attachments'], is: ['archived', 'all'] })[field] ?? fieldValues(field);
-const queryAssist = searchAssist($('query'), { id: 'queryAssist', values: assistValues, describe: f => FILTER_HINTS[f] });
 searchAssist($('filter'), { id: 'filterAssist', values: assistValues, describe: f => FILTER_HINTS[f] });
-let searchTimer = 0;
 const halfTyped = q => /(^|\s)!?[a-z]+:!?$/i.test(q); // "status:" waits for its value
-$('query').addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { if (mode === 'search' && !halfTyped($('query').value.trim())) action(search); }, 160);
-});
+// A keyboard click on a row, carrying Ctrl (⌘) so it can open beside.
+const keyClick = (b, e) => b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: e.ctrlKey, metaKey: e.metaKey }));
 $('filter').addEventListener('input', onFilter);
 $('filter').addEventListener('keydown', e => {
   const first = $('recent').querySelector('.row');
   if (e.key === 'ArrowDown' && first) { e.preventDefault(); $('recent').querySelector('.group-head, .row').focus(); }
-  else if (e.key === 'Enter' && first && $('filterAssist').hidden) { e.preventDefault(); first.click(); } // a keyboard click: opens it, caret in the text
+  else if (e.key === 'Enter' && first && $('filterAssist').hidden) { e.preventDefault(); e.stopPropagation(); keyClick(first, e); } // opens it, caret in the text
 });
 // The list moves with the arrow keys, through group headers too; Enter opens a fragment with the caret in its
-// text. On a header ← folds and → unfolds (or enters the group); ← from a row goes up to its header.
+// text (Ctrl+Enter: beside). On a header ← folds and → unfolds (or enters the group); ← from a row goes up to its header.
 $('recent').addEventListener('keydown', e => {
   const all = [...$('recent').querySelectorAll('.group-head, .row')], i = all.indexOf(document.activeElement);
   if (i < 0) return;
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && all[i].classList.contains('row')) { e.preventDefault(); e.stopPropagation(); keyClick(all[i], e); return; }
   const group = all[i].closest('.group'), onHead = all[i].classList.contains('group-head');
   if (group && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
     e.preventDefault();
@@ -1590,17 +1949,18 @@ $('openSettings').onclick = () => openSettings().catch(status);
 $('quickCapture').onclick = () => api.openCapture().catch(status);
 $('fragmentMenu').addEventListener('aihio-select', e => {
   e.stopPropagation();
-  ({ history: showHistory, copy: copyLink, archive: toggleArchive, trash: trashOpened })[e.detail.value]?.();
+  ({ history: showHistory, copy: copyLink, archive: toggleArchive, trash: trashOpened })[e.detail.value]?.(cur());
 });
 $('vaultMenu').addEventListener('aihio-select', e => e.detail.value === '@settings' ? openVaultSettings() : switchScope(e.detail.value));
-$('resume').onclick = () => action(() => { mode = 'capture'; paint(); list(); editor.focus(); });
 $('destination').onchange = () => {
+  const d = cur();
+  if (!d || d.opened) return;
+  d.dest = $('destination').value;
   // A new capture whose type is off in the chosen vault starts as that vault's default instead.
-  if (!opened && fresh && !enabledTypes($('destination').value).some(s => s.name === fresh.type)) fresh = { ...blankCapture(), tags: fresh.tags };
-  meta(); paint(); editor.refresh(); rememberDraft();
-}; $('save').onclick = save;
-$('title').oninput = () => { const t = $('title'); if (/[\r\n]/.test(t.value)) t.value = t.value.replace(/\s*[\r\n]+\s*/g, ' '); changed(); };
-$('title').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing && !(e.metaKey || e.ctrlKey)) { e.preventDefault(); editor.focus(); } };
+  if (d.fresh && !enabledTypes(d.dest).some(s => s.name === d.fresh.type)) d.fresh = { ...blankCapture(d), tags: d.fresh.tags };
+  meta(d); paint(); d.editor.refresh(); rememberWorkspace();
+};
+$('save').onclick = save;
 $('record').onclick = async () => {
   if (phase === 'recording') return voice.stop();
   if (phase !== 'idle') return;
@@ -1610,15 +1970,32 @@ $('record').onclick = async () => {
   voice.start();
 };
 $('cancel').onclick = () => voice.stop(true);
-$('searchForm').onsubmit = e => { e.preventDefault(); clearTimeout(searchTimer); action(search); };
-for (const b of document.querySelectorAll('[data-view]')) b.onclick = () => b.dataset.view === 'capture' ? newCapture() : action(() => navigate(b.dataset.view));
+// The nav opens its view in the current group; Ctrl+click opens it beside.
+for (const b of $('sidebar').querySelectorAll('[data-view]')) {
+  b.onclick = e => b.dataset.view === 'capture' ? newCapture() : action(() => openView(b.dataset.view, { how: clickHow(e) }));
+}
 document.addEventListener('keydown', e => {
-  if (goTo.isOpen || $('settings').hasAttribute('open') || vaultPanel.isOpen) return;
+  if (goTo.isOpen || $('settings').hasAttribute('open') || vaultPanel.isOpen || ws.menuOpen) return;
   if (e.key === 'Escape' && phase === 'recording') return voice.stop(true);
   const ctrl = (e.metaKey || e.ctrlKey) && !e.altKey, k = e.key.toLowerCase();
+  // Tabs and groups, as in a code editor: Ctrl+Tab and Ctrl+PgUp/PgDn step through the group's tabs, Ctrl+Alt+←/→
+  // moves the tab to the next group (opening one), Ctrl+1–4 goes to a group, Alt+1–9 to a tab (9: the last).
+  if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+    e.preventDefault(); if (tab && !blocking()) ws.toNeighbour(tab, e.key === 'ArrowRight' ? 1 : -1); return;
+  }
+  if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'Tab' || ((e.key === 'PageDown' || e.key === 'PageUp') && !e.shiftKey))) {
+    e.preventDefault(); if (!blocking()) ws.cycle(e.key === 'PageUp' || (e.key === 'Tab' && e.shiftKey) ? -1 : 1); return;
+  }
+  if (!isMac && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+    const tabs = ws.group?.tabs || [], t = e.code === 'Digit9' ? tabs.at(-1) : tabs[+e.code.slice(5) - 1];
+    if (t) { e.preventDefault(); if (!blocking()) ws.activate(t, { focus: true }); }
+    return;
+  }
+  if (ctrl && e.shiftKey && k === 't') { e.preventDefault(); reopenTab(); return; }
+  if (ctrl && !e.shiftKey && /^Digit[1-4]$/.test(e.code)) { e.preventDefault(); if (!blocking()) ws.focusGroup(+e.code.slice(5) - 1); return; }
   if (ctrl && !e.shiftKey) {
-    const run = { enter: () => mode === 'capture' && save(), s: () => mode === 'capture' && save(), k: () => goTo.open(), n: () => newCapture(),
-      f: () => action(() => navigate('search')), '\\': toggleSidebar }[k];
+    const run = { enter: () => cur() && save(), s: () => cur() && save(), k: () => goTo.open(), n: () => newCapture(),
+      f: () => action(() => openView('search')), w: () => closeTab(), '\\': toggleSidebar }[k];
     if (run) { e.preventDefault(); run(); }
     return;
   }
@@ -1627,23 +2004,31 @@ document.addEventListener('keydown', e => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing || e.target.closest('input,textarea,select,[contenteditable=true],aihio-dropdown,aihio-date-picker,aihio-input')) return;
   const next = ({ '+': 'capture', '/': 'search', g: 'graph', a: 'agent', p: 'pulse' })[k];
   if (next === 'capture') { e.preventDefault(); newCapture(); }
-  else if (next) { e.preventDefault(); action(() => navigate(next)); }
-  else if (k === 't' && mode === 'capture') { e.preventDefault(); toggleField(); }
+  else if (next) { e.preventDefault(); action(() => openView(next)); }
+  else if (k === 't' && cur()) { e.preventDefault(); toggleField(); }
 });
 // Drafts are kept on disk, so only work that cannot resume holds the window.
-window.addEventListener('beforeunload', e => { rememberDraft(true); if (['recording', 'transcribing', 'saving'].includes(phase)) e.returnValue = false; });
+window.addEventListener('beforeunload', e => { rememberWorkspace(true); if (['recording', 'transcribing', 'saving'].includes(phase)) e.returnValue = false; });
 applySide(); viewMenu();
 (async () => {
   try {
     vaults = await api.vaults();
-    const known = p => vaults.some(v => v.path === p), last = remember.get(SCOPE), draft = remember.get(DRAFT);
-    const usable = draft && typeof draft.body === 'string' && (!draft.vault || known(draft.vault)) ? draft : null;
+    const known = p => vaults.some(v => v.path === p), last = remember.get(SCOPE);
     scope = last === '' || known(last) ? last : vaults[0].path;
-    if (usable?.vault && scope && scope !== usable.vault) scope = usable.vault;
     [suggested] = await Promise.all([api.suggestedVaults().catch(() => []), loadSchemas(vaults.map(v => v.path)), checkSpeech()]);
     try { rows = await collect(); } catch (err) { if (scope === vaults[0].path) throw err; scope = vaults[0].path; rows = await collect(); }
     remember.set(SCOPE, scope); options();
-    if (usable) await restoreDraft(usable); else { reset(); await navigate('pulse'); } // Pulse is home
+    // The tabs as they were left. An unsaved draft kept before there were tabs comes back as one.
+    let saved = remember.get(WORKSPACE);
+    const legacy = remember.get(DRAFT);
+    if (!Array.isArray(saved?.groups) && legacy && typeof legacy.body === 'string') {
+      saved = { groups: [{ tabs: [{ vault: legacy.vault || '', id: legacy.id || undefined, fresh: legacy.fresh, draft: legacy }], shown: 0 }], current: 0 };
+    }
+    ws.addGroup();
+    const any = saved ? await restoreWorkspace(saved) : false;
+    restoring = false; remember.set(DRAFT, null);
+    await syncOutside();
+    if (!any) await openView('pulse'); // Pulse is home
   } catch (err) { status(err); $('empty').textContent = 'Unable to load fragments.'; }
-  finally { setPhase('idle'); }
+  finally { restoring = false; rememberWorkspace(true); setPhase('idle'); }
 })();

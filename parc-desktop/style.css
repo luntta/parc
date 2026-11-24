@@ -4,7 +4,9 @@
   --side-width: clamp(15rem, 22vw, 17.5rem);
   --bar-height: 3rem;
   --status-height: 1.75rem;
+  --tabs-height: 2.25rem;
   --measure: 42rem;
+  --page-pad: 2.5rem;           /* a page's side padding; narrower in narrow windows */
   --gutter: .5rem;              /* sidebar inset; every sidebar item pads the same again */
   /* The sidebar is one grid: every line (nav item, group header, fragment row) is --side-line tall, its glyph
      sits in a 1rem column after --gutter's padding, and its text starts --side-text from the item's edge. */
@@ -305,11 +307,97 @@ body[data-phase="recording"] #record > button { border-color: color-mix(in oklch
 body[data-phase="recording"] #record .icon { color: var(--aihio-color-destructive-text); }
 
 /* Busy work that blocks the workspace (dictation, saving) dims navigation; quick reads do not flash it. */
-body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="starting"], [data-phase="stopping"], [data-phase="saving"]) :is(nav, #recent, .switcher > button) { opacity: .55; }
+body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="starting"], [data-phase="stopping"], [data-phase="saving"]) :is(nav, #recent, .switcher > button, .tabstrip) { opacity: .55; }
 
 .scroll { overflow-y: auto; min-height: 0; scroll-padding-block: 2rem; scrollbar-gutter: stable; }
-.page { width: 100%; max-width: calc(var(--measure) + 5rem); margin: 0 auto; padding: 3.5rem 2.5rem 6rem; }
+.scroll:focus { outline: none; } /* a view's page takes focus so it scrolls from the keyboard; the page itself is the ring */
+.page { width: 100%; max-width: calc(var(--measure) + 5rem); margin: 0 auto; padding: 3.5rem var(--page-pad) 6rem; }
 .page.wide { max-width: 56rem; padding-top: 2.5rem; }
+
+/* ───────────────────────── Groups and tabs ───────────────────────── */
+/* Groups sit side by side, each a strip of tabs over its shown tab's page. The current group's shown tab carries a
+   line along its top; a preview's name is in italics until it is kept; an unsaved tab's close mark is a dot. */
+.panes { display: flex; min-width: 0; min-height: 0; overflow: hidden; }
+.panes[data-resizing] { cursor: col-resize; user-select: none; }
+.pane { position: relative; display: grid; grid-template-rows: var(--tabs-height) minmax(0, 1fr); min-width: 10rem; min-height: 0; flex: 1 1 0px; }
+.pane-body { position: relative; display: grid; min-width: 0; min-height: 0; }
+.pane-body > .scroll { grid-area: 1 / 1; }
+.sash { position: relative; z-index: 2; flex: none; width: 1px; background: var(--rule); cursor: col-resize; }
+.sash::before { content: ''; position: absolute; inset: 0 -3px; }
+.sash:hover, .panes[data-resizing] .sash { background: color-mix(in oklch, var(--aihio-color-page-fg) 30%, transparent); }
+
+.tabstrip { display: flex; min-width: 0; background: var(--aihio-color-surface-bg); box-shadow: inset 0 -1px 0 var(--rule); }
+.tabs { display: flex; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  position: relative; display: flex; align-items: center; gap: .375rem; flex: 0 1 auto; min-width: 6.5rem; max-width: 14rem;
+  padding: 0 .25rem 0 .625rem; border-inline-end: 1px solid var(--rule);
+  color: var(--muted); font-size: var(--side-font); white-space: nowrap; user-select: none;
+  transition: color var(--aihio-duration-feedback-fast) ease, background-color var(--aihio-duration-feedback-fast) ease;
+}
+.tab:hover { color: var(--aihio-color-page-fg); }
+.tab[aria-selected="true"] { background: var(--aihio-color-page-bg); color: var(--aihio-color-page-fg); }
+.pane[data-active] .tab[aria-selected="true"]::before { content: ''; position: absolute; inset: 0 0 auto; height: 2px; background: var(--aihio-color-page-fg); }
+.tab:focus-visible { outline-offset: -2px; }
+.tab-glyph { display: inline-flex; flex: none; }
+.tab-glyph .icon { width: .875rem; height: .875rem; color: var(--muted); }
+.tab-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tab[data-preview] .tab-label { font-style: italic; }
+.tab-close {
+  display: grid; place-items: center; flex: none; width: 1.25rem; height: 1.25rem; padding: 0; border: 0;
+  border-radius: var(--aihio-radius-interactive-compact); background: transparent; color: var(--muted); opacity: 0;
+}
+.tab-close .icon { width: .75rem; height: .75rem; }
+.tab:is(:hover, :focus-visible, [aria-selected="true"], [data-dirty]) .tab-close { opacity: 1; }
+.tab-close:hover { background: var(--hover); color: var(--aihio-color-page-fg); }
+.tab[data-dirty]:not(:hover) .tab-close .icon { display: none; }
+.tab[data-dirty]:not(:hover) .tab-close::after { content: ''; width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; }
+.tab[data-drop-before]::after, .tabs[data-drop-end] > .tab:last-child::after {
+  content: ''; position: absolute; inset-block: .25rem; width: 2px; border-radius: 1px; background: var(--aihio-color-focus-ring);
+}
+.tab[data-drop-before]::after { inset-inline-start: -1px; }
+.tabs[data-drop-end] > .tab:last-child::after { inset-inline-end: -1px; }
+.tabs[data-drop-end]:empty { background: var(--hover); }
+.tab-action { display: grid; place-items: center; flex: none; width: 2.25rem; padding: 0; border: 0; background: transparent; color: var(--muted); }
+.tab-action:hover { background: var(--hover); color: var(--aihio-color-page-fg); }
+.tab-action .icon { width: .9375rem; height: .9375rem; }
+/* A fragment the list shows is open in a tab that isn't the current one. */
+.row[data-open]:not(:hover) { background: color-mix(in oklch, var(--aihio-color-page-fg) 3.5%, transparent); }
+
+/* An empty group says how to fill it. */
+.pane-empty { grid-area: 1 / 1; display: grid; place-items: center; padding: 2rem; color: var(--muted); }
+.watermark { width: min(100%, 22rem); font-size: var(--aihio-font-size-badge); line-height: 1.5; }
+.watermark-title { margin-bottom: .75rem; color: var(--aihio-color-page-fg); font-size: var(--aihio-font-size-body-sm); font-weight: var(--aihio-font-weight-heading); }
+.watermark dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .375rem 1.5rem; margin: 0; }
+.watermark dd { margin: 0; text-align: end; color: var(--aihio-color-page-fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.watermark-hint { margin-top: 1rem; color: var(--faint); text-wrap: pretty; }
+
+/* A tab or a list row dragged over a group: the middle drops it into the group, the outer thirds open a new group on that side. */
+.drop-overlay { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+.panes[data-dragging] .drop-overlay { pointer-events: auto; }
+.drop-overlay[data-zone]::before {
+  content: ''; position: absolute; inset: .375rem; border: 1px dashed color-mix(in oklch, var(--aihio-color-page-fg) 35%, transparent);
+  border-radius: var(--aihio-radius-surface); background: color-mix(in oklch, var(--aihio-color-page-fg) 6%, transparent);
+  transition: inset var(--aihio-duration-feedback-fast) ease;
+}
+.drop-overlay[data-zone="left"]::before { inset-inline-end: 50%; }
+.drop-overlay[data-zone="right"]::before { inset-inline-start: 50%; }
+@media (prefers-reduced-motion: reduce) { .drop-overlay[data-zone]::before, .tab { transition: none; } }
+
+/* A tab's context menu. */
+.tab-menu {
+  position: fixed; z-index: 60; min-width: 16rem; margin: 0; padding: .25rem; list-style: none;
+  border: 1px solid var(--rule); border-radius: var(--aihio-radius-interactive);
+  background: var(--aihio-color-overlay-bg); color: var(--aihio-color-overlay-fg); box-shadow: var(--aihio-shadow-overlay); font-size: var(--side-font);
+}
+.tab-menu-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; width: 100%; height: 1.875rem; padding: 0 .5rem;
+  border: 0; border-radius: var(--aihio-radius-interactive-compact); background: transparent; text-align: start;
+}
+.tab-menu-item:is(:hover, :focus):not(:disabled) { background: var(--aihio-color-overlay-highlight-bg); outline: none; }
+.tab-menu-item:disabled { color: var(--faint); }
+.tab-menu-item kbd { height: auto; padding: 0; border: 0; background: none; color: var(--muted); }
+.tab-menu-sep { height: 1px; margin: .25rem -.25rem; background: var(--rule); }
 
 .statusbar {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
@@ -382,26 +470,74 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 .tag-input:focus { border-color: var(--aihio-color-focus-ring); }
 .doc-meta .fid { margin-inline-start: auto; font: .6875rem var(--aihio-font-family-code); color: var(--faint); user-select: all; cursor: text; }
 
-#title {
+.doc-title {
   display: block; width: 100%; padding: 0; border: 0; outline: 0; resize: none; overflow: hidden;
   field-sizing: content; min-height: 1.2em; background: transparent;
   font-size: var(--aihio-font-size-3xl); font-weight: var(--aihio-font-weight-heading);
   line-height: 1.2; letter-spacing: var(--aihio-letter-spacing-display); text-wrap: balance;
 }
-#title::placeholder { color: var(--faint); }
+.doc-title::placeholder { color: var(--faint); }
 
-#draft { margin-top: 1.25rem; }
+.draft { margin-top: 1.25rem; }
 /* The open fragment's links, under its text. */
 .doc-graph { margin-top: 1rem; padding-top: 1.75rem; border-top: 1px solid var(--rule); }
 .doc-graph .section-label { margin-top: 0; }
 .doc-graph .graph { max-height: 22rem; }
 .graph-none { color: var(--muted); font-size: .8125rem; line-height: 1.55; }
 .graph-none code { color: var(--aihio-color-page-fg); font-size: .75rem; }
+
+/* Related: fragments that bear on the text, beside it when there is room and under it when there isn't. The
+   column is there whenever the editor is, so the text never moves when results come and go. */
+.scroll { container: workspace / inline-size; }
+.doc-layout {
+  --related-width: 17.5rem;
+  display: grid; grid-template-columns: minmax(0, calc(var(--measure) + 5rem)) var(--related-width);
+  justify-content: center; align-items: start;
+}
+.related {
+  position: sticky; top: 0; max-height: calc(100dvh - var(--bar-height) - var(--tabs-height) - var(--status-height));
+  overflow-y: auto; scrollbar-gutter: stable; padding: 3.5rem 1rem 2rem .5rem;
+}
+.related .section-label { margin: 0 0 .5rem; color: var(--muted); }
+@container workspace (width < 52rem) {
+  .doc-layout { grid-template-columns: minmax(0, 1fr); }
+  .related { position: static; max-height: none; overflow: visible; width: 100%; max-width: calc(var(--measure) + 5rem); margin: 0 auto; padding: 0 var(--page-pad) 4rem; }
+}
+.related-empty { margin: 0; color: var(--faint); font-size: var(--aihio-font-size-badge); line-height: 1.5; text-wrap: pretty; }
+.related-list { display: flex; flex-direction: column; gap: .125rem; margin: 0; padding: 0; list-style: none; }
+.rel-item { margin-inline: -.5rem; padding: .375rem .5rem .5rem; border-radius: var(--aihio-radius-interactive); }
+.rel-item:is(:hover, [data-open]) { background: var(--hover); }
+.rel-new { animation: rel-in var(--aihio-duration-feedback-fast) ease-out; }
+@keyframes rel-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .rel-new { animation: none; } }
+.rel-head {
+  display: grid; grid-template-columns: 1rem minmax(0, 1fr) auto; column-gap: .5rem; align-items: center;
+  width: 100%; padding: 0; border: 0; border-radius: var(--aihio-radius-interactive-compact); background: none; color: inherit;
+  font: inherit; font-size: .8125rem; font-weight: var(--aihio-font-weight-control); text-align: start; cursor: pointer;
+}
+.rel-icon { display: flex; color: var(--muted); }
+.rel-icon .icon { width: 1rem; height: 1rem; }
+.rel-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rel-item[data-archived] .rel-title { color: var(--muted); }
+.rel-date { color: var(--faint); font-size: var(--aihio-font-size-badge); font-weight: var(--aihio-font-weight-body); font-variant-numeric: tabular-nums; }
+.rel-why, .rel-quote, .rel-more { margin: .125rem 0 0 1.5rem; }
+.rel-why { color: var(--muted); font-size: var(--aihio-font-size-badge); line-height: 1.45; }
+.rel-quote {
+  margin-top: .25rem; color: var(--muted); font-size: var(--aihio-font-size-badge); line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+}
+.related mark { padding: 0 .0625rem; border-radius: .125rem; background: var(--ink-mark); color: var(--aihio-color-page-fg); }
+.rel-more { margin-top: .5rem; }
+.rel-body {
+  max-height: 16rem; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: .8125rem; line-height: 1.55; color: var(--aihio-color-page-fg);
+}
+.rel-actions { display: flex; gap: .25rem; margin: .375rem 0 0 -.625rem; }
 .cm-editor { font-size: 1.0625rem; color: var(--aihio-color-page-fg); }
 .cm-editor.cm-focused { outline: none; }
 .cm-editor .cm-scroller { font-family: var(--aihio-font-family-body); line-height: 1.7; overflow: visible; }
 .cm-editor .cm-content { min-height: 45vh; padding: 0 0 4rem; caret-color: var(--aihio-color-page-fg); }
-#document[data-saved] .cm-editor .cm-content { min-height: 10rem; } /* room to click into, without pushing its Graph out of view */
+.doc[data-saved] .cm-editor .cm-content { min-height: 10rem; } /* room to click into, without pushing its Graph out of view */
 .cm-editor .cm-line { padding: 0; }
 .cm-editor .cm-cursor { border-left: 2px solid var(--aihio-color-page-fg); }
 .cm-editor .cm-selectionBackground, .cm-editor.cm-focused .cm-selectionBackground { background: color-mix(in oklch, var(--aihio-color-page-fg) 14%, transparent) !important; }
@@ -482,7 +618,7 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 /* ───────────────────────── Tool views ───────────────────────── */
 .tool-head { margin-bottom: 1.75rem; }
 .tool-head h1 { font-size: var(--aihio-font-size-2xl); font-weight: var(--aihio-font-weight-heading); letter-spacing: var(--aihio-letter-spacing-display); line-height: 1.25; }
-#intro { margin-top: .375rem; color: var(--muted); font-size: var(--aihio-font-size-body-sm); max-width: 40rem; text-wrap: pretty; }
+.intro { margin-top: .375rem; color: var(--muted); font-size: var(--aihio-font-size-body-sm); max-width: 40rem; text-wrap: pretty; }
 .section-label { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin: 2.25rem 0 .625rem; font-size: var(--aihio-font-size-body-sm); font-weight: var(--aihio-font-weight-heading); }
 .section-label:first-child { margin-top: 0; }
 .section-label small { color: var(--muted); font-size: var(--aihio-font-size-badge); font-weight: var(--aihio-font-weight-body); }
@@ -503,7 +639,7 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 .assist-item code { font-size: .8125rem; }
 .assist-hint { color: var(--muted); font-size: var(--aihio-font-size-badge); white-space: nowrap; }
 .search-row input::-webkit-search-cancel-button { display: none; }
-#searchForm:not([hidden]) + #results { margin-top: 2.25rem; }
+.search-form:not([hidden]) + .view-out { margin-top: 2.25rem; }
 .hints { display: flex; flex-wrap: wrap; align-items: center; gap: .375rem; margin-top: .75rem; }
 .hints-label { margin-inline-end: .25rem; color: var(--muted); font-size: var(--aihio-font-size-badge); }
 .hint {
@@ -639,12 +775,14 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
   font-size: var(--aihio-font-size-badge);
   transition: opacity var(--aihio-duration-feedback-fast) ease, translate var(--aihio-duration-feedback-fast) ease;
 }
+.col:nth-child(-n+2) .tip { left: 0; }       /* the end columns' tips stay over the chart, so a narrow page doesn't scroll sideways */
+.col:nth-last-child(-n+2) .tip { right: 0; }
 .col:is(:hover, :focus-visible) .tip { opacity: 1; translate: 0 0; }
 .col:is(:hover, :focus-visible) b { opacity: 0; }
 .axis { display: flex; justify-content: space-between; margin-top: .375rem; color: var(--muted); font-size: var(--aihio-font-size-badge); }
 
 /* ───────────────────────── A type's view: board, matrix, cards ───────────────────────── */
-#tool[data-view="type"] { max-width: 92rem; padding-inline: 2rem; }
+.tool[data-view="type"] { max-width: 92rem; padding-inline: 2rem; }
 .type-view { container-type: inline-size; }
 .view-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: 1.25rem; }
 .view-count { margin-inline-start: auto; color: var(--muted); font-size: var(--aihio-font-size-badge); font-variant-numeric: tabular-nums; }
@@ -787,7 +925,7 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 
 /* ───────────────────────── Narrow windows ───────────────────────── */
 @media (max-width: 56rem) {
-  .page { padding-inline: 1.75rem; }
+  :root { --page-pad: 1.75rem; }
   #save kbd { display: none; }
   .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .figure:nth-child(3) { border-inline-start: 0; }
@@ -798,7 +936,8 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
   .bar { padding-inline-start: 1rem; }
   .crumb .vault, .crumb .sep, .save-state { display: none; }
   #recordLabel { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } /* still names the button */
-  .page { padding: 2rem 1.25rem 4rem; }
+  :root { --page-pad: 1.25rem; }
+  .page { padding-block: 2rem 4rem; }
 }
 
 /* ───────────────────────── Go to… (Ctrl+K) ───────────────────────── */

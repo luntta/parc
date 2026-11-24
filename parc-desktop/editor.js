@@ -43,7 +43,7 @@ class WikiLink extends WidgetType {
       chip.append(typeIcon(this.target.type));
       chip.append(this.label || this.target.title || 'Untitled');
       chip.title = `Open ${this.target.title || 'fragment'}`;
-      chip.addEventListener('mousedown', e => { e.preventDefault(); this.open(this.prefix); });
+      chip.addEventListener('mousedown', e => { e.preventDefault(); this.open(this.prefix, e); });
     } else {
       chip.dataset.missing = ''; chip.textContent = this.label || this.prefix;
       chip.title = `No fragment ${this.prefix} in this vault`;
@@ -281,8 +281,18 @@ export function markdownEditor(parent, onChange, links = NO_LINKS) {
   return {
     text: () => view.state.doc.toString(), focus: () => view.focus(),
     load(doc) { view.setState(EditorState.create({ doc, extensions })); }, // reset undo history across fragments
+    // Insert at the caret (replacing a selection), spaced from the words around it, and put the caret after it.
+    insert(text) {
+      const { from, to } = view.state.selection.main, doc = view.state.doc;
+      const before = from > 0 && !/\s/.test(doc.sliceString(from - 1, from)) ? ' ' : '';
+      const after = to < doc.length && !/[\s.,;:!?)]/.test(doc.sliceString(to, to + 1)) ? ' ' : '';
+      const insert = before + text + after;
+      view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length }, scrollIntoView: true });
+      view.focus();
+    },
     append(text) { const end = view.state.doc.length; view.dispatch({ changes: { from: end, insert: (end ? '\n' : '') + text } }); view.focus(); },
     lock(value) { view.dispatch({ effects: lock.reconfigure(EditorView.editable.of(!value)) }); },
+    destroy() { view.destroy(); },
     refresh() { view.dispatch({ effects: refresh.of(null) }); },
     // Select a grep match ({ line, column, pattern }, as fragment.grep reports it) and bring it into view.
     reveal({ line, column, pattern }) {

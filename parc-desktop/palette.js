@@ -52,7 +52,7 @@ function lineText({ text, ranges }) {
 /**
  * fragments(): rows to rank. commands(): [{ label, run, icon?, glyph?, keys?, keywords? }].
  * describe(row): short facts for a list row; facts(row): the preview's facts, as strings.
- * open(row, at?): open a fragment, at = { line, column, pattern } to select a grep match.
+ * open(row, at?, how?): open a fragment, at = { line, column, pattern } to select a grep match; how.side opens it beside.
  * load(row): the saved fragment, with its body. grep(text): { hits: rows with `lines`, truncated }.
  * linksFor(row): how the preview resolves and opens that fragment's [[links]].
  */
@@ -68,7 +68,7 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
   list.id = 'paletteList'; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', 'Results');
   pane.setAttribute('aria-label', 'Preview');
   const foot = el('p', 'palette-foot');
-  foot.append(el('kbd', '', '↑↓'), ' move ', el('kbd', '', '↵'), ' open ', el('kbd', '', 'PgUp PgDn'), ' scroll preview ', el('kbd', '', 'Esc'), ' close ',
+  foot.append(el('kbd', '', '↑↓'), ' move ', el('kbd', '', '↵'), ' open ', el('kbd', '', `${/Mac/.test(navigator.platform) ? '⌘' : 'Ctrl'} ↵`), ' open beside ', el('kbd', '', 'PgUp PgDn'), ' scroll preview ', el('kbd', '', 'Esc'), ' close ',
     el('kbd', '', '>'), ' commands ', el('kbd', '', '/'), ' search inside fragments');
   bar.append(chip, input);
   pane.append(head, body, blank);
@@ -144,7 +144,7 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
         li.append(el('span', 'palette-pos', `${item.l.line}:${item.l.column}`), lineText(item.l));
       }
       li.onpointermove = () => { if (active !== i) { active = i; mark(); } };
-      li.onclick = () => choose(i);
+      li.onclick = e => choose(i, e.ctrlKey || e.metaKey);
       list.append(li);
     });
     const none = mode === 'grep' ? (pattern.trim() && !notice ? `No fragment contains “${pattern}”` : '') : 'Nothing matches';
@@ -209,12 +209,12 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
     }, same ? 0 : 70);
   }
 
-  function choose(i) {
+  function choose(i, side = false) {
     const item = items[i];
     if (!item) return;
     close(false);
     if (item.kind === 'command') item.c.run();
-    else open(item.r, item.kind === 'line' ? { line: item.l.line, column: item.l.column, pattern: item.pattern } : undefined);
+    else open(item.r, item.kind === 'line' ? { line: item.l.line, column: item.l.column, pattern: item.pattern } : undefined, { side });
   }
   function close(restore = true) {
     if (root.hidden) return;
@@ -226,7 +226,7 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
     const step = { ArrowDown: 1, ArrowUp: -1 }[e.key], page = { PageDown: 1, PageUp: -1 }[e.key];
     if (step && items.length) { e.preventDefault(); active = (active + step + items.length) % items.length; mark(); }
     else if (page) { e.preventDefault(); pane.scrollBy({ top: page * pane.clientHeight * 0.85 }); }
-    else if (e.key === 'Enter') { e.preventDefault(); choose(active); }
+    else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); choose(active, e.ctrlKey || e.metaKey); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
   });
   // Focus stays in the box: pressing on a row, the preview or the scrollbars doesn't take it from the input.

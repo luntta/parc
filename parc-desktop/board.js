@@ -70,7 +70,7 @@ function card(r, ctx, { mark = false, compact = false } = {}) {
   b.title = [r.title || 'Untitled', [...words, ...(r.tags || []).map(t => `#${t}`)].join(' · ')].filter(Boolean).join('\n');
   b.append(el('span', 'sr', `, ${words.join(', ')}`));
   if (ctx.current === b.dataset.key) b.setAttribute('aria-current', 'true');
-  b.onclick = e => ctx.open(r, e.detail === 0);
+  b.onclick = e => ctx.open(r, e);
   if (ctx.movable) {
     b.draggable = true;
     b.addEventListener('dragstart', e => {
@@ -249,7 +249,7 @@ function matrix(ctx) {
     b.append(top, sub, el('span', mitigation ? 'rank-mitigation' : 'rank-mitigation none', mitigation || 'No mitigation written'));
     b.title = r.title || 'Untitled';
     if (ctx.current === b.dataset.key) b.setAttribute('aria-current', 'true');
-    b.onclick = e => ctx.open(r, e.detail === 0);
+    b.onclick = e => ctx.open(r, e);
     li.append(b); ol.append(li);
   }
   if (ranked.length) rank.append(ol);
