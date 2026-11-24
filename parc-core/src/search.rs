@@ -523,10 +523,11 @@ fn apply_filters(
             }
             Filter::Linked(id_prefix) => {
                 let prefix = id_prefix.to_uppercase();
+                // Through resolved_id: a frontmatter link may be stored as a short prefix.
                 conditions.push(format!(
                     "EXISTS (SELECT 1 FROM fragment_links WHERE \
-                     (source_id = f.id AND target_id LIKE ?{pi}) OR \
-                     (target_id = f.id AND source_id LIKE ?{pi}))",
+                     (source_id = f.id AND resolved_id LIKE ?{pi}) OR \
+                     (resolved_id = f.id AND source_id LIKE ?{pi}))",
                     pi = *param_idx
                 ));
                 params.push(Box::new(format!("{}%", prefix)));
@@ -1486,6 +1487,36 @@ mod tests {
         // Should find both the linker (source) and target (target in reverse)
         let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
         assert!(ids.contains(&linker.id.as_str()));
+    }
+
+    /// `linked:` with a full ID, as the desktop's fragment graph asks, finds
+    /// links both ways when the frontmatter holds only a prefix.
+    #[test]
+    fn test_search_linked_through_a_frontmatter_prefix() {
+        let (_tmp, conn) = setup_test_vault();
+        // Fixed IDs: two minted in the same millisecond share a 10-character prefix.
+        let mut target = make_fragment_with("Target", "note", None, None, None, vec![], "body");
+        let mut linker = make_fragment_with("Linker", "note", None, None, None, vec![], "body");
+        target.id = "01KAAA0000000000000000000A".into();
+        linker.id = "01JZZZZZZZZZZZZZZZZZZZZZZZ".into();
+        index::index_fragment(&conn, &target, &[], &[]).unwrap();
+        index::index_fragment(&conn, &linker, &[], &["01kaaa0000".into()]).unwrap();
+
+        let ids = |q: &str| -> Vec<String> {
+            search(&conn, &parse_query(q).unwrap())
+                .unwrap()
+                .into_iter()
+                .map(|r| r.id)
+                .collect()
+        };
+        assert_eq!(
+            ids(&format!("linked:{}", target.id)),
+            vec![linker.id.clone()]
+        );
+        assert_eq!(
+            ids(&format!("linked:{}", linker.id)),
+            vec![target.id.clone()]
+        );
     }
 
     #[test]

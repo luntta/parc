@@ -70,12 +70,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fragments_fts USING fts5(
 );
 
 -- Frontmatter links are stored as written (possibly an ID prefix). Body
--- wiki-links (from_body = 1) are stored resolved to a full ID, and are
--- resolved again whenever a fragment is added, removed or retitled.
+-- wiki-links (from_body = 1) are stored resolved to a full ID. `resolved_id`
+-- is the fragment a link names, NULL when it names none, several, or only its
+-- source; every reader goes through it. Both are resolved again whenever a
+-- fragment is added, removed or retitled.
 CREATE TABLE IF NOT EXISTS fragment_links (
-    source_id TEXT NOT NULL REFERENCES fragments(id),
-    target_id TEXT NOT NULL,
-    from_body INTEGER NOT NULL DEFAULT 0,
+    source_id   TEXT NOT NULL REFERENCES fragments(id),
+    target_id   TEXT NOT NULL,
+    from_body   INTEGER NOT NULL DEFAULT 0,
+    resolved_id TEXT,
     PRIMARY KEY (source_id, target_id)
 );
 
@@ -96,7 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_fragments_type ON fragments(type);
 CREATE INDEX IF NOT EXISTS idx_fragments_status ON fragments(status);
 CREATE INDEX IF NOT EXISTS idx_fragments_due ON fragments(due);
 CREATE INDEX IF NOT EXISTS idx_fragment_tags_tag ON fragment_tags(tag);
-CREATE INDEX IF NOT EXISTS idx_fragment_links_target ON fragment_links(target_id);
+CREATE INDEX IF NOT EXISTS idx_fragment_links_resolved ON fragment_links(resolved_id);
 ";
 
 const DROP_SQL: &str = "
@@ -511,9 +514,9 @@ fn apply(conn: &Connection, vault: &Path, plan: Plan) -> Result<SyncReport, Parc
     }
 
     if names_changed {
-        relink_body_links(conn, None)?;
+        relink(conn, None)?;
     } else if !relink_ids.is_empty() {
-        relink_body_links(conn, Some(&relink_ids))?;
+        relink(conn, Some(&relink_ids))?;
     }
     Ok(report)
 }
@@ -574,7 +577,7 @@ pub fn index_fragment(
 
 /// Upsert a fragment's row, tags and full-text entry, and replace its links
 /// with `links` (stored as frontmatter links). Body links are added by
-/// [`relink_body_links`].
+/// [`relink`].
 fn write_rows(
     conn: &Connection,
     fragment: &Fragment,
@@ -645,9 +648,11 @@ fn write_rows(
 
     conn.prepare_cached("DELETE FROM fragment_links WHERE source_id = ?1")?
         .execute([&fragment.id])?;
-    let mut insert_link = conn.prepare_cached(
-        "INSERT OR IGNORE INTO fragment_links (source_id, target_id, from_body) VALUES (?1, ?2, 0)",
-    )?;
+    let mut insert_link = conn.prepare_cached(&format!(
+        "INSERT OR IGNORE INTO fragment_links (source_id, target_id, from_body, resolved_id)
+         SELECT source_id, target_id, 0, {RESOLVE_FRONTMATTER}
+         FROM (SELECT ?1 AS source_id, ?2 AS target_id)"
+    ))?;
     let mut seen = HashSet::new();
     for target in links {
         if seen.insert(target.to_uppercase()) {
@@ -658,10 +663,32 @@ fn write_rows(
     Ok(())
 }
 
-/// Resolve body wiki-links again, for the given fragments or, with `None`,
-/// for every fragment whose body has one. Targets resolve against every
-/// indexed fragment; one that names no fragment, or several, is left out.
-fn relink_body_links(conn: &Connection, ids: Option<&[String]>) -> Result<(), ParcError> {
+/// The fragment a frontmatter link row names, as SQL over that row's
+/// `source_id` and `target_id`: the one indexed fragment whose ID starts with
+/// the target (case-insensitively, four characters at least), unless that is
+/// the source itself. NULL when it names none or several. A range over the
+/// primary key, so resolving every link in a vault stays cheap.
+const RESOLVE_FRONTMATTER: &str =
+    "(SELECT CASE WHEN COUNT(*) = 1 AND MIN(f.id) <> source_id THEN MIN(f.id) END
+     FROM fragments f
+     WHERE length(target_id) >= 4
+       AND f.id >= upper(target_id) AND f.id < upper(target_id) || '~')";
+
+/// Resolve links again: with `None`, every frontmatter link and the body
+/// wiki-links of every fragment whose body has one (the set of fragments or
+/// their titles changed); with ids, those fragments' body wiki-links (their
+/// frontmatter links were resolved as they were written). Targets resolve
+/// against every indexed fragment; a body link that names no fragment, or
+/// several, is left out.
+fn relink(conn: &Connection, ids: Option<&[String]>) -> Result<(), ParcError> {
+    if ids.is_none() {
+        conn.execute(
+            &format!(
+                "UPDATE fragment_links SET resolved_id = {RESOLVE_FRONTMATTER} WHERE from_body = 0"
+            ),
+            [],
+        )?;
+    }
     let resolver = {
         let mut stmt = conn.prepare("SELECT id, title FROM fragments")?;
         let refs = stmt
@@ -694,10 +721,12 @@ fn relink_body_links(conn: &Connection, ids: Option<&[String]>) -> Result<(), Pa
 
     let mut clear =
         conn.prepare_cached("DELETE FROM fragment_links WHERE source_id = ?1 AND from_body = 1")?;
-    let mut frontmatter =
-        conn.prepare_cached("SELECT target_id FROM fragment_links WHERE source_id = ?1")?;
+    let mut frontmatter = conn.prepare_cached(
+        "SELECT COALESCE(resolved_id, target_id) FROM fragment_links WHERE source_id = ?1",
+    )?;
     let mut insert = conn.prepare_cached(
-        "INSERT OR IGNORE INTO fragment_links (source_id, target_id, from_body) VALUES (?1, ?2, 1)",
+        "INSERT OR IGNORE INTO fragment_links (source_id, target_id, from_body, resolved_id)
+         VALUES (?1, ?2, 1, CASE WHEN ?2 <> ?1 THEN ?2 END)",
     )?;
     for (id, body) in sources {
         clear.execute([&id])?;
@@ -753,9 +782,9 @@ pub fn index_fragment_auto(
     }
 
     if old_title.as_deref() == Some(fragment.title.as_str()) {
-        relink_body_links(&tx, Some(std::slice::from_ref(&fragment.id)))?;
+        relink(&tx, Some(std::slice::from_ref(&fragment.id)))?;
     } else {
-        relink_body_links(&tx, None)?;
+        relink(&tx, None)?;
     }
     tx.commit()?;
     Ok(())
@@ -767,7 +796,7 @@ pub fn remove_from_index(conn: &Connection, id: &str) -> Result<(), ParcError> {
     let removed = remove_rows(&tx, id)?;
     tx.execute("DELETE FROM fragment_files WHERE id = ?1", [id])?;
     if removed {
-        relink_body_links(&tx, None)?;
+        relink(&tx, None)?;
     }
     tx.commit()?;
     Ok(())
@@ -816,9 +845,8 @@ pub struct BacklinkInfo {
 pub fn get_backlinks(conn: &Connection, target_id: &str) -> Result<Vec<BacklinkInfo>, ParcError> {
     let mut stmt = conn.prepare(
         "SELECT f.id, f.type, f.title
-         FROM fragment_links fl
-         JOIN fragments f ON f.id = fl.source_id
-         WHERE fl.target_id = ?1
+         FROM fragments f
+         WHERE f.id IN (SELECT source_id FROM fragment_links WHERE resolved_id = ?1)
          ORDER BY f.updated_at DESC",
     )?;
 
@@ -835,42 +863,17 @@ pub fn get_backlinks(conn: &Connection, target_id: &str) -> Result<Vec<BacklinkI
     Ok(results)
 }
 
-/// Every indexed link as `(source, target)` full IDs, for drawing a whole-vault
-/// graph. Frontmatter links can be stored as ID prefixes; a prefix resolves when
-/// exactly one indexed fragment starts with it. Links to nothing (a deleted or
-/// ambiguous target) and links to self are left out.
+/// Every indexed link as `(source, target)` full IDs, once per pair, for
+/// drawing a whole-vault graph. Links to nothing (a deleted or ambiguous
+/// target) and links to self are left out.
 pub fn all_links(conn: &Connection) -> Result<Vec<(String, String)>, ParcError> {
-    let ids = conn
-        .prepare("SELECT id FROM fragments")?
-        .query_map([], |row| row.get::<_, String>(0))?
+    let edges = conn
+        .prepare(
+            "SELECT DISTINCT source_id, resolved_id FROM fragment_links
+             WHERE resolved_id IS NOT NULL ORDER BY source_id, resolved_id",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<Vec<_>, _>>()?;
-    let known: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
-
-    let pairs = conn
-        .prepare("SELECT source_id, target_id FROM fragment_links ORDER BY source_id, target_id")?
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut edges = Vec::with_capacity(pairs.len());
-    for (source, target) in pairs {
-        let upper = target.to_uppercase();
-        let resolved = if known.contains(upper.as_str()) {
-            Some(upper)
-        } else {
-            let mut matches = ids.iter().filter(|id| id.starts_with(&upper));
-            match (matches.next(), matches.next()) {
-                (Some(id), None) => Some(id.clone()),
-                _ => None,
-            }
-        };
-        if let Some(target) = resolved {
-            if target != source {
-                edges.push((source, target));
-            }
-        }
-    }
     Ok(edges)
 }
 
@@ -1344,6 +1347,45 @@ mod tests {
             "exact title still wins"
         );
         assert!(backlink_ids(&conn, &other.id).is_empty());
+    }
+
+    /// Frontmatter `links:` usually hold a short prefix. Backlinks, the vault
+    /// graph and `linked:` all have to see it as a link to the full ID, even
+    /// when the linker was indexed before its target existed.
+    #[test]
+    fn frontmatter_prefix_links_resolve_once_their_target_is_indexed() {
+        let (_tmp, vault) = test_vault();
+        let target = with_id(make_fragment("Target", ""), "01KAAA0000000000000000000A");
+        let mut linker = with_id(make_fragment("Linker", ""), "01JZZZZZZZZZZZZZZZZZZZZZZZ");
+        // A lowercase 10-character prefix, and the same target again in the
+        // body: one link, not two.
+        linker.links = vec!["01kaaa0000".into()];
+        linker.body = "See [[01KAAA0000000000000000000A]].".into();
+        fragment::create_fragment(&vault, &linker).unwrap();
+        let conn = open_index(&vault).unwrap();
+        assert!(
+            all_links(&conn).unwrap().is_empty(),
+            "dangling until the target exists"
+        );
+
+        fragment::create_fragment(&vault, &target).unwrap();
+        index_fragment_auto(&conn, &target, &vault).unwrap();
+        assert_eq!(backlink_ids(&conn, &target.id), vec![linker.id.clone()]);
+        assert_eq!(
+            all_links(&conn).unwrap(),
+            vec![(linker.id.clone(), target.id.clone())]
+        );
+
+        // Rebuilt from the files, in whatever order sync reads them.
+        drop(conn);
+        let conn = reindex(&vault)
+            .map(|_| open_index(&vault).unwrap())
+            .unwrap();
+        assert_eq!(backlink_ids(&conn, &target.id), vec![linker.id.clone()]);
+
+        std::fs::remove_file(fragment_path(&vault, &target.id)).unwrap();
+        remove_from_index(&conn, &target.id).unwrap();
+        assert!(all_links(&conn).unwrap().is_empty());
     }
 
     #[test]
