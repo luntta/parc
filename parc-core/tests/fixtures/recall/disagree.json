@@ -1,0 +1,11 @@
+{
+  "description": "Two dated notes that disagree. Both are evidence: the later one revises the earlier one.",
+  "fragments": [
+    {"key":"runs_2022","created_at":"2022-04-03T07:00:00Z","type":"note","title":"Morning runs work","body":"Three weeks of running before work: I'm calmer at my desk and sleep better. Keep the 6:30 alarm."},
+    {"key":"runs_2024","created_at":"2024-01-15T21:00:00Z","type":"note","title":"Stopped the early runs","body":"By mid-afternoon I was wrecked every day. Running after work instead; the day holds together better."},
+    {"key":"runs_seed","created_at":"2025-08-25T12:00:00Z","type":"note","title":"6 am jogging group?","body":"A neighbour asked if I want to join the park jogging crew that meets at six before work."}
+  ],
+  "cases": [
+    {"name":"disagree: early jogging, 1.5 and 3 years","seed":"runs_seed","expected_evidence":["runs_2022","runs_2024"],"candidate_limit":3,"why":"Each shares only 'work'."}
+  ]
+}

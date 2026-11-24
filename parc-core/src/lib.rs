@@ -14,6 +14,7 @@ pub mod index;
 pub mod link;
 pub mod ops;
 pub mod plugin;
+pub mod recall;
 pub mod schema;
 pub mod search;
 pub mod secure_fs;

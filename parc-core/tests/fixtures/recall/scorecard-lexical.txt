@@ -1,0 +1,53 @@
+Recall scorecard: lexical baseline (parc_core::recall)
+Fixtures: tests/fixtures/recall/*.json. Accept changes: PARC_RECALL_BLESS=1 cargo test -p parc-core --test recall_bench
+
+Sources found within each case's limit: 1 of 11
+Abstained where nothing is related:     3 of 4
+
+== abstain: coffee filters (Finnish)  [abstained]
+
+== abstain: flights to Lisbon  [abstained]
+
+== abstain: client pitch, not a football pitch  [should abstain, returned 2]
+   returned 1. background/five_a_side       words: pitch, thursday
+            2. background/rhubarb           words: leave, time
+
+== disagree: early jogging, 1.5 and 3 years  [found 0 of 2 in the top 3]
+   wanted   disagree/runs_2022: not returned; shares with the seed: work
+   wanted   disagree/runs_2024: not returned; shares with the seed: work
+
+== ferry: private questions, 2 years  [found 0 of 1 in the top 1]
+   wanted   ferry/old_observation: not returned; shares no words with the seed
+   returned 1. ferry/recent_distractor      words: orientation, room, volunteer
+            2. background/spring_fair       words: people, volunteer
+
+== ferry: kitchen timer  [abstained]
+
+== Finnish to English: who brings what, 3 years  [found 0 of 1 in the top 3]
+   wanted   languages/potluck_en: not returned; shares no words with the seed
+
+== English to Finnish: skipping gears, 2 years  [found 0 of 1 in the top 3]
+   wanted   languages/bike_fi: not returned; shares no words with the seed
+
+== Finnish inflection: knee pain, 1 year  [found 0 of 1 in the top 3]
+   wanted   languages/knee_fi_old: not returned; shares no words with the seed
+
+== paraphrase: long stand-up, 1 year  [found 0 of 1 in the top 3]
+   wanted   paraphrase/standup_old: not returned; shares with the seed: minutes
+
+== paraphrase: laptop drains shut, 3 years  [found 0 of 1 in the top 3]
+   wanted   paraphrase/laptop_old: not returned; shares with the seed: closed
+
+== control: sourdough acetone, 2 years  [found 1 of 1 in the top 1]
+   wanted   paraphrase/sourdough_old: rank 1
+   returned 1. paraphrase/sourdough_old     words: acetone, smell, smells, starter
+
+== tagged: slugs in the garden, 3 years  [found 0 of 1 in the top 3]
+   wanted   paraphrase/garden_old: rank 4, outside the top 3
+   returned 1. background/compost           tags: garden; words: week
+            2. background/seed_order        tags: garden
+            3. background/rhubarb           tags: garden
+
+== transcript: floppy tomato starts, 3 years  [found 0 of 1 in the top 3]
+   wanted   transcript/seedlings_old: not returned; shares with the seed: tomato
+   returned 1. background/rhubarb           words: time, year

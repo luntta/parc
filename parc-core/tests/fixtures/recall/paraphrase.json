@@ -1,0 +1,22 @@
+{
+  "description": "The same problem met again in other words, 1 and 3 years apart. The sourdough case shares words on purpose, as a control: word matching should find it. The garden case is tagged on both sides.",
+  "fragments": [
+    {"key":"standup_old","created_at":"2024-03-04T08:30:00Z","type":"note","title":"Written updates before the weekly sync","body":"Asked everyone to post what they did and what's blocking them in the team thread by Monday noon. The meeting itself shrank from an hour to twenty-five minutes and was spent on actual problems."},
+    {"key":"standup_seed","created_at":"2025-03-10T09:15:00Z","type":"note","title":"Daily check-in drags","body":"Our morning check-in ran forty minutes again. Each person recites their tickets and nobody is listening until it's their turn."},
+
+    {"key":"laptop_old","created_at":"2022-09-20T18:00:00Z","type":"note","title":"ThinkPad dead in the bag","body":"Kept finding it flat after carrying it around closed. Culprit: USB wake was enabled in the firmware setup. Turning it off fixed it; now it loses maybe 3% overnight."},
+    {"key":"laptop_seed","created_at":"2025-10-02T07:40:00Z","type":"note","title":"New laptop battery drains while shut","body":"Lid closed at night at 100%, and by breakfast it's down to 40%. Sleep doesn't seem to be real sleep."},
+
+    {"key":"sourdough_old","created_at":"2023-02-11T10:00:00Z","type":"note","title":"Starter smells like nail polish","body":"An acetone smell means the starter is hungry, not dead. Feed it twice a day at 1:1:1 for a few days and keep it somewhere warmer."},
+    {"key":"sourdough_seed","created_at":"2025-01-26T16:20:00Z","type":"note","title":"Starter acetone smell again","body":"Back from the trip and the jar smells sharp. Should I throw it out?"},
+
+    {"key":"garden_old","created_at":"2022-05-14T19:00:00Z","type":"note","title":"Slugs ate the lettuce","tags":["garden"],"body":"Beer traps by the raised bed caught dozens overnight. Copper tape did nothing."},
+    {"key":"garden_seed","created_at":"2025-05-20T17:30:00Z","type":"todo","title":"Protect the hostas","tags":["garden"],"body":"Leaves are full of holes this week."}
+  ],
+  "cases": [
+    {"name":"paraphrase: long stand-up, 1 year","seed":"standup_seed","expected_evidence":["standup_old"],"candidate_limit":3,"why":"Shares only 'minutes'."},
+    {"name":"paraphrase: laptop drains shut, 3 years","seed":"laptop_seed","expected_evidence":["laptop_old"],"candidate_limit":3,"why":"Shares only 'closed'; 'drains' and 'flat' don't match without meaning."},
+    {"name":"control: sourdough acetone, 2 years","seed":"sourdough_seed","expected_evidence":["sourdough_old"],"candidate_limit":1,"why":"Shares 'starter', 'acetone' and 'smell': word matching should get this one."},
+    {"name":"tagged: slugs in the garden, 3 years","seed":"garden_seed","expected_evidence":["garden_old"],"candidate_limit":3,"why":"Both tagged garden, as are several unrelated background notes."}
+  ]
+}

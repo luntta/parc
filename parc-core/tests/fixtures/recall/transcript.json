@@ -1,0 +1,10 @@
+{
+  "description": "A dictated capture as speech-to-text writes it: fillers, repeats, no punctuation, the title being the first words said.",
+  "fragments": [
+    {"key":"seedlings_old","created_at":"2022-03-29T18:00:00Z","type":"note","title":"Leggy tomato seedlings","body":"Stretched thin and pale on the kitchen sill. Moved them under the grow light at 10 cm, 14 h a day, and they thickened up within a week."},
+    {"key":"seedlings_seed","created_at":"2025-03-18T20:10:00Z","type":"note","title":"okay so um the tomato starts are doing the thing again","body":"okay so um the tomato starts are doing the the thing again where they go all tall and floppy and kind of yellowish like they're reaching for something i dunno maybe the the window is not enough this time of year"}
+  ],
+  "cases": [
+    {"name":"transcript: floppy tomato starts, 3 years","seed":"seedlings_seed","expected_evidence":["seedlings_old"],"candidate_limit":3,"why":"Shares only 'tomato', which a background seed order also has."}
+  ]
+}

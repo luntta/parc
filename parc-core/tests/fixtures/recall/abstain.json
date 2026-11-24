@@ -1,0 +1,13 @@
+{
+  "description": "Captures with nothing related in the vault. The right answer is no candidates. The client pitch shares two words with a football note that means something else.",
+  "fragments": [
+    {"key":"coffee_fi","created_at":"2025-07-01T08:00:00Z","type":"todo","title":"Osta kahvinsuodattimia","body":""},
+    {"key":"flights","created_at":"2025-04-02T13:00:00Z","type":"todo","title":"Book flights to Lisbon for the conference","body":"Check whether the venue is near the old town."},
+    {"key":"pitch","created_at":"2025-10-14T09:00:00Z","type":"note","title":"Client pitch on Thursday","body":"Open with the cost numbers, keep the demo under ten minutes, leave time for questions."}
+  ],
+  "cases": [
+    {"name":"abstain: coffee filters (Finnish)","seed":"coffee_fi","expected_evidence":[],"expected_result":"abstain"},
+    {"name":"abstain: flights to Lisbon","seed":"flights","expected_evidence":[],"expected_result":"abstain"},
+    {"name":"abstain: client pitch, not a football pitch","seed":"pitch","expected_evidence":[],"expected_result":"abstain"}
+  ]
+}
