@@ -35,6 +35,9 @@ impl Router {
             "fragment.unlink" => methods::link::unlink(vault, params),
             "fragment.backlinks" => methods::link::backlinks(vault, params),
 
+            // Recall: related fragments for a fragment or a draft
+            "recall.context" => methods::recall::context(vault, params),
+
             // Attachment methods
             "fragment.attach" => methods::attachment::attach(vault, params),
             "fragment.detach" => methods::attachment::detach(vault, params),

@@ -266,6 +266,24 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Find fragments related to a fragment or to draft text, however old
+    Recall {
+        /// Fragment ID or prefix (with --text: the fragment the draft edits)
+        id: Option<String>,
+        /// Draft text (title and body) to find related fragments for; - reads stdin
+        #[arg(long)]
+        text: Option<String>,
+        /// The draft's tags (its inline #tags count anyway)
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Most fragments to show (1 to 20)
+        #[arg(long, default_value_t = parc_core::recall::DEFAULT_LIMIT as u64,
+              value_parser = clap::value_parser!(u64).range(1..=parc_core::recall::MAX_LIMIT as u64))]
+        limit: u64,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// List all fragments linking to a given fragment
     Backlinks {
         /// Fragment ID or prefix
@@ -664,6 +682,13 @@ fn main() -> anyhow::Result<()> {
                     commands::unlink::run(&vault, &id_a, &id_b, json)
                 }
                 Commands::Backlinks { id, json } => commands::backlinks::run(&vault, &id, json),
+                Commands::Recall {
+                    id,
+                    text,
+                    tags,
+                    limit,
+                    json,
+                } => commands::recall::run(&vault, id, text, tags, limit as usize, json),
                 Commands::Doctor { json } => commands::doctor::run(&vault, json),
                 Commands::History {
                     id,

@@ -212,6 +212,30 @@ Find the lines of fragment bodies that contain some text, like `grep`. The deskt
 {"jsonrpc":"2.0","id":1,"method":"fragment.grep","params":{"pattern":"ferry","limit":50}}
 ```
 
+### recall.context
+
+The fragments related to a saved fragment, or to text that isn't saved yet, however old they are: what a "related notes" panel shows while you write or dictate. Cheap enough to call on every pause in typing (about 20 ms per call on a 10,000-fragment vault, counting process start).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | one of `id`, `text` | A fragment ID or unique prefix. Alone, recall works from the saved fragment. With `text`, it names the fragment the text is a draft of, which is then left out of the results while its saved frontmatter links and its backlinks still count |
+| `text` | string | one of `id`, `text` | Draft title and body together. Its `#tags` and `[[links]]` count as they would once saved |
+| `tags` | string[] | no | The draft's tags; only with `text` |
+| `limit` | number | no | Most sources to return (default 5, at most 20) |
+
+A source qualifies by a link with the seed (either way), a shared tag, or at least two shared words; common English and Finnish words don't count. The whole vault is searched, archived fragments included. An empty `sources` means nothing is clearly related.
+
+**Result:** `{ "seed": { "id", "words", "tags" }, "sources": [...], "truncated": <bool> }`. `seed.words` are the words searched for. Each source, best first, is `{ "id", "type", "title", "status", "archived", "created_at", "updated_at", "revision", "score", "reasons", "excerpts" }`:
+- `revision` is the file's revision as `fragment.get` reports it, so a quote can be checked against the fragment later.
+- `reasons` is `{ "shared_words", "shared_tags", "linked" }`.
+- `excerpts` are up to two body lines, verbatim: those with the most shared words, or the first line with text when none has any. Each is `{ "line", "column", "text", "ranges" }`, numbered as in `fragment.grep`; `column` is where `text` starts, past 1 when a long line was cut to the part around its first match, and `ranges` marks the shared words in `text`.
+
+`truncated` is true when more fragments qualified than `limit` allowed.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"recall.context","params":{"text":"Nobody asked in front of the room. Anonymous question slips?"}}
+```
+
 ### fragment.link
 
 Create a bidirectional link between two fragments.

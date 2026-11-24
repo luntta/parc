@@ -97,3 +97,28 @@ alias inbox='parc search "type:note created:today"'
 
 - [Search DSL]({{ '/search-dsl/' | url }}) — the full query language
 - [Tags & links]({{ '/concepts/tags-and-links/' | url }}) — how tags merge from frontmatter and inline `#hashtags`
+
+## recall
+
+```bash
+parc recall [<id>] [--text <text> | --text -]
+            [--tag <tag>]...
+            [--limit <n>]
+            [--json]
+```
+
+Finds the fragments related to a saved fragment, or to text that isn't saved yet, however old they are. Each comes with why it matched (shared words, tags, a link) and up to two lines of its body, verbatim, with their line numbers.
+
+```bash
+# Related to a saved fragment
+parc recall 01JQ7V3X
+
+# Related to a draft; - reads it from stdin
+parc recall --text "the index is stale after a pull"
+pbpaste | parc recall --text -
+
+# Unsaved edits to a saved fragment: that fragment is left out
+parc recall 01JQ7V3X --text "$(cat draft.md)"
+```
+
+A fragment qualifies by a link with the seed, a shared tag, or at least two shared words; common English and Finnish words don't count. Archived fragments are included. "Nothing in the vault is clearly related" is an answer, not an error. `--json` prints the same result as the server's [`recall.context`]({{ '/json-rpc/' | url }}#recallcontext).

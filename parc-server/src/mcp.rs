@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
-use parc_core::fragment;
+use parc_core::{fragment, recall};
 
 use crate::jsonrpc::{Response, RpcError};
 use crate::methods;
@@ -79,7 +79,13 @@ impl McpServer {
     }
 
     fn tools(&self) -> Vec<Value> {
-        let mut tools = vec![search_tool(), get_tool(), types_tool(), tags_tool()];
+        let mut tools = vec![
+            search_tool(),
+            recall_tool(),
+            get_tool(),
+            types_tool(),
+            tags_tool(),
+        ];
         if !self.read_only {
             tools.extend([create_tool(), update_tool(), link_tool()]);
         }
@@ -100,6 +106,7 @@ impl McpServer {
         let vault = self.vault.as_path();
         let outcome = match name {
             "search" => search(vault, args),
+            "recall" => recall(vault, args),
             "get_fragment" => get_fragment(vault, args),
             "list_types" => list_types(vault, args),
             "list_tags" => list_tags(vault, args),
@@ -177,6 +184,28 @@ fn search_tool() -> Value {
             json!({
                 "query": { "type": "string", "description": "Words and filters, e.g. `type:decision #search` or `status:open due:this-week`." },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": "Most results to return (default 20)." },
+            }),
+            &[],
+        ),
+        read_only_hints(),
+    )
+}
+
+fn recall_tool() -> Value {
+    tool(
+        "recall",
+        "Recall related fragments",
+        "Find fragments related to a saved fragment or to text being written, however long ago they were written. \
+Each comes with why it matched (shared words, tags, links), its revision and short verbatim excerpts with line numbers. \
+Pass `id` for a saved fragment, or `text` for a draft (with `id` too when the draft edits that fragment). \
+No results means nothing is clearly related: say so rather than guess. \
+Matching is by shared words, tags and links, so a note that says the same thing in other words can be missed.",
+        object(
+            json!({
+                "id": { "type": "string", "description": "Fragment ID or unique prefix." },
+                "text": { "type": "string", "description": "Draft title and body. Its #tags and [[links]] count." },
+                "tags": { "type": "array", "items": { "type": "string" }, "description": "The draft's tags, with text." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": recall::MAX_LIMIT, "description": "Most fragments to return (default 5)." },
             }),
             &[],
         ),
@@ -432,6 +461,103 @@ fn search(vault: &Path, args: &Map<String, Value>) -> ToolResult {
             if !snippet.is_empty() {
                 text.push_str(&format!("\n    {}", snippet));
             }
+        }
+    }
+    Ok(text)
+}
+
+fn recall(vault: &Path, args: &Map<String, Value>) -> ToolResult {
+    check_args(args, &["id", "text", "tags", "limit"])?;
+    let mut params = json!({});
+    if let Some(id) = string_arg(args, "id")?.filter(|s| !s.trim().is_empty()) {
+        params["id"] = json!(resolve_id(vault, id)?);
+    }
+    if let Some(text) = string_arg(args, "text")? {
+        params["text"] = json!(text);
+    }
+    for key in ["tags", "limit"] {
+        if let Some(value) = args.get(key).filter(|v| !v.is_null()) {
+            params[key] = value.clone();
+        }
+    }
+    let ctx = methods::recall::context(vault, params).map_err(rpc_message)?;
+    let sources = ctx["sources"].as_array().cloned().unwrap_or_default();
+    if sources.is_empty() {
+        let searched = ctx["seed"]["words"].as_array().map_or(0, Vec::len);
+        return Ok(
+            if searched == 0 && ctx["seed"]["tags"].as_array().is_none_or(Vec::is_empty) {
+                "Nothing to go on yet: the text has no words to search for.".to_string()
+            } else {
+                "Nothing in the vault is clearly related.".to_string()
+            },
+        );
+    }
+    let mut text = format!(
+        "{} related fragment{}{}:\n",
+        sources.len(),
+        if sources.len() == 1 { "" } else { "s" },
+        if ctx["truncated"] == true {
+            " (more were found; raise limit to see them)"
+        } else {
+            ""
+        }
+    );
+    for s in &sources {
+        let mut kind = str_field(s, "type").to_string();
+        if let Some(status) = s.get("status").and_then(Value::as_str) {
+            kind = format!("{}, {}", kind, status);
+        }
+        if s["archived"] == true {
+            kind.push_str(", archived");
+        }
+        let created = str_field(s, "created_at");
+        text.push_str(&format!(
+            "\n{}  [{}]  {}  (created {}, revision {})",
+            str_field(s, "id"),
+            kind,
+            str_field(s, "title"),
+            created.get(..10).unwrap_or(created),
+            str_field(s, "revision"),
+        ));
+        let reasons = &s["reasons"];
+        let list = |key: &str| -> Vec<String> {
+            reasons[key]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut why = Vec::new();
+        if reasons["linked"] == true {
+            why.push("linked".to_string());
+        }
+        let tags = list("shared_tags");
+        if !tags.is_empty() {
+            why.push(format!(
+                "tags {}",
+                tags.iter()
+                    .map(|t| format!("#{t}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
+        }
+        let words = list("shared_words");
+        if !words.is_empty() {
+            why.push(format!("words {}", words.join(", ")));
+        }
+        text.push_str(&format!("\n    why: {}", why.join("; ")));
+        for e in s["excerpts"].as_array().into_iter().flatten() {
+            let column = e["column"].as_u64().unwrap_or(1);
+            let at = if column > 1 {
+                format!("line {}, from column {}", e["line"], column)
+            } else {
+                format!("line {}", e["line"])
+            };
+            text.push_str(&format!("\n    {}: \"{}\"", at, str_field(e, "text")));
         }
     }
     Ok(text)
@@ -807,10 +933,16 @@ mod tests {
                 })
                 .collect()
         };
-        assert_eq!(names(&full).len(), 7);
+        assert_eq!(names(&full).len(), 8);
         assert_eq!(
             names(&read_only),
-            vec!["search", "get_fragment", "list_types", "list_tags"]
+            vec![
+                "search",
+                "recall",
+                "get_fragment",
+                "list_types",
+                "list_tags"
+            ]
         );
 
         let reply = request(
@@ -882,6 +1014,53 @@ mod tests {
             text.contains("Mitigated: open_index syncs first."),
             "{text}"
         );
+    }
+
+    #[test]
+    fn recall_quotes_related_fragments_for_a_draft_or_a_saved_one() {
+        let (_tmp, server) = server(false);
+        let (text, _) = call(
+            &server,
+            "create_fragment",
+            json!({ "type": "note", "title": "What helped at the ferry desk",
+                    "body": "The queue was watching.\nA route card to mark in private worked better." }),
+        );
+        let ferry = created_id(&text);
+        let (text, _) = call(
+            &server,
+            "create_fragment",
+            json!({ "type": "note", "title": "Orientation", "body": "Try private route cards." }),
+        );
+        let orientation = created_id(&text);
+
+        let (text, is_error) = call(
+            &server,
+            "recall",
+            json!({ "text": "Nobody asks in front of everyone. Private route cards?", "limit": 1 }),
+        );
+        assert!(!is_error, "{text}");
+        assert!(
+            text.starts_with("1 related fragment (more were found"),
+            "{text}"
+        );
+        assert!(text.contains("why: words cards, private, route"), "{text}");
+
+        let (text, _) = call(&server, "recall", json!({ "id": &orientation[..12] }));
+        assert!(text.contains(&ferry), "{text}");
+        assert!(
+            text.contains("line 2: \"A route card to mark in private worked better.\""),
+            "{text}"
+        );
+        assert!(
+            !text.contains(&format!("\n{orientation}")),
+            "never itself: {text}"
+        );
+
+        let (text, is_error) = call(&server, "recall", json!({ "text": "kitchen timer broken" }));
+        assert!(!is_error);
+        assert_eq!(text, "Nothing in the vault is clearly related.");
+        let (text, is_error) = call(&server, "recall", json!({}));
+        assert!(is_error, "{text}");
     }
 
     #[test]

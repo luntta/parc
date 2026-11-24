@@ -3123,3 +3123,72 @@ fn test_only_the_global_vault_chooses_the_editor() {
     assert!(!marker.exists());
     assert_eq!(title(&run), "FromGlobal");
 }
+
+#[test]
+fn test_recall_for_a_draft_from_stdin_and_for_a_saved_fragment() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    let ferry = create_fragment_directly(
+        &tmp,
+        "note",
+        "What helped at the ferry desk",
+        "The queue was watching.\nA route card to mark in private worked better.",
+    );
+    let orientation = create_fragment_directly(
+        &tmp,
+        "note",
+        "Orientation",
+        "Try private route cards next time.",
+    );
+    create_fragment_directly(&tmp, "note", "Kitchen timer", "Broken again.");
+
+    // A draft piped in: found by shared words, quoted with its line number.
+    parc()
+        .args(["recall", "--text", "-"])
+        .write_stdin("Nobody asked in front of everyone. Private route cards?")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RELATED TO THE DRAFT"))
+        .stdout(predicate::str::contains("What helped at the ferry desk"))
+        .stdout(predicate::str::contains(
+            "2: A route card to mark in private worked better.",
+        ))
+        .stdout(predicate::str::contains("Kitchen timer").not());
+
+    // A saved fragment by ID, as JSON: never itself.
+    let out = parc()
+        .args(["recall", &orientation[..12], "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let ctx: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(ctx["seed"]["id"], orientation.as_str());
+    let ids: Vec<&str> = ctx["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![ferry.as_str()]);
+
+    parc()
+        .args(["recall", "--text", "kitchen sink plumbing leak"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Nothing in the vault is clearly related.",
+        ));
+    parc()
+        .args(["recall"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "give a fragment ID, --text, or both",
+        ));
+}

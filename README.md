@@ -180,6 +180,8 @@ Type aliases work everywhere — `parc n` is `parc new note`, `parc t` is `parc 
 
 ```bash
 parc search <query> [--sort order] [--limit N]
+parc recall <id>                       # Related fragments, however old
+parc recall --text "draft text"        # Related to text not saved yet (- for stdin)
 ```
 
 ### Links
@@ -293,7 +295,7 @@ claude mcp add parc -- parc mcp      # Claude Code, using this project's vault
 parc mcp --read-only                 # search and read only
 ```
 
-Tools: `search`, `get_fragment`, `list_types`, `list_tags`, `create_fragment`, `update_fragment` (with `append` and `expected_revision`), `link_fragments`. See the [MCP reference](https://luntta.github.io/parc/mcp/).
+Tools: `search`, `recall`, `get_fragment`, `list_types`, `list_tags`, `create_fragment`, `update_fragment` (with `append` and `expected_revision`), `link_fragments`. See the [MCP reference](https://luntta.github.io/parc/mcp/).
 
 ### Plugins
 

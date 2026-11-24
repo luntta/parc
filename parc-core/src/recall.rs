@@ -1,4 +1,5 @@
-//! Recall: the other fragments that bear on a given one, however old.
+//! Recall: the other fragments that bear on a fragment, or on text that isn't
+//! saved yet, however old they are.
 //!
 //! Each signal ranks its own candidates: words shared through the full-text
 //! index, shared tags, and links in either direction. The rankings are merged
@@ -11,17 +12,26 @@
 //! The whole vault is searched, archived fragments included: old material is
 //! what recall is for, and archiving takes a fragment out of lists, not out of
 //! memory.
+//!
+//! [`recall`] ranks; [`context`] adds what a reader (a person, or a model)
+//! needs to judge each source: its facts and short verbatim excerpts.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
+use serde::Serialize;
 
 use crate::error::ParcError;
 
 /// Fewest shared words that count as evidence on their own. One word in
 /// common is chance more often than not.
 pub const MIN_SHARED_WORDS: usize = 2;
+
+/// Sources [`context`] returns unless asked for another number.
+pub const DEFAULT_LIMIT: usize = 5;
+/// Most sources [`context`] returns.
+pub const MAX_LIMIT: usize = 20;
 
 /// How many candidates each signal ranks before the rankings are merged.
 const POOL: usize = 50;
@@ -34,10 +44,30 @@ const MAX_QUERY_WORDS: usize = 100;
 /// first place from outweighing agreement between signals.
 const RRF_K: f64 = 60.0;
 
+/// Excerpts per source, and the longest one in characters.
+const MAX_EXCERPTS: usize = 2;
+const EXCERPT_CHARS: usize = 200;
+
+/// What to find related fragments for.
+#[derive(Debug, Clone)]
+pub enum Seed {
+    /// A saved fragment, as indexed (a full ID).
+    Fragment(String),
+    /// Text that isn't saved: a capture being typed or dictated (title and
+    /// body together), or unsaved edits to the fragment `id`. Its `#tags` and
+    /// `[[links]]` count as they would once saved. With an `id`, that fragment
+    /// is left out of the results, and its saved frontmatter links and the
+    /// fragments linking to it still count.
+    Draft {
+        text: String,
+        tags: Vec<String>,
+        id: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct RecallQuery {
-    /// The fragment to find related ones for (a full ID).
-    pub seed: String,
+    pub seed: Seed,
     /// Only consider fragments created at or before this time. `None` means
     /// the whole vault.
     pub as_of: Option<DateTime<Utc>>,
@@ -45,7 +75,7 @@ pub struct RecallQuery {
     pub limit: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Candidate {
     pub id: String,
     /// Merged reciprocal-rank score. Only the order means anything.
@@ -54,10 +84,10 @@ pub struct Candidate {
 }
 
 /// Why a candidate was returned.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Reasons {
-    /// Words of the seed's title or body that the candidate also uses
-    /// (lowercased, common words left out), sorted.
+    /// Words of the seed that the candidate also uses (lowercased, common
+    /// words left out), sorted.
     pub shared_words: Vec<String>,
     pub shared_tags: Vec<String>,
     /// A link between the seed and the candidate, in either direction.
@@ -70,20 +100,239 @@ impl Reasons {
     }
 }
 
-/// Rank the fragments related to `query.seed`, best first. Never returns the
-/// seed itself.
+/// What [`context`] returns: the sources, best first, and what was searched.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecallContext {
+    pub seed: SeedInfo,
+    /// Best first. Empty when nothing in the vault is related enough.
+    pub sources: Vec<Source>,
+    /// True when more fragments qualified than the limit allowed.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SeedInfo {
+    /// The saved fragment the seed is, or is a draft of.
+    pub id: Option<String>,
+    /// The words searched for, in order of first use.
+    pub words: Vec<String>,
+    pub tags: Vec<String>,
+}
+
+/// A related fragment, with enough to judge the relation without opening it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Source {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub fragment_type: String,
+    pub title: String,
+    pub status: Option<String>,
+    pub archived: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    /// The file's revision as indexed, as `fragment.get` reports it: a quote
+    /// from the excerpts still stands while the revision is unchanged.
+    pub revision: Option<String>,
+    pub score: f64,
+    pub reasons: Reasons,
+    /// Up to two lines of the body, verbatim: those with the most shared
+    /// words, or the first line with text when no word is shared.
+    pub excerpts: Vec<Excerpt>,
+}
+
+/// Part of one body line.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Excerpt {
+    /// 1-based line of the body as it is edited (as in `grep`).
+    pub line: usize,
+    /// 1-based column, in characters, where `text` starts: past 1 when a long
+    /// line was cut down to the part around its first match.
+    pub column: usize,
+    pub text: String,
+    /// Shared words in `text`, as `[start, end)` character offsets into it.
+    pub ranges: Vec<(usize, usize)>,
+}
+
+/// The seed reduced to what the signals search with.
+struct Probe {
+    /// A fragment never returned (the seed itself, or the one being edited).
+    exclude: Option<String>,
+    words: Vec<String>,
+    tags: Vec<String>,
+    /// Fragments the seed links to (full IDs).
+    links_to: Vec<String>,
+    /// Count the fragments that link to this one.
+    linked_from: Option<String>,
+}
+
+/// Rank the fragments related to the seed, best first. Never returns the seed
+/// itself (or, for a draft, the fragment it is a draft of).
 pub fn recall(conn: &Connection, query: &RecallQuery) -> Result<Vec<Candidate>, ParcError> {
-    let (title, body): (String, String) = conn
-        .query_row(
-            "SELECT title, body FROM fragments WHERE id = ?1",
-            [&query.seed],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => ParcError::FragmentNotFound(query.seed.clone()),
-            e => e.into(),
+    let probe = probe(conn, &query.seed)?;
+    rank(conn, &probe, query.as_of, query.limit)
+}
+
+/// [`recall`] with each source's facts and verbatim excerpts. `limit` is
+/// capped at [`MAX_LIMIT`].
+pub fn context(conn: &Connection, query: &RecallQuery) -> Result<RecallContext, ParcError> {
+    let probe = probe(conn, &query.seed)?;
+    let limit = query.limit.min(MAX_LIMIT);
+    let mut found = rank(conn, &probe, query.as_of, limit + 1)?;
+    let truncated = found.len() > limit;
+    found.truncate(limit);
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT f.type, f.title, f.status, f.archived, f.created_at, f.updated_at, f.body, ff.revision
+         FROM fragments f LEFT JOIN fragment_files ff ON ff.id = f.id
+         WHERE f.id = ?1",
+    )?;
+    let mut sources = Vec::with_capacity(found.len());
+    for c in found {
+        let mut source = stmt.query_row([&c.id], |row| {
+            let body: String = row.get(6)?;
+            Ok(Source {
+                id: String::new(),
+                fragment_type: row.get(0)?,
+                title: row.get(1)?,
+                status: row.get(2)?,
+                archived: row.get::<_, i64>(3)? != 0,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                revision: row.get(7)?,
+                score: c.score,
+                excerpts: excerpts(&body, &c.reasons.shared_words),
+                reasons: Reasons::default(),
+            })
         })?;
-    let as_of = query.as_of.map(|t| t.to_rfc3339());
+        source.id = c.id;
+        source.reasons = c.reasons;
+        sources.push(source);
+    }
+
+    Ok(RecallContext {
+        seed: SeedInfo {
+            id: probe.exclude,
+            words: probe.words,
+            tags: probe.tags,
+        },
+        sources,
+        truncated,
+    })
+}
+
+fn probe(conn: &Connection, seed: &Seed) -> Result<Probe, ParcError> {
+    match seed {
+        Seed::Fragment(id) => {
+            let (title, body): (String, String) = conn
+                .query_row(
+                    "SELECT title, body FROM fragments WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| not_found(e, id))?;
+            Ok(Probe {
+                exclude: Some(id.clone()),
+                words: query_words(&format!("{title}\n{body}")),
+                tags: column(
+                    conn,
+                    "SELECT tag FROM fragment_tags WHERE fragment_id = ?1 ORDER BY tag",
+                    id,
+                )?,
+                links_to: column(
+                    conn,
+                    "SELECT DISTINCT resolved_id FROM fragment_links
+                     WHERE source_id = ?1 AND resolved_id IS NOT NULL",
+                    id,
+                )?,
+                linked_from: Some(id.clone()),
+            })
+        }
+        Seed::Draft { text, tags, id } => {
+            if let Some(id) = id {
+                conn.query_row("SELECT 1 FROM fragments WHERE id = ?1", [id], |_| Ok(()))
+                    .map_err(|e| not_found(e, id))?;
+            }
+            let inline = crate::tag::extract_inline_tags(text);
+            let mut links_to = draft_links(conn, text, id.as_deref())?;
+            if let Some(id) = id {
+                // Frontmatter links aren't in the text; body links are.
+                links_to.extend(column(
+                    conn,
+                    "SELECT DISTINCT resolved_id FROM fragment_links
+                     WHERE source_id = ?1 AND from_body = 0 AND resolved_id IS NOT NULL",
+                    id,
+                )?);
+                links_to.sort();
+                links_to.dedup();
+            }
+            Ok(Probe {
+                exclude: id.clone(),
+                words: query_words(text),
+                tags: crate::tag::merge_tags(tags, &inline),
+                links_to,
+                linked_from: id.clone(),
+            })
+        }
+    }
+}
+
+fn not_found(e: rusqlite::Error, id: &str) -> ParcError {
+    match e {
+        rusqlite::Error::QueryReturnedNoRows => ParcError::FragmentNotFound(id.to_string()),
+        e => e.into(),
+    }
+}
+
+fn column(conn: &Connection, sql: &str, id: &str) -> Result<Vec<String>, ParcError> {
+    let mut stmt = conn.prepare_cached(sql)?;
+    let rows = stmt.query_map([id], |row| row.get(0))?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// The fragments a draft's `[[links]]` name, resolved as the index resolves
+/// body links: ID prefix, exact title, then unique title prefix.
+fn draft_links(
+    conn: &Connection,
+    text: &str,
+    own_id: Option<&str>,
+) -> Result<Vec<String>, ParcError> {
+    let links = crate::link::parse_wiki_links(text);
+    if links.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare_cached("SELECT id, title FROM fragments")?;
+    let refs = stmt
+        .query_map([], |row| {
+            Ok(crate::link::FragmentRef {
+                id: row.get(0)?,
+                title: row.get(1)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut ids: Vec<String> = links
+        .iter()
+        .filter_map(
+            |l| match crate::link::resolve_link_target(&l.target, &refs) {
+                crate::link::ResolveOutcome::Unique(id) if Some(id.as_str()) != own_id => Some(id),
+                _ => None,
+            },
+        )
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+fn rank(
+    conn: &Connection,
+    probe: &Probe,
+    as_of: Option<DateTime<Utc>>,
+    limit: usize,
+) -> Result<Vec<Candidate>, ParcError> {
+    let filter = Eligible {
+        exclude: probe.exclude.as_deref(),
+        as_of: as_of.map(|t| t.to_rfc3339()),
+    };
 
     let mut candidates: HashMap<String, Candidate> = HashMap::new();
     let mut fuse = |ranking: Vec<(String, Reasons)>| {
@@ -97,19 +346,21 @@ pub fn recall(conn: &Connection, query: &RecallQuery) -> Result<Vec<Candidate>, 
             merge(&mut c.reasons, reasons);
         }
     };
-
-    let mut words = content_words(&format!("{title}\n{body}"));
-    words.truncate(MAX_QUERY_WORDS);
-    fuse(by_words(conn, &query.seed, as_of.as_deref(), &words)?);
-    fuse(by_tags(conn, &query.seed, as_of.as_deref())?);
-    fuse(by_links(conn, &query.seed, as_of.as_deref())?);
+    fuse(by_words(conn, &filter, &probe.words)?);
+    fuse(by_tags(conn, &filter, &probe.tags)?);
+    fuse(by_links(
+        conn,
+        &filter,
+        &probe.links_to,
+        probe.linked_from.as_deref(),
+    )?);
 
     let mut found: Vec<Candidate> = candidates
         .into_values()
         .filter(|c| c.reasons.is_evidence())
         .collect();
     found.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
-    found.truncate(query.limit);
+    found.truncate(limit);
     Ok(found)
 }
 
@@ -123,16 +374,23 @@ fn merge(into: &mut Reasons, from: Reasons) {
     into.linked |= from.linked;
 }
 
-/// SQL that keeps `f` to fragments other than the seed (?1), created at or
-/// before the cut-off (?2, NULL for none). Dates are compared as instants:
-/// stored ones may carry fractional seconds.
-const ELIGIBLE: &str = "f.id != ?1 AND (?2 IS NULL OR julianday(f.created_at) <= julianday(?2))";
+/// Which fragments may be returned: not `exclude`, and created at or before
+/// `as_of` if one is set.
+struct Eligible<'a> {
+    exclude: Option<&'a str>,
+    as_of: Option<String>,
+}
+
+/// SQL that keeps `f` to fragments other than ?1 (NULL for none), created at
+/// or before ?2 (NULL for no cut-off). Dates are compared as instants: stored
+/// ones may carry fractional seconds.
+const ELIGIBLE: &str = "(?1 IS NULL OR f.id <> ?1)
+     AND (?2 IS NULL OR julianday(f.created_at) <= julianday(?2))";
 
 /// Fragments sharing the seed's words, ranked by BM25.
 fn by_words(
     conn: &Connection,
-    seed: &str,
-    as_of: Option<&str>,
+    filter: &Eligible,
     words: &[String],
 ) -> Result<Vec<(String, Reasons)>, ParcError> {
     if words.is_empty() {
@@ -144,23 +402,26 @@ fn by_words(
         .map(|w| format!("\"{w}\""))
         .collect::<Vec<_>>()
         .join(" OR ");
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT f.id, fragments_fts.title, fragments_fts.body, fragments_fts.tags
          FROM fragments_fts JOIN fragments f ON f.seq = fragments_fts.rowid
          WHERE fragments_fts MATCH ?3 AND {ELIGIBLE}
          ORDER BY bm25(fragments_fts) LIMIT {POOL}"
     ))?;
-    let rows = stmt.query_map(rusqlite::params![seed, as_of, fts_query], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            format!(
-                "{}\n{}\n{}",
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?
-            ),
-        ))
-    })?;
+    let rows = stmt.query_map(
+        rusqlite::params![filter.exclude, filter.as_of, fts_query],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                format!(
+                    "{}\n{}\n{}",
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?
+                ),
+            ))
+        },
+    )?;
     let mut ranked = Vec::new();
     for row in rows {
         let (id, text) = row?;
@@ -180,33 +441,38 @@ fn by_words(
 /// Fragments sharing the seed's tags, most shared tags first, then newest.
 fn by_tags(
     conn: &Connection,
-    seed: &str,
-    as_of: Option<&str>,
+    filter: &Eligible,
+    tags: &[String],
 ) -> Result<Vec<(String, Reasons)>, ParcError> {
-    let mut stmt = conn.prepare(&format!(
+    if tags.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT f.id, t.tag FROM fragment_tags t JOIN fragments f ON f.id = t.fragment_id
-         WHERE t.tag IN (SELECT tag FROM fragment_tags WHERE fragment_id = ?1) AND {ELIGIBLE}
+         WHERE t.tag IN (SELECT value FROM json_each(?3)) AND {ELIGIBLE}
          ORDER BY f.created_at DESC, f.id, t.tag"
     ))?;
+    let tags_json = serde_json::to_string(tags)?;
     let mut order: Vec<String> = Vec::new();
-    let mut tags: HashMap<String, Vec<String>> = HashMap::new();
-    for row in stmt.query_map(rusqlite::params![seed, as_of], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })? {
+    let mut shared: HashMap<String, Vec<String>> = HashMap::new();
+    for row in stmt.query_map(
+        rusqlite::params![filter.exclude, filter.as_of, tags_json],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )? {
         let (id, tag) = row?;
-        let list = tags.entry(id.clone()).or_default();
+        let list = shared.entry(id.clone()).or_default();
         if list.is_empty() {
             order.push(id);
         }
         list.push(tag);
     }
     // Stable: equal counts keep the newest-first order of the query.
-    order.sort_by_key(|id| std::cmp::Reverse(tags[id].len()));
+    order.sort_by_key(|id| std::cmp::Reverse(shared[id].len()));
     order.truncate(POOL);
     Ok(order
         .into_iter()
         .map(|id| {
-            let shared_tags = tags.remove(&id).unwrap_or_default();
+            let shared_tags = shared.remove(&id).unwrap_or_default();
             (
                 id,
                 Reasons {
@@ -221,21 +487,30 @@ fn by_tags(
 /// Fragments the seed links to or that link to it, newest first.
 fn by_links(
     conn: &Connection,
-    seed: &str,
-    as_of: Option<&str>,
+    filter: &Eligible,
+    links_to: &[String],
+    linked_from: Option<&str>,
 ) -> Result<Vec<(String, Reasons)>, ParcError> {
-    let mut stmt = conn.prepare(&format!(
+    if links_to.is_empty() && linked_from.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT f.id FROM fragments f
-         WHERE f.id IN (
-             SELECT resolved_id FROM fragment_links WHERE source_id = ?1
-             UNION SELECT source_id FROM fragment_links WHERE resolved_id = ?1
-         ) AND {ELIGIBLE}
+         WHERE (f.id IN (SELECT value FROM json_each(?3))
+                OR f.id IN (SELECT source_id FROM fragment_links WHERE resolved_id = ?4))
+           AND {ELIGIBLE}
          ORDER BY f.created_at DESC, f.id LIMIT {POOL}"
     ))?;
     let ids = stmt
-        .query_map(rusqlite::params![seed, as_of], |row| {
-            row.get::<_, String>(0)
-        })?
+        .query_map(
+            rusqlite::params![
+                filter.exclude,
+                filter.as_of,
+                serde_json::to_string(links_to)?,
+                linked_from
+            ],
+            |row| row.get::<_, String>(0),
+        )?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ids
         .into_iter()
@@ -249,6 +524,115 @@ fn by_links(
             )
         })
         .collect())
+}
+
+/// Up to [`MAX_EXCERPTS`] lines of `body` with the most of `words`, in body
+/// order; or its first line with text when none has any.
+fn excerpts(body: &str, words: &[String]) -> Vec<Excerpt> {
+    let wanted: HashSet<&str> = words.iter().map(String::as_str).collect();
+    let body = body.strip_prefix('\n').unwrap_or(body);
+    let mut first = None;
+    let mut matched = Vec::new();
+    for (i, raw) in body.split('\n').enumerate() {
+        let text = raw.strip_suffix('\r').unwrap_or(raw);
+        if first.is_none() && !text.trim().is_empty() {
+            first = Some((i + 1, text));
+        }
+        if !wanted.is_empty() {
+            let (ranges, distinct) = word_ranges(text, &wanted);
+            if !ranges.is_empty() {
+                matched.push((i + 1, distinct, ranges, text));
+            }
+        }
+    }
+    matched.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    matched.truncate(MAX_EXCERPTS);
+    matched.sort_by_key(|m| m.0);
+    if matched.is_empty() {
+        return first
+            .map(|(line, text)| clip(line, text, &[]))
+            .into_iter()
+            .collect();
+    }
+    matched
+        .into_iter()
+        .map(|(line, _, ranges, text)| clip(line, text, &ranges))
+        .collect()
+}
+
+/// `[start, end)` character offsets of the words of `text` that are in
+/// `wanted` (split and lowercased as [`content_words`] does), and how many
+/// different words they are.
+fn word_ranges(text: &str, wanted: &HashSet<&str>) -> (Vec<(usize, usize)>, usize) {
+    let mut ranges = Vec::new();
+    let mut distinct = HashSet::new();
+    let mut start = None;
+    let mut word = String::new();
+    for (i, c) in text.chars().chain([' ']).enumerate() {
+        if c.is_alphanumeric() {
+            if start.is_none() {
+                start = Some(i);
+                word.clear();
+            }
+            word.push(c);
+        } else if let Some(s) = start.take() {
+            let lower = word.to_lowercase();
+            if wanted.contains(lower.as_str()) {
+                ranges.push((s, i));
+                distinct.insert(lower);
+            }
+        }
+    }
+    (ranges, distinct.len())
+}
+
+/// The line as an excerpt: whole if short, otherwise about
+/// [`EXCERPT_CHARS`] characters around its first match, cut between words.
+fn clip(line: usize, text: &str, ranges: &[(usize, usize)]) -> Excerpt {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= EXCERPT_CHARS {
+        return Excerpt {
+            line,
+            column: 1,
+            text: text.to_string(),
+            ranges: ranges.to_vec(),
+        };
+    }
+    let (focus, focus_end) = ranges.first().copied().unwrap_or((0, 0));
+    let end = (focus.saturating_sub(EXCERPT_CHARS / 4) + EXCERPT_CHARS).min(chars.len());
+    let mut start = end - EXCERPT_CHARS;
+    let mut end = end;
+    if start > 0 {
+        if let Some(k) = chars[start..focus.max(start)]
+            .iter()
+            .position(|c| c.is_whitespace())
+        {
+            start += k + 1;
+        }
+    }
+    if end < chars.len() {
+        let from = focus_end.max(start);
+        if let Some(k) = chars[from..end].iter().rposition(|c| c.is_whitespace()) {
+            end = from + k;
+        }
+    }
+    Excerpt {
+        line,
+        column: start + 1,
+        text: chars[start..end].iter().collect(),
+        ranges: ranges
+            .iter()
+            .filter(|r| r.0 >= start && r.1 <= end)
+            .map(|r| (r.0 - start, r.1 - start))
+            .collect(),
+    }
+}
+
+/// [`content_words`], up to [`MAX_QUERY_WORDS`] of them.
+fn query_words(text: &str) -> Vec<String> {
+    let mut words = content_words(text);
+    words.truncate(MAX_QUERY_WORDS);
+    words
 }
 
 /// The words of `text` worth matching on: lowercased, split at anything that
@@ -635,66 +1019,57 @@ mod tests {
     use super::*;
     use crate::hook::ScriptRunner;
     use crate::ops::Writer;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
-    fn note(writer: &mut Writer, title: &str, body: &str, links: &[&str]) -> String {
+    fn vault() -> (tempfile::TempDir, PathBuf, Writer) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let vault = tmp.path().join(".parc");
+        crate::vault::init_vault(&vault).unwrap();
+        let writer = Writer::new(&vault, ScriptRunner::default());
+        (tmp, vault, writer)
+    }
+
+    fn note(writer: &mut Writer, title: &str, body: &str, tags: &[&str], links: &[&str]) -> String {
         let vault = writer.vault().to_path_buf();
         let config = crate::config::load_config(&vault).unwrap();
         let schemas = crate::schema::load_schemas(&vault).unwrap();
         let mut f =
             crate::fragment::new_fragment("note", title, schemas.resolve("note").unwrap(), &config);
         f.body = body.to_string();
+        f.tags = tags.iter().map(|s| s.to_string()).collect();
         f.links = links.iter().map(|s| s.to_string()).collect();
         writer.create(f).unwrap().id
     }
 
-    fn ids(vault: &Path, seed: &str) -> Vec<(String, bool)> {
+    fn found(vault: &Path, seed: Seed) -> Vec<(String, Reasons)> {
         let conn = crate::index::open_index(vault).unwrap();
         let query = RecallQuery {
-            seed: seed.to_string(),
+            seed,
             as_of: None,
             limit: 10,
         };
-        recall(&conn, &query)
+        let mut found: Vec<_> = recall(&conn, &query)
             .unwrap()
             .into_iter()
-            .map(|c| (c.id, c.reasons.linked))
-            .collect()
+            .map(|c| (c.id, c.reasons))
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
     }
 
-    #[test]
-    fn links_count_in_both_directions_without_shared_words() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let vault = tmp.path().join(".parc");
-        crate::vault::init_vault(&vault).unwrap();
-        let mut w = Writer::new(&vault, ScriptRunner::default());
-        let old = note(&mut w, "Ferry desk", "Route cards", &[]);
-        let seed = note(&mut w, "Orientation", "Question slips", &[&old]);
-        let later = note(&mut w, "Follow-up", "Went fine", &[&seed]);
-        note(&mut w, "Unrelated", "Kitchen timer", &[]);
-
-        let mut found = ids(&vault, &seed);
-        found.sort();
-        let mut want = vec![(old, true), (later, true)];
-        want.sort();
-        assert_eq!(found, want);
+    fn draft(text: &str) -> Seed {
+        Seed::Draft {
+            text: text.into(),
+            tags: Vec::new(),
+            id: None,
+        }
     }
 
-    #[test]
-    fn unknown_seed_is_an_error() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let vault = tmp.path().join(".parc");
-        crate::vault::init_vault(&vault).unwrap();
-        let conn = crate::index::open_index(&vault).unwrap();
-        let query = RecallQuery {
-            seed: "01JQ7V3XKP5GQZ2N8R6T1WBMVH".into(),
-            as_of: None,
-            limit: 5,
-        };
-        assert!(matches!(
-            recall(&conn, &query),
-            Err(ParcError::FragmentNotFound(_))
-        ));
+    fn linked() -> Reasons {
+        Reasons {
+            linked: true,
+            ..Reasons::default()
+        }
     }
 
     #[test]
@@ -722,10 +1097,207 @@ mod tests {
         assert!(!r.is_evidence());
         r.shared_words.push("volunteer".into());
         assert!(r.is_evidence());
-        assert!(Reasons {
-            linked: true,
-            ..Reasons::default()
+        assert!(linked().is_evidence());
+    }
+
+    #[test]
+    fn links_count_in_both_directions_without_shared_words() {
+        let (_tmp, vault, mut w) = vault();
+        let old = note(&mut w, "Ferry desk", "Route cards", &[], &[]);
+        let seed = note(&mut w, "Orientation", "Question slips", &[], &[&old]);
+        let later = note(&mut w, "Follow-up", "Went fine", &[], &[&seed]);
+        note(&mut w, "Unrelated", "Kitchen timer", &[], &[]);
+
+        let mut want = vec![(old, linked()), (later, linked())];
+        want.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(found(&vault, Seed::Fragment(seed)), want);
+    }
+
+    #[test]
+    fn unknown_seed_is_an_error() {
+        let (_tmp, vault, _w) = vault();
+        let conn = crate::index::open_index(&vault).unwrap();
+        for seed in [
+            Seed::Fragment("01JQ7V3XKP5GQZ2N8R6T1WBMVH".into()),
+            Seed::Draft {
+                text: "words".into(),
+                tags: Vec::new(),
+                id: Some("01JQ7V3XKP5GQZ2N8R6T1WBMVH".into()),
+            },
+        ] {
+            let query = RecallQuery {
+                seed,
+                as_of: None,
+                limit: 5,
+            };
+            assert!(matches!(
+                recall(&conn, &query),
+                Err(ParcError::FragmentNotFound(_))
+            ));
         }
-        .is_evidence());
+    }
+
+    #[test]
+    fn a_draft_finds_by_words_inline_tags_and_links() {
+        let (_tmp, vault, mut w) = vault();
+        let ferry = note(
+            &mut w,
+            "Ferry desk",
+            "Visitors marked route cards in private",
+            &[],
+            &[],
+        );
+        let tagged = note(&mut w, "Spring fair", "Cake table", &["volunteering"], &[]);
+        let titled = note(&mut w, "Projector checklist", "Spare bulb", &[], &[]);
+        note(&mut w, "Kitchen timer", "Broken again", &[], &[]);
+
+        let text = "Orientation\nMaybe private route cards, like at the desk? \
+                    #volunteering [[Projector checklist]]";
+        let got = found(&vault, draft(text));
+        let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
+        let mut want = vec![ferry.as_str(), tagged.as_str(), titled.as_str()];
+        want.sort();
+        assert_eq!(ids, want);
+        let reasons = |id: &str| &got.iter().find(|(i, _)| i == id).unwrap().1;
+        assert_eq!(
+            reasons(&ferry).shared_words,
+            vec!["cards", "desk", "private", "route"]
+        );
+        assert_eq!(reasons(&tagged).shared_tags, vec!["volunteering"]);
+        assert!(reasons(&titled).linked);
+    }
+
+    #[test]
+    fn a_draft_of_a_saved_fragment_leaves_it_out_and_keeps_its_links() {
+        let (_tmp, vault, mut w) = vault();
+        let target = note(&mut w, "Ferry desk", "Unrelated words", &[], &[]);
+        let saved = note(
+            &mut w,
+            "Route cards",
+            "Route cards in private",
+            &[],
+            &[&target],
+        );
+        let backlink = note(&mut w, "Follow-up", "Other words", &[], &[&saved]);
+        let similar = note(&mut w, "Cards", "Route cards again, private", &[], &[]);
+
+        let got = found(
+            &vault,
+            Seed::Draft {
+                text: "Route cards\nRoute cards in private, rewritten".into(),
+                tags: Vec::new(),
+                id: Some(saved.clone()),
+            },
+        );
+        let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
+        let mut want = vec![target.as_str(), backlink.as_str(), similar.as_str()];
+        want.sort();
+        assert_eq!(ids, want, "the saved fragment itself is left out");
+    }
+
+    #[test]
+    fn context_quotes_the_lines_with_the_most_shared_words() {
+        let (_tmp, vault, mut w) = vault();
+        let body = "Intro line.\nThe queue was watching.\nGive each visitor a route card.\n\
+                    Mark it in private: route card, private.\nOutro.";
+        let id = note(&mut w, "Ferry desk", body, &[], &[]);
+        let conn = crate::index::open_index(&vault).unwrap();
+        let ctx = context(
+            &conn,
+            &RecallQuery {
+                seed: draft("A route card to mark in private, nobody in the queue"),
+                as_of: None,
+                limit: 5,
+            },
+        )
+        .unwrap();
+        assert!(!ctx.truncated);
+        assert_eq!(ctx.sources.len(), 1);
+        let source = &ctx.sources[0];
+        assert_eq!(source.id, id);
+        assert_eq!(source.title, "Ferry desk");
+        assert_eq!(
+            source.revision.as_deref(),
+            Some(crate::fragment::revision(&vault, &id).unwrap().as_str())
+        );
+        let lines: Vec<(usize, &str)> = source
+            .excerpts
+            .iter()
+            .map(|e| (e.line, e.text.as_str()))
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                (3, "Give each visitor a route card."),
+                (4, "Mark it in private: route card, private."),
+            ]
+        );
+        let marked: Vec<&str> = source.excerpts[1]
+            .ranges
+            .iter()
+            .map(|&(s, e)| &source.excerpts[1].text[s..e])
+            .collect();
+        assert_eq!(marked, vec!["Mark", "private", "route", "card", "private"]);
+    }
+
+    #[test]
+    fn context_is_capped_and_says_so() {
+        let (_tmp, vault, mut w) = vault();
+        for i in 0..4 {
+            note(&mut w, &format!("Ferry desk {i}"), "route cards", &[], &[]);
+        }
+        let conn = crate::index::open_index(&vault).unwrap();
+        let ctx = |limit| {
+            context(
+                &conn,
+                &RecallQuery {
+                    seed: draft("ferry desk route cards"),
+                    as_of: None,
+                    limit,
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!((ctx(3).sources.len(), ctx(3).truncated), (3, true));
+        assert_eq!((ctx(4).sources.len(), ctx(4).truncated), (4, false));
+    }
+
+    #[test]
+    fn a_long_line_is_cut_around_its_first_match_between_words() {
+        let line = format!("{} ferry desk {}", "word ".repeat(80), "tail ".repeat(80));
+        let wanted: HashSet<&str> = ["ferry", "desk"].into();
+        let (ranges, distinct) = word_ranges(&line, &wanted);
+        assert_eq!(distinct, 2);
+        let e = clip(7, &line, &ranges);
+        assert!(e.text.chars().count() <= EXCERPT_CHARS);
+        assert!(
+            e.text.starts_with("word ") && e.text.ends_with(" tail"),
+            "{:?}",
+            e.text
+        );
+        let chars: Vec<char> = line.chars().collect();
+        let at: String = chars[e.column - 1..e.column - 1 + e.text.chars().count()]
+            .iter()
+            .collect();
+        assert_eq!(at, e.text, "column locates the excerpt in the line");
+        let marked: Vec<String> = e
+            .ranges
+            .iter()
+            .map(|&(s, end)| e.text.chars().skip(s).take(end - s).collect())
+            .collect();
+        assert_eq!(marked, vec!["ferry", "desk"]);
+    }
+
+    #[test]
+    fn with_no_shared_word_the_first_line_with_text_is_quoted() {
+        assert_eq!(
+            excerpts("\n\n  \nFirst words.\nSecond.", &[]),
+            vec![Excerpt {
+                line: 3,
+                column: 1,
+                text: "First words.".into(),
+                ranges: vec![],
+            }]
+        );
     }
 }

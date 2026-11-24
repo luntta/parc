@@ -989,7 +989,7 @@ fn test_mcp_mode_over_stdio() {
         .collect();
     assert_eq!(lines.len(), 2, "the notification gets no reply");
     assert_eq!(lines[0]["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 5);
 
     // --read-only only makes sense for MCP.
     let status = Command::new(bin)
@@ -1001,4 +1001,117 @@ fn test_mcp_mode_over_stdio() {
         .status()
         .unwrap();
     assert!(!status.success());
+}
+
+// ── Recall ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_recall_context_for_drafts_and_saved_fragments() {
+    let mut h = ServerHarness::new();
+    let create = |h: &mut ServerHarness, title: &str, body: &str| {
+        let resp = h.send_rpc(rpc(
+            1,
+            "fragment.create",
+            serde_json::json!({ "type": "note", "title": title, "body": body }),
+        ));
+        result_of(&resp)["id"].as_str().unwrap().to_string()
+    };
+    let ferry = create(
+        &mut h,
+        "What helped at the ferry desk",
+        "The queue was watching.\nGiving each visitor a route card to mark in private worked better.",
+    );
+    let orientation = create(
+        &mut h,
+        "Volunteer orientation",
+        "Hand out a route card to mark in private, as at the ferry desk.",
+    );
+    create(&mut h, "Kitchen timer", "Broken again.");
+
+    // A draft that isn't saved: found by its words, quoted verbatim.
+    let resp = h.send_rpc(rpc(
+        2,
+        "recall.context",
+        serde_json::json!({ "text": "Nobody asked in front of the room. A private route card?" }),
+    ));
+    let ctx = result_of(&resp);
+    assert_eq!(ctx["seed"]["id"], Value::Null);
+    assert_eq!(ctx["truncated"], false);
+    let sources = ctx["sources"].as_array().unwrap();
+    let ids: Vec<&str> = sources.iter().map(|s| s["id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&ferry.as_str()) && ids.contains(&orientation.as_str()));
+    assert_eq!(ids.len(), 2, "the kitchen timer shares nothing");
+    let ferry_source = sources.iter().find(|s| s["id"] == ferry.as_str()).unwrap();
+    assert_eq!(ferry_source["type"], "note");
+    assert_eq!(ferry_source["title"], "What helped at the ferry desk");
+    let excerpt = &ferry_source["excerpts"][0];
+    assert_eq!(excerpt["line"], 2);
+    assert_eq!(
+        excerpt["text"],
+        "Giving each visitor a route card to mark in private worked better."
+    );
+    assert_eq!(
+        ferry_source["reasons"]["shared_words"],
+        serde_json::json!(["card", "private", "route"])
+    );
+    // The revision is the one fragment.get reports, so a quote can be checked.
+    let got = h.send_rpc(rpc(3, "fragment.get", serde_json::json!({ "id": &ferry })));
+    assert_eq!(ferry_source["revision"], result_of(&got)["revision"]);
+
+    // A saved fragment by ID prefix: never itself.
+    let resp = h.send_rpc(rpc(
+        4,
+        "recall.context",
+        serde_json::json!({ "id": &orientation[..10], "limit": 1 }),
+    ));
+    let ctx = result_of(&resp);
+    assert_eq!(ctx["seed"]["id"], orientation.as_str());
+    assert_eq!(ctx["sources"][0]["id"], ferry.as_str());
+    assert_eq!(ctx["sources"].as_array().unwrap().len(), 1);
+
+    // Unsaved edits to a saved fragment: the saved copy is left out.
+    let resp = h.send_rpc(rpc(
+        5,
+        "recall.context",
+        serde_json::json!({ "id": &ferry, "text": "ferry desk route card, private" }),
+    ));
+    let ids: Vec<&str> = result_of(&resp)["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![orientation.as_str()]);
+}
+
+#[test]
+fn test_recall_context_rejects_unclear_requests() {
+    let mut h = ServerHarness::new();
+    for params in [
+        serde_json::json!({}),
+        serde_json::json!({ "limit": 3 }),
+        serde_json::json!({ "text": "x", "query": "y" }),
+        serde_json::json!({ "text": "x", "limit": 0 }),
+    ] {
+        let resp = h.send_rpc(rpc(1, "recall.context", params.clone()));
+        assert_eq!(error_of(&resp)["code"], -32602, "{params}");
+    }
+    let resp = h.send_rpc(rpc(
+        2,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Saved" }),
+    ));
+    let id = result_of(&resp)["id"].as_str().unwrap().to_string();
+    let resp = h.send_rpc(rpc(
+        3,
+        "recall.context",
+        serde_json::json!({ "id": id, "tags": ["x"] }),
+    ));
+    assert_eq!(error_of(&resp)["code"], -32602, "tags without text");
+    let resp = h.send_rpc(rpc(
+        4,
+        "recall.context",
+        serde_json::json!({ "id": "01JQ7V3XKP5GQZ2N8R6T1WBMVH" }),
+    ));
+    assert!(resp.get("error").is_some(), "an unknown ID is an error");
 }

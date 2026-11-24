@@ -18,6 +18,7 @@ pub mod new;
 pub mod plugin;
 pub mod promote;
 pub mod random;
+pub mod recall;
 pub mod reindex;
 pub mod resurfacing;
 pub mod review;

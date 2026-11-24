@@ -2,6 +2,7 @@ pub mod attachment;
 pub mod fragment;
 pub mod history;
 pub mod link;
+pub mod recall;
 pub mod schema;
 pub mod settings;
 pub mod tags;

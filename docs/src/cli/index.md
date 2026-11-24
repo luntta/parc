@@ -11,7 +11,7 @@ The `parc` command is the primary way to interact with a vault. It speaks JSON w
 | Group | Commands |
 |-------|----------|
 | [Fragments]({{ '/cli/fragments/' | url }}) | `+` / `capture`, `new`, `promote`, `list`, `show`, `edit`, `set`, `delete` |
-| [Search]({{ '/cli/search/' | url }}) | `search` |
+| [Search]({{ '/cli/search/' | url }}) | `search`, `recall` |
 | [Resurfacing]({{ '/cli/resurfacing/' | url }}) | `today`, `due`, `stale`, `random`, `review` |
 | [Links]({{ '/cli/links/' | url }}) | `link`, `unlink`, `backlinks` |
 | [Attachments]({{ '/cli/attachments/' | url }}) | `attach`, `detach`, `attachments` |

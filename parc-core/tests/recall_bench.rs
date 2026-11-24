@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use parc_core::hook::ScriptRunner;
 use parc_core::ops::Writer;
-use parc_core::recall::{self, Candidate, RecallQuery};
+use parc_core::recall::{self, Candidate, RecallQuery, Seed};
 use serde::Deserialize;
 
 /// How far down the results the scorecard looks, so that a source just
@@ -85,6 +85,9 @@ struct Loaded {
     created_at: DateTime<Utc>,
     /// [`recall::content_words`] of the title and body, plus the tags.
     words: Vec<String>,
+    /// The title and body as one text, and the tags: the fragment as a draft.
+    text: String,
+    tags: Vec<String>,
 }
 
 struct Case {
@@ -171,6 +174,8 @@ fn load() -> Bench {
             id,
             created_at: f.created_at,
             words,
+            text: format!("{}\n{}", f.title, f.body),
+            tags: f.tags.clone(),
         };
         assert!(
             by_key.insert(key.clone(), loaded).is_none(),
@@ -240,13 +245,31 @@ fn fixture_id(key: &str, created_at: DateTime<Utc>) -> String {
 
 impl Bench {
     fn recall(&self, seed_key: &str, as_of: bool) -> Vec<Candidate> {
+        self.recall_seed(
+            seed_key,
+            Seed::Fragment(self.by_key[seed_key].id.clone()),
+            as_of,
+        )
+    }
+
+    /// The same fragment, sent as unsaved text with its ID.
+    fn recall_as_draft(&self, seed_key: &str) -> Vec<Candidate> {
         let seed = &self.by_key[seed_key];
+        let draft = Seed::Draft {
+            text: seed.text.clone(),
+            tags: seed.tags.clone(),
+            id: Some(seed.id.clone()),
+        };
+        self.recall_seed(seed_key, draft, true)
+    }
+
+    fn recall_seed(&self, seed_key: &str, seed: Seed, as_of: bool) -> Vec<Candidate> {
         let conn = parc_core::index::open_index(&self.vault).unwrap();
         recall::recall(
             &conn,
             &RecallQuery {
-                seed: seed.id.clone(),
-                as_of: as_of.then_some(seed.created_at),
+                seed,
+                as_of: as_of.then_some(self.by_key[seed_key].created_at),
                 limit: DEPTH,
             },
         )
@@ -458,4 +481,19 @@ fn as_of_is_what_keeps_later_fragments_out() {
     let ids = |found: Vec<Candidate>| found.into_iter().map(|c| c.id).collect::<Vec<_>>();
     assert!(ids(bench.recall("ferry/capture", false)).contains(decoy));
     assert!(!ids(bench.recall("ferry/capture", true)).contains(decoy));
+}
+
+/// A capture is recalled from its text while it is written, and from the
+/// index once saved: both must give the same answer.
+#[test]
+fn a_draft_recalls_what_its_saved_fragment_does() {
+    let bench = load();
+    for case in &bench.cases {
+        assert_eq!(
+            bench.recall_as_draft(&case.seed),
+            bench.recall(&case.seed, true),
+            "{}",
+            case.name
+        );
+    }
 }
