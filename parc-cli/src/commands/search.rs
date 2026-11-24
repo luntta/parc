@@ -60,5 +60,6 @@ fn hit_to_result(hit: &FuzzyHit) -> SearchResult {
         created_at: hit.item.created_at.clone(),
         snippet: None,
         archived: false,
+        fields: Default::default(),
     }
 }

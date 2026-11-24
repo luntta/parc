@@ -8,6 +8,7 @@ import { searchAssist } from './assist.js';
 import { diffLines, fold as foldDiff, stat } from './diff.js';
 import { LANGUAGES } from './languages.cjs';
 import { vaultSettings } from './vaultsettings.js';
+import { typeView, dragging } from './board.js';
 
 const $ = id => document.getElementById(id), api = window.parc;
 hydrateIcons();
@@ -17,17 +18,21 @@ $('save').title = `Save fragment (${mod}+S)`;
 
 let vaults = [], suggested = [], scope = '', rows = [], opened = null, mode = 'capture', phase = 'loading', dirty = false;
 let fresh = null;                          // a new capture's type, schema fields and tags until its first save
+let viewType = null;                       // the type whose own view (board, matrix or cards) mode 'type' shows
 let speech = { ready: true };              // dictation: { ready, problem?, language, languages, warning? }; checked at launch and after Settings
 const schemas = new Map();                 // vault path → schema.list
 const changedVaults = new Set();           // vaults whose fragments changed on disk, waiting for an idle moment
 const key = r => JSON.stringify([r.vault, r.id]);
 const name = p => vaults.find(v => v.path === p)?.name || 'All vaults';
 const labels = { capture: 'New capture', search: 'Search', graph: 'Graph', agent: 'Agent', pulse: 'Pulse', history: 'History' };
+// A type's view is named for what it holds: Todos, Risks, Ideas.
+const plural = t => { const w = typeLabel(t); return /(s|x|z|ch|sh)$/i.test(w) ? `${w}es` : /[^aeiou]y$/i.test(w) ? `${w.slice(0, -1)}ies` : `${w}s`; };
+const viewLabel = () => mode === 'type' ? plural(viewType) : labels[mode];
 const blankCapture = () => ({ type: defaultType(scope || $('destination').value), fields: {}, tags: [] });
 
 // Per-viewer memory: last vault, an unsaved draft, the sidebar's shape, filter, grouping, order and folded groups.
 // The app works without it.
-const DRAFT = 'parc.draft', SCOPE = 'parc.scope', SIDE = 'parc.sidebar', OPEN_ONLY = 'parc.openOnly', LIST_VIEW = 'parc.listView', FOLDED = 'parc.folded';
+const DRAFT = 'parc.draft', SCOPE = 'parc.scope', SIDE = 'parc.sidebar', OPEN_ONLY = 'parc.openOnly', LIST_VIEW = 'parc.listView', FOLDED = 'parc.folded', TYPE_VIEWS = 'parc.typeViews';
 const remember = {
   get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch { /* not persisted */ } }
@@ -249,13 +254,13 @@ function paint() {
     if (current) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   }
   // The window's title names what is open, with a dot while it has unsaved changes.
-  const here = capture ? $('title').value.trim() || (opened ? 'Untitled' : `New ${fresh?.type || 'note'}`) : labels[mode];
+  const here = capture ? $('title').value.trim() || (opened ? 'Untitled' : `New ${fresh?.type || 'note'}`) : viewLabel();
   document.title = `${dirty ? '• ' : ''}${here} — parc`;
   stats();
 }
 function crumb(capture) {
   const where = capture && opened ? opened.vault : scope;
-  const here = capture ? opened ? typeLabel(opened.type) : `New ${fresh?.type || 'note'}` : labels[mode];
+  const here = capture ? opened ? typeLabel(opened.type) : `New ${fresh?.type || 'note'}` : viewLabel();
   $('crumb').replaceChildren(el('span', 'vault', name(where)), el('span', 'sep', '/'), el('span', 'here', here));
 }
 
@@ -308,7 +313,10 @@ function switchScope(target) {
     try { rows = await collect(); } catch (e) { scope = old; throw e; }
     await loadSchemas((scope ? [scope] : vaults.map(v => v.path)).filter(p => !schemas.has(p)));
     remember.set(SCOPE, scope);
+    // Views that read the whole scope stay; so does a blank new capture. Anything tied to the old vault goes home.
+    const stay = ['pulse', 'type', 'graph'].includes(mode) ? mode : mode === 'capture' && !opened ? null : 'pulse';
     options(); $('query').value = ''; await refilter(); reset();
+    if (stay) await navigate(stay);
   });
 }
 
@@ -458,22 +466,32 @@ function grouped(items) {
   return [...groups.values()].sort((a, b) => (a.id === 'tag:') - (b.id === 'tag:') || collator.compare(a.label, b.label));
 }
 // A group's header: its glyph over the rows' marks, its name over their titles, and a fold mark at the end
-// that shows while folded or pointed at. It sticks to the top while its rows scroll under it.
+// that shows while folded or pointed at. It sticks to the top while its rows scroll under it. A type's header
+// opens that type's own view (its board, matrix or cards), so its fold mark is a button of its own; a tag's
+// header folds. ← and → fold either from the keyboard.
 function groupItem(g, options) {
-  const li = el('li', 'group'), head = el('button', 'group-head'), open = !folded.has(g.id);
-  const label = g.id.startsWith('tag:') && g.id !== 'tag:' ? `#${g.label}` : g.label;
+  const li = el('li', 'group'), bar = el('div', 'group-bar'), head = el('button', 'group-head'), open = !folded.has(g.id);
+  const label = g.id.startsWith('tag:') && g.id !== 'tag:' ? `#${g.label}` : g.label, type = g.id.startsWith('type:') ? g.id.slice(5) : null;
+  const fold = el('button', 'group-fold'); fold.type = 'button'; fold.tabIndex = -1;
+  fold.setAttribute('aria-expanded', String(open)); fold.setAttribute('aria-label', `${open ? 'Fold' : 'Unfold'} ${label}`); fold.title = fold.getAttribute('aria-label');
+  fold.append(icon('chevron', 'icon fold')); fold.onclick = () => foldGroup(g.id);
   li.dataset.group = g.id;
-  head.type = 'button'; head.setAttribute('aria-expanded', String(open));
-  head.append(g.glyph(), el('span', 'group-name', g.label), el('span', 'group-count', g.items.length.toLocaleString()), icon('chevron', 'icon fold'));
-  head.onclick = () => foldGroup(g.id);
-  li.append(head);
+  head.type = 'button';
+  head.append(g.glyph(), el('span', 'group-name', g.label), el('span', 'group-count', g.items.length.toLocaleString()));
+  if (type) {
+    head.title = `Open ${plural(type)}`;
+    head.onclick = () => openTypeView(type);
+    if (mode === 'type' && viewType === type) head.setAttribute('aria-current', 'page');
+  } else { head.setAttribute('aria-expanded', String(open)); head.onclick = () => foldGroup(g.id); }
+  bar.dataset.open = String(open);
+  bar.append(head, fold); li.append(bar);
   if (open) { const ul = el('ul', 'group-rows'); ul.setAttribute('aria-label', label); ul.append(...g.items.map(r => sideItem(r, options))); li.append(ul); }
   return li;
 }
 function foldGroup(id, fold = !folded.has(id)) {
   if (fold) folded.add(id); else folded.delete(id);
   remember.set(FOLDED, [...folded]); list();
-  $('recent').querySelector(`[data-group="${CSS.escape(id)}"] > .group-head`)?.focus();
+  $('recent').querySelector(`[data-group="${CSS.escape(id)}"] .group-head`)?.focus();
 }
 // The menu beside Open. Its button is marked while the list isn't in its default grouping and order.
 function viewMenu() {
@@ -791,11 +809,12 @@ async function save() {
   if ($('save').hasAttribute('disabled') || mode !== 'capture') return;
   await action(() => commit());
 }
-function newCapture(type) {
+function newCapture(type, fields) { // fields: preset values, e.g. the status of the board column it was started from
   return action(async () => {
     if (!await canLeave()) return;
     reset();
     if (type) setType(type);
+    if (fields && Object.keys(fields).length) { fresh.fields = { ...fresh.fields, ...fields }; meta(); }
   }).then(() => { if (mode === 'capture' && !opened) $('title').focus(); });
 }
 function copyLink() {
@@ -834,7 +853,10 @@ async function flushChanges() {
 }
 async function refreshVault(p) {
   const view = scope;
-  if (!view || view === p) { const next = await collect(); if (scope === view) { rows = next; await refilter(); list(); } }
+  if (!view || view === p) {
+    const next = await collect();
+    if (scope === view) { rows = next; await refilter(); list(); renderTypeView(); if (mode === 'pulse') await renderPulse(); }
+  }
   const f = opened;
   if (!f || f.vault !== p) return;
   let latest;
@@ -983,6 +1005,101 @@ function compare(v, current, f) {
   return box;
 }
 
+// ── A type's own view ──
+// Its board (a lane per status value), its risk matrix (a type with likelihood and impact fields) or, for a type
+// without a status, its cards. Which lens a type shows, and whether its matrix includes settled risks, are per
+// viewer, like the sidebar's grouping. Archived fragments stay out, as they do in default searches.
+const typeViews = (() => { const saved = remember.get(TYPE_VIEWS); return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}; })();
+const enumValues = (type, field) => schemaFor(scope, type)?.fields.find(f => f.name === field && f.kind === 'enum')?.values || [];
+function typeContext(type) {
+  const status = schemaFor(scope, type)?.fields.find(f => f.name === 'status' && f.kind === 'enum' && f.values?.length) || null;
+  const likelihood = enumValues(type, 'likelihood'), impact = enumValues(type, 'impact');
+  const axes = likelihood.length && impact.length ? { likelihood, impact } : null;
+  const lenses = [...(axes ? [['matrix', 'Matrix', 'matrix']] : []), ...(status ? [['board', 'Board', 'board']] : [])];
+  const pref = typeViews[type] || {}, prefer = change => { typeViews[type] = { ...pref, ...change }; remember.set(TYPE_VIEWS, typeViews); renderTypeView(); };
+  return {
+    type, plural: plural(type), items: rows.filter(r => r.type === type && !r.archived),
+    status: status && { values: status.values, categories: status.categories || {} }, axes, lenses,
+    lens: lenses.some(([v]) => v === pref.lens) ? pref.lens : lenses[0]?.[0] || 'cards', settled: pref.settled === true,
+    many: !scope, movable: true, current: opened ? key(opened) : null,
+    key, order: ordered, tone: r => tone(r.vault, r.type, r.status), values: field => enumValues(type, field),
+    overdue: r => overdue({ ...r, due: r.fields?.due }), dayLabel, time: r => timeOf(r, listView.sort === 'created'), hue, vaultName: name,
+    open: openRow, move: moveFragment,
+    create: enabledTypes(scope).some(s => s.name === type) ? fields => newCapture(type, fields) : null,
+    setLens: lens => prefer({ lens }), setSettled: settled => prefer({ settled }), rerender: () => renderTypeView()
+  };
+}
+function openTypeView(type) { return action(() => { viewType = type; return navigate('type'); }); }
+// Re-rendered in place when its fragments change, keeping focus on the same card (or control) and the board's scroll.
+function renderTypeView(focus) {
+  if (mode !== 'type') return;
+  if (dragging()) { setTimeout(() => renderTypeView(focus), 200); return; } // never pull the card out from under the pointer
+  const ctx = typeContext(viewType), out = $('results'), where = scope ? name(scope) : 'your opened vaults', active = document.activeElement;
+  focus ??= out.contains(active) ? active.closest('[data-key]') ? `[data-key="${CSS.escape(active.closest('[data-key]').dataset.key)}"]`
+    : active.dataset.lens ? `[data-lens="${active.dataset.lens}"]` : active.closest('.view-bar .chip') ? '.view-bar .chip' : null : null;
+  const x = out.querySelector('.board')?.scrollLeft || 0, kind = ctx.type, many = ctx.plural.toLowerCase();
+  $('toolTitle').textContent = ctx.plural;
+  $('intro').textContent = ctx.lens === 'matrix'
+    ? `${ctx.settled ? 'All' : 'Open'} ${many} in ${where} by likelihood and impact; the most serious sit top right. Drag one to another cell (or press Shift with an arrow) to reassess it. Select one to open it.`
+    : ctx.lens === 'board' ? `Every ${kind} in ${where} by status. Drag a card to another column (or press Shift with ← or →) to change its status. Select one to open it.`
+      : `Every ${kind} in ${where}. Select one to open it.`;
+  out.replaceChildren(typeView(ctx));
+  const board = out.querySelector('.board');
+  if (board) board.scrollLeft = x;
+  if (focus) out.querySelector(focus)?.focus({ preventScroll: true });
+}
+
+// ── Moving a fragment on a board or the matrix ──
+// The card moves at once; the saves follow in order. Each changes only the fields it names, so it needs no
+// revision (nothing else in the file is touched). Then the list reloads from the vault, and Undo moves it back.
+const moves = [];
+let moving = false;
+function patchRow(row, fields) {
+  for (const [k, v] of Object.entries(fields)) {
+    if (k === 'status') { row.status = v; continue; }
+    row.fields = { ...row.fields };
+    if (v == null) delete row.fields[k]; else row.fields[k] = v;
+  }
+}
+function moveFragment(r, fields) {
+  const was = Object.fromEntries(Object.keys(fields).map(k => [k, (k === 'status' ? r.status : r.fields?.[k]) ?? null]));
+  if (Object.keys(fields).every(k => was[k] === (fields[k] ?? null))) return;
+  for (const row of [...rows, ...(filtered || [])]) if (key(row) === key(r)) patchRow(row, fields);
+  list(); renderTypeView(`[data-key="${CSS.escape(key(r))}"]`);
+  moves.push({ vault: r.vault, id: r.id, title: r.title, fields, was });
+  drainMoves();
+}
+const movedMessage = m => {
+  const t = `“${m.title || 'Untitled'}”`;
+  if ('status' in m.fields) return m.fields.status == null ? `${t} has no status now.` : `Moved ${t} to ${capital(m.fields.status)}.`;
+  return `${t} is now ${Object.entries(m.fields).map(([k, v]) => v == null ? `without ${k}` : `${v} ${k}`).join(', ')}.`;
+};
+async function drainMoves() {
+  if (moving || !moves.length) return;
+  if (phase !== 'idle') { setTimeout(drainMoves, 50); return; }
+  moving = true;
+  try {
+    await action(async () => {
+      let last = null;
+      try {
+        while (moves.length) {
+          const m = moves[0], note = await api.update(m.vault, m.id, { fields: m.fields }, null);
+          moves.shift(); last = m;
+          // The open fragment follows the move, unless its text has edits: then saving them still asks first.
+          if (opened?.vault === m.vault && opened.id === m.id && !dirty) { opened = { ...note, vault: m.vault }; meta(); }
+          if (note.warnings?.length) status(note.warnings.join('; '));
+        }
+      } finally {
+        moves.length = 0; // after a failed save, what the vault holds is shown again
+        rows = await collect(); await refilter(); list(); renderTypeView();
+      }
+      const m = last;
+      status(movedMessage(m), { label: 'Undo', run: () => { const r = rows.find(x => x.vault === m.vault && x.id === m.id); if (r) moveFragment(r, m.was); } });
+    });
+  } finally { moving = false; }
+  if (moves.length) drainMoves();
+}
+
 // ── Tool views ──
 function section(text, aside) { const h = el('h2', 'section-label', text); if (aside) h.append(el('small', '', aside)); return h; }
 function emptyState(title, body, code) {
@@ -1048,24 +1165,25 @@ function pulse(overdueCount) {
   const openOf = type => rows.filter(r => r.type === type && !settled(r)).length;
   const known = type => typesIn(scope).some(s => s.name === type) || rows.some(r => r.type === type);
   const figures = el('div', 'figures');
-  const figure = (label, value, query, alert) => {
+  // A count of one type's open work opens that type's view; the others open the search that lists them.
+  const figure = (label, value, query, alert, type) => {
     const b = el('button', 'figure'); b.type = 'button';
     if (alert) b.dataset.tone = 'alert';
     b.append(el('span', 'figure-label', label), el('span', 'figure-value', value.toLocaleString()));
-    b.title = query ? `Search ${query}` : 'List every fragment';
-    b.onclick = () => searchFor(query);
+    b.title = type ? `Open ${plural(type)}` : query ? `Search ${query}` : 'List every fragment';
+    b.onclick = () => type ? openTypeView(type) : searchFor(query);
     return b;
   };
   figures.append(figure('Fragments', rows.length, ''));
-  if (known('todo')) figures.append(figure('Open todos', openOf('todo'), `type:todo ${settledValues(scope, 'todo')}`.trim()));
+  if (known('todo')) figures.append(figure('Open todos', openOf('todo'), '', false, 'todo'));
   figures.append(figure('Overdue', overdueCount, `due:overdue ${settledValues(scope)}`.trim(), overdueCount > 0));
-  if (known('risk')) figures.append(figure('Open risks', openOf('risk'), `type:risk ${settledValues(scope, 'risk')}`.trim()));
+  if (known('risk')) figures.append(figure('Open risks', openOf('risk'), '', false, 'risk'));
 
   const byType = new Map(); for (const r of rows) byType.set(r.type, (byType.get(r.type) || 0) + 1);
   const meters = el('dl', 'meters');
   for (const [type, count] of [...byType].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))) {
     const share = count / rows.length * 100, dt = el('dt'), link = el('button', 'meter-link'), bar = el('dd', 'meter'), fill = el('i');
-    link.type = 'button'; link.title = `Search type:${type}`; link.onclick = () => searchFor(`type:${type}`);
+    link.type = 'button'; link.title = `Open ${plural(type)}`; link.onclick = () => openTypeView(type);
     link.append(typeIcon(type), typeLabel(type)); dt.append(link);
     fill.style.setProperty('--v', share.toFixed(1)); bar.append(fill);
     bar.setAttribute('aria-hidden', 'true');
@@ -1097,12 +1215,25 @@ function pulse(overdueCount) {
     section('Last edited', 'Fragments by the week they were last edited, 12 weeks'), chart, axis,
     section('Recently edited'), rowList(rows.slice(0, 6)));
 }
+// Pulse is home: drawn on arrival, and again in place when the vault changes (keeping focus on the same control).
+async function renderPulse() {
+  const out = $('results'), where = name(scope), buttons = () => [...out.querySelectorAll('button')], at = buttons().indexOf(document.activeElement);
+  $('intro').textContent = `Where ${scope ? where : 'your opened vaults'} stand${scope ? 's' : ''} today. Select a count to see what it counts.`;
+  const late = rows.length ? (await collect('due:overdue')).filter(r => !settled(r)).length : 0;
+  if (mode !== 'pulse') return;
+  out.replaceChildren();
+  if (!rows.length) { out.append(emptyState('Nothing to measure yet', 'Capture a few fragments and their counts will show here.')); return; }
+  pulse(late);
+  if (at >= 0) buttons()[at]?.focus({ preventScroll: true });
+}
 async function navigate(view) {
   if (view === 'capture') { if (await canLeave()) { reset(); $('title').focus(); } return; }
   if (view === 'history' && !opened) return;
+  if (view === 'type' && !viewType) view = 'pulse';
   mode = view; queryAssist.hide(); paint(); list(); status();
   const where = name(scope), out = $('results');
-  $('toolTitle').textContent = view === 'history' ? `History of ${opened.title || 'Untitled'}` : labels[view];
+  $('tool').dataset.view = view;
+  $('toolTitle').textContent = view === 'history' ? `History of ${opened.title || 'Untitled'}` : viewLabel();
   $('searchForm').hidden = view !== 'search'; out.replaceChildren();
   const intro = $('intro');
   if (view === 'search') {
@@ -1110,12 +1241,8 @@ async function navigate(view) {
     hints(); $('query').focus(); if ($('query').value.trim()) await search(); return;
   }
   if (view === 'history') { await historyView(); return; }
-  if (view === 'pulse') {
-    intro.textContent = `Where ${scope ? where : 'your opened vaults'} stand${scope ? 's' : ''} today. Select a count to list what it counts.`;
-    if (!rows.length) { out.append(emptyState('Nothing to measure yet', 'Capture a few fragments and their counts will show here.')); return; }
-    const late = (await collect('due:overdue')).filter(r => !settled(r)).length;
-    pulse(late); return;
-  }
+  if (view === 'type') { renderTypeView(); $('scroller').scrollTop = 0; return; }
+  if (view === 'pulse') { await renderPulse(); return; }
   if (view === 'graph') {
     intro.textContent = `Every fragment in ${scope ? where : 'your opened vaults'} and the links between them. Select one to open it; scroll to zoom, drag to pan.`;
     if (!rows.length) { out.append(emptyState('Nothing to draw yet', 'Capture a few fragments and link them with [[ to see them here.')); return; }
@@ -1297,7 +1424,7 @@ async function reloadVault(p) {
   if (!scope || scope === p) { rows = await collect(); await refilter(); }
   if (opened?.vault === p && !dirty) { try { const full = await api.note(p, opened.id); load({ ...full, vault: p }); } catch { /* moved away: left as it is */ } }
   if (!opened && fresh && !dirty && !enabledTypes(destination()).some(s => s.name === fresh.type)) fresh = { ...blankCapture(), tags: fresh.tags };
-  options(); meta(); paint(); list();
+  options(); meta(); paint(); list(); renderTypeView();
 }
 const vaultPanel = vaultSettings({
   api,
@@ -1327,7 +1454,13 @@ function commands() {
   add('Search', () => action(() => navigate('search')), { icon: 'search', keys: `${mod} F` });
   add('Search inside fragments', () => goTo.open('/'), { icon: 'search', keys: `${mod} Shift F`, keywords: 'grep text find lines body content' });
   add('Graph of the vault', () => action(() => navigate('graph')), { icon: 'graph', keys: 'G', keywords: 'links' });
-  add('Pulse', () => action(() => navigate('pulse')), { icon: 'pulse', keys: 'P', keywords: 'stats counts' });
+  add('Pulse', () => action(() => navigate('pulse')), { icon: 'pulse', keys: 'P', keywords: 'stats counts home' });
+  // Each type's own view, for the types in scope that are on or that fragments still use.
+  for (const s of typesIn(scope)) {
+    if (s.enabled === false && !rows.some(r => r.type === s.name)) continue;
+    const lenses = typeContext(s.name).lenses.map(([, label]) => label.toLowerCase());
+    add(plural(s.name), () => openTypeView(s.name), { glyph: typeIcon(s.name), keywords: `view type ${lenses.join(' ')} ${lenses.includes('board') ? 'kanban columns' : 'cards'}` });
+  }
   add('Agent context', () => action(() => navigate('agent')), { icon: 'agent', keys: 'A' });
   if (dirty && mode === 'capture') add('Save', save, { icon: 'check', keys: `${mod} S` });
   if (opened) {
@@ -1495,7 +1628,7 @@ applySide(); viewMenu();
     [suggested] = await Promise.all([api.suggestedVaults().catch(() => []), loadSchemas(vaults.map(v => v.path)), checkSpeech()]);
     try { rows = await collect(); } catch (err) { if (scope === vaults[0].path) throw err; scope = vaults[0].path; rows = await collect(); }
     remember.set(SCOPE, scope); options();
-    if (usable) await restoreDraft(usable); else reset();
+    if (usable) await restoreDraft(usable); else { reset(); await navigate('pulse'); } // Pulse is home
   } catch (err) { status(err); $('empty').textContent = 'Unable to load fragments.'; }
   finally { setPhase('idle'); }
 })();

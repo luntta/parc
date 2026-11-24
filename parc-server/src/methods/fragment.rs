@@ -409,6 +409,7 @@ pub fn search(vault: &Path, params: Value) -> Result<Value, RpcError> {
                 "created_at": r.created_at,
                 "snippet": r.snippet,
                 "archived": r.archived,
+                "fields": r.fields,
             })
         })
         .collect();

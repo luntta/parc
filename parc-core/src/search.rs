@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::NaiveDate;
 use rusqlite::Connection;
 
@@ -117,6 +119,10 @@ pub struct SearchResult {
     /// Serialized only when true: fuzzy hits don't carry it, so absent means "not known to be archived".
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
+    /// The type's other frontmatter fields (priority, due, likelihood, …), as indexed. `status` and
+    /// `archived` have their own members and are left out. Fuzzy hits don't carry them.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, serde_json::Value>,
 }
 
 // ── Parser ─────────────────────────────────────────────────────────────
@@ -597,17 +603,17 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
         param_idx += 1;
         if has_tag_joins {
             // Can't use snippet() with additional JOINs
-            "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived, f.created_at \
+            "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived, f.created_at, f.extra_json \
              FROM fragments f \
              JOIN fragments_fts ON fragments_fts.id = f.id"
                 .to_string()
         } else {
-            "SELECT f.id, f.type, f.title, f.status, f.updated_at, snippet(fragments_fts, 2, '»', '«', '…', 20) as snippet, f.archived, f.created_at \
+            "SELECT f.id, f.type, f.title, f.status, f.updated_at, snippet(fragments_fts, 2, '»', '«', '…', 20) as snippet, f.archived, f.created_at, f.extra_json \
              FROM fragments f \
              JOIN fragments_fts ON fragments_fts.id = f.id".to_string()
         }
     } else {
-        "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived, f.created_at \
+        "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived, f.created_at, f.extra_json \
          FROM fragments f"
             .to_string()
     };
@@ -749,6 +755,16 @@ fn apply_date_condition(
 
 // ── Public search function ─────────────────────────────────────────────
 
+/// A row's `extra_json` as the fields a result carries: everything but what `SearchResult` has members for.
+fn indexed_fields(extra_json: Option<String>) -> BTreeMap<String, serde_json::Value> {
+    let mut fields: BTreeMap<String, serde_json::Value> = extra_json
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+    fields.remove("status");
+    fields.remove("archived");
+    fields
+}
+
 /// Execute a search query against the index.
 pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchResult>, ParcError> {
     let compiled = compile_query(query)?;
@@ -767,6 +783,7 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchResult
             created_at: row.get(7)?,
             snippet: row.get(5)?,
             archived: row.get::<_, i64>(6)? != 0,
+            fields: indexed_fields(row.get(8)?),
         })
     })?;
 
@@ -1302,6 +1319,65 @@ mod tests {
         let results = search(&conn, &q).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "SQLite indexing");
+    }
+
+    #[test]
+    fn test_search_results_carry_type_fields() {
+        let (_tmp, conn) = setup_test_vault();
+        let mut risk = make_fragment_with(
+            "Vendor lock-in",
+            "risk",
+            Some("identified"),
+            None,
+            None,
+            vec!["infra".into()],
+            "",
+        );
+        risk.extra_fields
+            .insert("likelihood".into(), serde_json::json!("high"));
+        risk.extra_fields
+            .insert("impact".into(), serde_json::json!("medium"));
+        risk.extra_fields
+            .insert("archived".into(), serde_json::json!(false));
+        index::index_fragment(&conn, &risk, &["infra".to_string()], &[]).unwrap();
+        let todo = make_fragment_with(
+            "Ship it",
+            "todo",
+            Some("open"),
+            Some("high"),
+            Some("2026-03-01"),
+            vec![],
+            "",
+        );
+        index::index_fragment(&conn, &todo, &[], &[]).unwrap();
+
+        // Every select shape: plain filters, full-text with a snippet, and full-text with a tag join.
+        for query in ["type:risk", "vendor", "vendor #infra"] {
+            let results = search(&conn, &parse_query(query).unwrap()).unwrap();
+            assert_eq!(results.len(), 1, "{query}");
+            assert_eq!(
+                results[0].fields.get("likelihood"),
+                Some(&serde_json::json!("high"))
+            );
+            assert_eq!(
+                results[0].fields.get("impact"),
+                Some(&serde_json::json!("medium"))
+            );
+            // status and archived have their own members.
+            assert!(
+                !results[0].fields.contains_key("status")
+                    && !results[0].fields.contains_key("archived")
+            );
+        }
+        let results = search(&conn, &parse_query("type:todo").unwrap()).unwrap();
+        assert_eq!(
+            results[0].fields.get("priority"),
+            Some(&serde_json::json!("high"))
+        );
+        assert_eq!(
+            results[0].fields.get("due"),
+            Some(&serde_json::json!("2026-03-01"))
+        );
     }
 
     #[test]

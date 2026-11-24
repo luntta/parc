@@ -42,6 +42,12 @@ async function check() {
   const prototype = archive(path.join(dir, 'prototype', '.parc'));
   const saveKey = 'document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true }))';
   await until(`document.querySelector("#empty")?.textContent.startsWith("No fragments yet") && ${idle}`);
+  // Pulse is home: the first item in the nav, and the view the app opens on.
+  assert.equal(await js('document.querySelector("nav button").dataset.view'), 'pulse');
+  assert.equal(await js('document.querySelector("#toolTitle").textContent'), 'Pulse');
+  assert.equal(await js('document.querySelector("[data-view=pulse]").getAttribute("aria-current")'), 'page');
+  await js('document.querySelector("[data-view=capture]").click()');
+  await until(`!document.querySelector("#document").hidden && ${idle}`);
   assert.equal(await js('document.querySelector("#save:defined > button").disabled'), true);
   assert.equal(await js('getComputedStyle(document.querySelector("#draft")).getPropertyValue("--aihio-color-page-bg").trim() !== ""'), true);
   await js('document.querySelector("#record").click()');
@@ -99,6 +105,9 @@ async function check() {
   await js('document.querySelector(\'#vaultMenu aihio-dropdown-item[value="@all"]\').click()');
   await until(`document.querySelectorAll("#recent .row").length === 3 && ${idle}`);
   assert.equal(await js('localStorage.getItem("parc.draft")'), null);
+  assert.equal(await js('document.querySelector("#toolTitle").textContent'), 'Pulse'); // the open fragment stayed behind
+  await js('document.querySelector("[data-view=capture]").click()');
+  await until(`!document.querySelector("#document").hidden && ${idle}`);
   await js('document.querySelector(".cm-content").focus()');
   // The [[ picker ranks fragments in memory and inserts the shortest unique ID on Enter.
   await win.webContents.insertText('See [[Old obs');
@@ -183,6 +192,62 @@ async function check() {
   await listView('sort:updated'); await listView('group:type');
   assert.equal(await js('document.querySelector("#listView").hasAttribute("data-active")'), false);
   assert.deepEqual(JSON.parse(await js('localStorage.getItem("parc.listView")')), { group: 'type', sort: 'updated', dir: 'desc' });
+  // A type's header opens its own view: the todo board, a lane per status. Cards move by drag and drop and by
+  // Shift+arrows, and Undo moves them back.
+  const dragTo = (from, to) => js(`{
+    const card = document.querySelector(${JSON.stringify(from)}), zone = document.querySelector(${JSON.stringify(to)}), dt = new DataTransfer();
+    card.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: dt }));
+    zone.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt }));
+    zone.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+    card.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer: dt }));
+  }`);
+  const shiftKey = key => js(`document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "${key}", shiftKey: true, bubbles: true }))`);
+  const lanes = 'JSON.stringify([...document.querySelectorAll(".lane")].map(l => [l.dataset.status, [...l.querySelectorAll(".card-title")].map(t => t.textContent)]))';
+  await js('document.querySelector(\'#recent [data-group="type:todo"] .group-head\').click()');
+  await until(`document.querySelector("#toolTitle").textContent === "Todos" && ${idle}`);
+  assert.equal(await js('document.querySelector(\'#recent [data-group="type:todo"] .group-head\').getAttribute("aria-current")'), 'page');
+  assert.deepEqual(JSON.parse(await js(lanes)), [['open', []], ['in-progress', []], ['done', ['Call the ferry office']], ['cancelled', []]]);
+  await dragTo('.lane[data-status="done"] .card', '.lane[data-status="in-progress"]');
+  await eventually(async () => (await prototype.get(todo.id)).status === 'in-progress');
+  await until(`document.querySelector("#status .status-text").textContent === "Moved “Call the ferry office” to In progress." && ${idle}`);
+  assert.equal(JSON.parse(await js(lanes))[1][1][0], 'Call the ferry office');
+  await js('document.querySelector(\'.lane[data-status="in-progress"] .card\').focus()');
+  await shiftKey('ArrowRight');
+  await eventually(async () => (await prototype.get(todo.id)).status === 'done');
+  await until(`document.activeElement?.closest(".lane")?.dataset.status === "done" && ${idle}`); // focus follows the card
+  await js('document.querySelector(".status-action").click()'); // Undo
+  await eventually(async () => (await prototype.get(todo.id)).status === 'in-progress');
+  await until(`JSON.parse(${lanes})[1][1][0] === "Call the ferry office" && ${idle}`);
+  // Risks open on their matrix: likelihood × impact, a tray of unassessed ones, and a ranking. Dropping a risk
+  // on a cell sets both fields; Shift+↓ lowers its likelihood. The board lens is remembered.
+  const strike = await prototype.save({ title: 'Ferry strike', body: '', type: 'risk', fields: { likelihood: 'high', impact: 'high' } });
+  const fog = await prototype.save({ title: 'Fog delays', body: '', type: 'risk', fields: { mitigation: 'Check the forecast' } });
+  await until(`[...document.querySelectorAll("#recent .row-title")].some(t => t.textContent === "Fog delays") && ${idle}`);
+  await js('document.querySelector(\'#recent [data-group="type:risk"] .group-head\').click()');
+  await until(`document.querySelector(".type-view")?.dataset.lens === "matrix" && ${idle}`);
+  assert.equal(await js('document.querySelector(\'.cell[data-li="2"][data-ii="2"] .card-title\').textContent'), 'Ferry strike');
+  assert.equal(await js('document.querySelector(".cell[data-li=\\"2\\"][data-ii=\\"2\\"]").dataset.level'), 'severe');
+  assert.equal(await js('document.querySelector(".tray .card-title").textContent'), 'Fog delays');
+  assert.equal(await js('document.querySelector(".rank-row .sev").textContent'), 'Severe');
+  await dragTo('.tray .card', '.cell[data-li="1"][data-ii="2"]');
+  await eventually(async () => { const f = await prototype.get(fog.id); return f.likelihood === 'medium' && f.impact === 'high' && f.mitigation === 'Check the forecast'; });
+  await until(`document.querySelector('.cell[data-li="1"][data-ii="2"]')?.textContent.includes("Fog delays") && ${idle}`);
+  assert.deepEqual(await js('[...document.querySelectorAll(".rank-title")].map(t => t.textContent)'), ['Ferry strike', 'Fog delays']);
+  assert.equal(await js('document.querySelectorAll(".rank-mitigation")[1].textContent'), 'Check the forecast');
+  await js('document.querySelector(\'.cell[data-li="1"] .card\').focus()');
+  await shiftKey('ArrowDown');
+  await eventually(async () => (await prototype.get(fog.id)).likelihood === 'low');
+  await until(`document.querySelector('.cell[data-li="0"][data-ii="2"]')?.contains(document.activeElement) && ${idle}`);
+  await js('document.querySelector(\'.lens-option[data-lens="board"]\').click()');
+  await until('document.querySelector(".type-view")?.dataset.lens === "board"');
+  assert.deepEqual(JSON.parse(await js(lanes))[0], ['identified', ['Fog delays', 'Ferry strike']]);
+  assert.deepEqual(JSON.parse(await js('localStorage.getItem("parc.typeViews")')), { risk: { lens: 'board' } });
+  // Pulse's counts of open work open the type's view.
+  await js('document.querySelector("[data-view=pulse]").click()');
+  await until(`document.querySelector("#toolTitle").textContent === "Pulse" && ${idle}`);
+  await js('[...document.querySelectorAll(".figure")].find(f => f.textContent.startsWith("Open risks")).click()');
+  await until(`document.querySelector("#toolTitle").textContent === "Risks" && ${idle}`);
+  assert.equal((await prototype.get(strike.id)).likelihood, 'high');
   // History lists the version before "## Questions" was added; restoring it brings that text back.
   await js('document.querySelector("#fragmentMenu aihio-dropdown-item[value=history]").click()');
   await until(`document.querySelectorAll(".version").length >= 1 && ${idle}`);
@@ -268,7 +333,7 @@ async function check() {
   assert.deepEqual(kinds.find(k => k.name === 'bug').fields[0].categories, { open: 'open', done: 'done' });
   await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Done")).click()');
   await until('!document.querySelector("#vaultSettings").hasAttribute("open")');
-  console.log('PASS: dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, history restore, archive and trash with undo, live search, quick capture, dictation languages and model list, vault settings');
+  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, dictation languages and model list, vault settings');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

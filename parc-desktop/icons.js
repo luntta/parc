@@ -32,6 +32,8 @@ const paths = {
   bolt: '<path d="M13 3 5 13.5h6L10 21l8-10.5h-6Z"/>',
   command: '<path d="m7 9 3 3-3 3M12.5 15H17"/><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/>',
   sort: '<path d="M4 6.5h9M4 12h6.5M4 17.5h4M17.5 5v14M14 15.5l3.5 3.5 3.5-3.5"/>',
+  board: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.25 4.5v15M14.75 4.5v15M5.9 8h1M11.5 8h1M17.1 8h1M5.9 11h1M11.5 11h1"/>',
+  matrix: '<rect x="3.5" y="3.5" width="17" height="17" rx="2.5"/><path d="M9.2 3.5v17M14.8 3.5v17M3.5 9.2h17M3.5 14.8h17"/>',
   fit: '<path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15"/>',
   // Fragment types
   note: '<path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5Z"/><path d="M14 3.5v5h5M9 13h6M9 16.5h4"/>',
