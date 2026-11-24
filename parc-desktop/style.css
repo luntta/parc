@@ -6,6 +6,11 @@
   --status-height: 1.75rem;
   --measure: 42rem;
   --gutter: .5rem;              /* sidebar inset; every sidebar item pads the same again */
+  /* The sidebar is one grid: every line (nav item, group header, fragment row) is --side-line tall, its glyph
+     sits in a 1rem column after --gutter's padding, and its text starts --side-text from the item's edge. */
+  --side-line: 1.75rem;
+  --side-text: 2.125rem;        /* .5rem padding + 1rem glyph + .625rem gap */
+  --side-font: .8125rem;
   --rule: var(--aihio-color-border-subtle);
   --muted: var(--aihio-color-muted-fg);
   --faint: color-mix(in oklch, var(--aihio-color-muted-fg) 55%, transparent);
@@ -61,19 +66,27 @@ kbd {
   padding: var(--gutter) var(--gutter) 0;
   background: var(--aihio-color-surface-bg);
   border-inline-end: 1px solid var(--rule);
+  font-size: var(--side-font);
 }
+/* Vault switcher, then New capture as a compose button at its end. */
+.side-head { display: flex; align-items: center; gap: .125rem; }
+.switcher-menu { display: block; flex: 1; min-width: 0; }
 .switcher > button {
-  justify-content: flex-start; gap: .625rem; width: 100%; height: 2.5rem; padding: 0 .5rem;
+  justify-content: flex-start; gap: .5rem; width: 100%; height: 2.25rem; padding: 0 .375rem; /* the mark centres on the glyph column */
   font-weight: var(--aihio-font-weight-heading); font-size: var(--aihio-font-size-body-sm); text-align: start;
 }
+.compose { flex: none; }
+.compose > button { width: 2.25rem; height: 2.25rem; padding: 0; color: var(--muted); }
+.compose > button:hover:not(:disabled), .compose[aria-current] > button { background: var(--hover); color: var(--aihio-color-page-fg); }
+.compose .icon { width: 1.0625rem; height: 1.0625rem; }
 .switcher > button:hover, .switcher[aria-expanded="true"] > button, .switcher > button[aria-expanded="true"] { background: var(--hover); color: inherit; }
 .switcher[disabled] > button { opacity: 1; } /* only ever disabled while loading or dictating; dimmed with the nav below */
 .switcher-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .switcher .chevrons { color: var(--muted); }
 .vault-mark { display: contents; }
 .vault-mark aihio-avatar, .vault-mark .all-mark {
-  --aihio-avatar-size-sm: 1.5rem; width: 1.5rem; height: 1.5rem; border-radius: .4rem;
-  font-size: .75rem; font-weight: var(--aihio-font-weight-heading);
+  --aihio-avatar-size-sm: 1.25rem; width: 1.25rem; height: 1.25rem; border-radius: .3125rem;
+  font-size: .6875rem; font-weight: var(--aihio-font-weight-heading);
 }
 /* Vault marks: a hue per vault (--vault-hue, set from its path) at one lightness and chroma, legible in both
    themes. Aihio has no categorical palette, so these are the only colours not taken from its tokens. */
@@ -90,97 +103,141 @@ kbd {
 .switcher-menu aihio-dropdown-item .current { color: var(--aihio-color-page-fg); }
 .switcher-menu aihio-dropdown-item .item-hint { color: var(--muted); font-size: var(--aihio-font-size-badge); }
 
-.new > button { width: 100%; justify-content: flex-start; gap: .625rem; padding-inline: calc(.5rem - 1px); margin-top: .375rem; background: var(--aihio-color-page-bg); box-shadow: var(--aihio-shadow-surface); }
-.new kbd { margin-inline-start: auto; }
-
-nav { display: grid; gap: 1px; margin-top: .5rem; }
+nav { display: grid; gap: 1px; margin-top: .375rem; }
 nav button {
-  display: flex; align-items: center; gap: .625rem; height: 2rem; padding: 0 .5rem;
+  display: flex; align-items: center; gap: .625rem; height: var(--side-line); padding: 0 .5rem;
   border: 0; border-radius: var(--aihio-radius-interactive); background: transparent;
-  font-size: var(--aihio-font-size-body-sm); text-align: start;
+  font-size: var(--side-font); text-align: start;
   transition: background-color var(--aihio-duration-feedback-fast) ease;
 }
 nav button .icon { color: var(--muted); }
-nav kbd { margin-inline-start: auto; opacity: 0; transition: opacity var(--aihio-duration-feedback-fast) ease; }
+nav kbd { margin-inline-start: auto; height: 1.125rem; opacity: 0; transition: opacity var(--aihio-duration-feedback-fast) ease; }
 #sidebar:hover nav kbd, nav button:focus-visible kbd { opacity: 1; }
 nav button:hover:not(:disabled) { background: var(--hover); }
 nav button[aria-current] { background: var(--selected); font-weight: var(--aihio-font-weight-control); }
 nav button[aria-current] .icon { color: var(--aihio-color-page-fg); }
 
-.list { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 1.25rem; }
-.list-tools { display: flex; align-items: center; gap: .375rem; padding: 0 0 .5rem; }
-.list-tools aihio-input { flex: 1; min-width: 0; --aihio-input-height-sm: 1.875rem; }
-.list-tools input::-webkit-search-cancel-button { display: none; }
+.list { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 1rem; timeline-scope: --side-scroll; }
+/* Filter, Open, Group and sort: one quiet line. A hairline under it appears once the list scrolls under it. */
+.list-tools { display: flex; align-items: center; gap: .25rem; padding: 0 0 .375rem; }
+.list-tools::after {
+  content: ''; position: absolute; inset-inline: calc(-1 * var(--gutter)); bottom: 0; height: 1px; background: var(--rule); opacity: 0;
+  animation: list-edge linear both; animation-timeline: --side-scroll; animation-range: 0 .75rem;
+}
+@keyframes list-edge { to { opacity: 1; } }
+.filter-box { position: relative; flex: 1; min-width: 0; }
+.filter-box > .icon { position: absolute; z-index: 1; inset-inline-start: .5625rem; top: 50%; translate: 0 -50%; width: .875rem; height: .875rem; color: var(--muted); pointer-events: none; }
+.filter-box aihio-input input {
+  height: var(--side-line); padding-block: 0; padding-inline: var(--side-text) calc(var(--count-ch, 0) * 1ch + .875rem);
+  border-color: transparent; border-radius: var(--aihio-radius-interactive); background: var(--hover);
+  font-size: var(--side-font);
+  transition: background-color var(--aihio-duration-feedback-fast) ease, border-color var(--aihio-duration-feedback-fast) ease;
+}
+.filter-box aihio-input input:hover { background: var(--selected); }
+.filter-box aihio-input input:focus-visible { background: var(--aihio-color-page-bg); border-color: var(--aihio-color-field-border); box-shadow: none; }
+.filter-box input::placeholder { color: var(--muted); }
+.filter-box input::-webkit-search-cancel-button { display: none; }
+#count {
+  position: absolute; inset-inline-end: .625rem; top: 50%; translate: 0 -50%; pointer-events: none;
+  color: var(--faint); font-size: var(--aihio-font-size-badge); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
 .chip {
-  flex: none; height: 1.875rem; padding: 0 .625rem; border: 1px solid var(--rule); border-radius: var(--aihio-radius-interactive-compact);
+  flex: none; display: inline-flex; align-items: center; gap: .3125rem; height: var(--side-line); padding: 0 .5rem; border: 0; border-radius: var(--aihio-radius-interactive);
   background: transparent; color: var(--muted); font-size: var(--aihio-font-size-badge); font-weight: var(--aihio-font-weight-control);
   transition: background-color var(--aihio-duration-feedback-fast) ease, color var(--aihio-duration-feedback-fast) ease;
 }
 .chip:hover { background: var(--hover); color: var(--aihio-color-page-fg); }
-.chip[aria-pressed="true"] { background: var(--selected); border-color: var(--aihio-color-field-border); color: var(--aihio-color-page-fg); }
-.chip[aria-pressed="true"]::before { content: '✓ '; }
-/* Group and sort: an icon chip beside Open, marked like a pressed chip while the list isn't in its default order. */
+.chip[aria-pressed="true"] { background: var(--selected); color: var(--aihio-color-page-fg); }
+/* Open shows the mark it keeps: the ring of open work. */
+.chip .icon { width: .75rem; height: .75rem; stroke-width: 2.5; }
+/* Group and sort: an icon beside Open, marked like a pressed chip while the list isn't in its default order. */
 .list-view > aihio-button > button {
-  width: 1.875rem; height: 1.875rem; padding: 0; border: 1px solid var(--rule); border-radius: var(--aihio-radius-interactive-compact);
+  width: var(--side-line); height: var(--side-line); padding: 0; border: 0; border-radius: var(--aihio-radius-interactive);
   background: transparent; color: var(--muted);
   transition: background-color var(--aihio-duration-feedback-fast) ease, color var(--aihio-duration-feedback-fast) ease;
 }
 .list-view > aihio-button > button:hover, .list-view > aihio-button > button[aria-expanded="true"] { background: var(--hover); color: var(--aihio-color-page-fg); }
-.list-view[data-active] > aihio-button > button { background: var(--selected); border-color: var(--aihio-color-field-border); color: var(--aihio-color-page-fg); }
+.list-view[data-active] > aihio-button > button { background: var(--selected); color: var(--aihio-color-page-fg); }
 .list-view aihio-dropdown-item { min-width: 12rem; gap: .5rem; text-align: start; } /* the dropdown's align="end" would otherwise right-align the labels */
 .list-view aihio-dropdown-item .item-name { flex: 1; }
 .list-view aihio-dropdown-item .current { color: var(--aihio-color-page-fg); }
 .side-foot { display: flex; gap: 1px; justify-content: space-between; padding: .375rem 0; border-top: 1px solid var(--rule); margin-inline: calc(-1 * var(--gutter)); padding-inline: var(--gutter); }
 .side-link {
-  display: inline-flex; align-items: center; gap: .5rem; min-width: 0; height: 2rem; padding: 0 .5rem; border: 0; border-radius: var(--aihio-radius-interactive);
+  display: inline-flex; align-items: center; gap: .625rem; min-width: 0; height: var(--side-line); padding: 0 .5rem; border: 0; border-radius: var(--aihio-radius-interactive);
   background: transparent; color: var(--muted); font-size: var(--aihio-font-size-badge); white-space: nowrap;
 }
 .side-link span { overflow: hidden; text-overflow: ellipsis; }
-.side-link.icon-only { flex: none; justify-content: center; width: 2rem; padding: 0; }
+.side-link.icon-only { flex: none; justify-content: center; width: var(--side-line); padding: 0; }
 .side-link:hover { background: var(--hover); color: var(--aihio-color-page-fg); }
-.resizer { position: absolute; inset-block: 0; inset-inline-end: -4px; width: 8px; cursor: col-resize; z-index: 2; }
-.resizer::after { content: ''; position: absolute; inset-block: 0; inset-inline-start: 3px; width: 2px; background: transparent; transition: background-color var(--aihio-duration-feedback-fast) ease; }
+/* The handle covers the border and a little either side, short of the list's scrollbar thumb. */
+.resizer { position: absolute; inset-block: 0; inset-inline-end: -3px; width: 6px; cursor: col-resize; z-index: 2; }
+.resizer::after { content: ''; position: absolute; inset-block: 0; inset-inline-start: 2px; width: 2px; background: transparent; transition: background-color var(--aihio-duration-feedback-fast) ease; }
 .resizer:hover::after, .resizer:focus-visible::after, body[data-resizing] .resizer::after { background: var(--aihio-color-focus-ring); }
 .resizer:focus-visible { outline: none; }
-.list-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 .5rem .375rem; }
-.list-head h2, #count { font-size: var(--aihio-font-size-badge); font-weight: var(--aihio-font-weight-control); color: var(--muted); }
-#count { font-variant-numeric: tabular-nums; }
-#empty { padding: .5rem; color: var(--muted); font-size: var(--aihio-font-size-badge); line-height: 1.5; }
+#empty { padding: .5rem .5rem .5rem var(--side-text); color: var(--muted); font-size: var(--aihio-font-size-badge); line-height: 1.5; text-wrap: pretty; }
 #empty[data-tone="error"] { color: var(--aihio-color-destructive-text); }
-#recent { flex: 1; min-height: 0; overflow-y: auto; margin-inline: calc(-1 * var(--gutter)); padding: 0 var(--gutter) .75rem; }
-/* A group: its header (fold mark, glyph, name, count) sticks to the top while its rows scroll under it. */
-#recent .group + .group { margin-top: .125rem; }
+/* The scrollbar lives in the gutter (scrollbar-gutter keeps it reserved), so rows end where the tools above end,
+   scrolling or not. */
+#recent {
+  flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; scroll-timeline: --side-scroll block;
+  margin-inline: calc(-1 * var(--gutter)); padding: 0 0 .75rem var(--gutter);
+}
+#recent::-webkit-scrollbar { width: var(--gutter); }
+#recent::-webkit-scrollbar-thumb { border-width: 2px 3px 2px 1px; }
+#recent .group + .group { margin-top: .5rem; }
 .group-head {
   position: sticky; top: 0; z-index: 1;
-  display: flex; align-items: center; gap: .5rem; width: 100%; height: 1.875rem; padding: 0 .5rem;
+  display: flex; align-items: center; gap: .625rem; width: 100%; height: var(--side-line); padding: 0 .5rem;
   border: 0; border-radius: var(--aihio-radius-interactive); background-color: var(--aihio-color-surface-bg);
-  color: var(--muted); font-size: var(--aihio-font-size-badge); font-weight: var(--aihio-font-weight-control); text-align: start;
+  color: var(--muted); font-size: var(--aihio-font-size-badge); font-weight: var(--aihio-font-weight-heading); text-align: start;
 }
-.group-head:hover { background-image: linear-gradient(var(--hover), var(--hover)); color: var(--aihio-color-page-fg); } /* stays opaque over the rows */
-.group-head .icon { width: .875rem; height: .875rem; }
-.group-head .fold { width: .75rem; height: .75rem; transition: transform var(--aihio-duration-feedback-fast) ease; }
+.group-head:hover { background-image: linear-gradient(var(--hover), var(--hover)); } /* stays opaque over the rows */
+.group-head .glyph { flex: none; width: .875rem; height: .875rem; margin-inline: .0625rem; }
+.group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color var(--aihio-duration-feedback-fast) ease; }
+.group-head:hover .group-name { color: var(--aihio-color-page-fg); }
+.group-count { flex: none; margin-inline-start: -.25rem; color: var(--faint); font-weight: var(--aihio-font-weight-body); font-variant-numeric: tabular-nums; }
+.group-head .fold {
+  width: .75rem; height: .75rem; margin-inline-start: auto; opacity: 0;
+  transition: transform var(--aihio-duration-feedback-fast) ease, opacity var(--aihio-duration-feedback-fast) ease;
+}
+.group-head:is(:hover, :focus-visible, [aria-expanded="false"]) .fold { opacity: 1; }
 .group-head[aria-expanded="false"] .fold { transform: rotate(-90deg); }
-.group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--aihio-color-page-fg); }
-.group-count { flex: none; font-variant-numeric: tabular-nums; }
 
-/* A fragment row: type glyph, title and age, then type and state. Used in the sidebar and in results. */
+/* Fragment rows share their states; the sidebar's are one line, results' carry facts and a snippet. */
 .row {
-  display: grid; grid-template-columns: 1rem minmax(0, 1fr); column-gap: .625rem; align-items: start;
-  width: 100%; padding: .5rem; border: 0; border-radius: var(--aihio-radius-interactive);
+  width: 100%; border: 0; border-radius: var(--aihio-radius-interactive);
   background: transparent; text-align: start;
   transition: background-color var(--aihio-duration-feedback-fast) ease;
 }
 .row:hover:not(:disabled) { background: var(--hover); }
 .row[aria-current] { background: var(--selected); }
-.row > .icon { margin-top: .125rem; color: var(--muted); }
-.row[aria-current] > .icon { color: var(--aihio-color-page-fg); }
-.row-main { display: block; min-width: 0; }
 .row-title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.35; }
-.row[aria-current] .row-title { font-weight: var(--aihio-font-weight-control); }
 .row-title.untitled { color: var(--muted); font-style: italic; }
-/* In the sidebar a title gets two lines before it ellipsises. */
-#recent .row-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .row[data-archived] .row-title { color: var(--muted); }
+
+/* Sidebar: mark, title, then what's left at the end (archived, vault, age). */
+.side-row {
+  display: grid; grid-template-columns: 1rem minmax(0, 1fr) auto; column-gap: .625rem; align-items: center;
+  height: var(--side-line); padding: 0 .5rem; font-size: var(--side-font);
+  scroll-margin-block: calc(var(--side-line) + .25rem) .25rem; /* clear of a sticky group header */
+}
+.side-row .lead { justify-self: center; }
+.side-row .icon.lead { width: .9375rem; height: .9375rem; color: var(--muted); }
+.side-row[data-archived] .icon.lead { color: var(--faint); }
+.side-row[aria-current] .icon.lead:not(.status) { color: var(--aihio-color-page-fg); }
+/* Status marks: open and closed stay quiet, active is ink, done is the success colour with the row's ground for a check. */
+.icon.status { width: .875rem; height: .875rem; stroke-width: 2; }
+.icon.status[data-tone="active"] { color: var(--aihio-color-page-fg); }
+.icon.status[data-tone="done"] { color: color-mix(in oklch, var(--aihio-color-success-text) 85%, var(--aihio-color-surface-bg)); }
+.icon.status .knock { stroke: var(--aihio-color-surface-bg); stroke-width: 2.25; }
+.row-end { display: inline-flex; align-items: center; gap: .375rem; color: var(--muted); font-size: var(--aihio-font-size-badge); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.row-end .archived { width: .75rem; height: .75rem; color: var(--faint); }
+.vault-dot { width: .375rem; height: .375rem; border-radius: 50%; background: oklch(0.72 0.11 var(--vault-hue, 250)); }
+
+/* Results: type glyph, title and age, then type and state, and a snippet under them. */
+.results .row { display: grid; grid-template-columns: 1rem minmax(0, 1fr); column-gap: .625rem; align-items: start; padding: .75rem .5rem; }
+.results .row > .icon { margin-top: .125rem; color: var(--muted); }
+.row-main { display: block; min-width: 0; }
 .row-meta .archived { color: var(--faint); }
 /* The age never clips: the descriptive part ellipsises first. */
 .row-meta { display: flex; align-items: baseline; gap: .5rem; margin-top: .125rem; min-width: 0; color: var(--muted); font-size: var(--aihio-font-size-badge); line-height: 1.4; white-space: nowrap; }
@@ -194,7 +251,7 @@ nav button[aria-current] .icon { color: var(--aihio-color-page-fg); }
 .row-snippet mark { background: var(--ink-mark); color: var(--aihio-color-page-fg); border-radius: 2px; padding: 0 1px; }
 
 /* State: a small mark before the status word. Shape carries it as well as colour. */
-.state::before, .toggle-mark::before { content: ''; display: inline-block; width: .4375rem; height: .4375rem; margin-inline-end: .375rem; vertical-align: .05em; border-radius: 50%; box-sizing: border-box; border: 1.5px solid currentColor; opacity: .9; }
+:is(.state, .toggle-mark)::before { content: ''; display: inline-block; width: .4375rem; height: .4375rem; margin-inline-end: .375rem; vertical-align: .05em; border-radius: 50%; box-sizing: border-box; border: 1.5px solid currentColor; opacity: .9; }
 :is(.state, .toggle-mark)[data-tone="active"]::before { background: linear-gradient(90deg, currentColor 50%, transparent 50%); }
 :is(.state, .toggle-mark)[data-tone="done"]::before { background: var(--aihio-color-success-text); border-color: var(--aihio-color-success-text); }
 :is(.state, .toggle-mark)[data-tone="closed"]::before { border-style: dotted; }
@@ -450,7 +507,6 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 
 .results { margin-inline: -.5rem; }
 .results li + li::before { content: ''; display: block; height: 1px; margin-inline: .5rem; background: var(--rule); }
-.results .row { padding-block: .75rem; }
 .results .row-title { font-size: .9375rem; }
 .empty { padding: 2.5rem 0; color: var(--muted); max-width: 34rem; line-height: 1.6; }
 .empty strong { display: block; margin-bottom: .25rem; color: var(--aihio-color-page-fg); font-size: var(--aihio-font-size-body); font-weight: var(--aihio-font-weight-heading); }

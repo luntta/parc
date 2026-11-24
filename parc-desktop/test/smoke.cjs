@@ -164,7 +164,7 @@ async function check() {
   assert.equal(await js('document.querySelector("#listHeading").textContent'), 'Fragments by type');
   assert.equal(await js('document.querySelector("#listView").hasAttribute("data-active")'), false);
   await listView('group:tag');
-  await until(`${groupNames} === '["#calls","#ferry","No tags"]'`);
+  await until(`${groupNames} === '["calls","ferry","No tags"]'`);
   assert.equal((await shown()).filter(t => t === 'Call the ferry office').length, 2);
   await js('document.querySelector(\'#recent [data-group="tag:calls"] .group-head\').click()');
   assert.equal(await js('document.querySelector(\'#recent [data-group="tag:calls"] .row\')'), null);

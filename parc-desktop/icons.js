@@ -1,6 +1,9 @@
 // One stroke family (24px grid, 1.75 stroke, round joins) for every glyph in the workspace.
 const paths = {
   plus: '<path d="M12 5v14M5 12h14"/>',
+  compose: '<path d="M11 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V13"/><path d="M17.4 3.9a2 2 0 0 1 2.8 2.8l-7.4 7.4-3.6.9.9-3.6Z"/>',
+  ring: '<circle cx="12" cy="12" r="7.5"/>',
+  hash: '<path d="M10 4 8 20M16 4l-2 16M5 9h15M4 15h15"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   graph: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="5.5" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4.1M8.2 13.2l7.6 4.1"/>',
   agent: '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4.5M9 13.5v1.5M15 13.5v1.5M2 14h2M20 14h2"/>',
@@ -49,6 +52,20 @@ export function icon(name, className = 'icon') {
   return svg;
 }
 export const typeIcon = (type, className = 'icon') => icon(types.includes(type) ? type : 'fragment', className);
+// A status category as a mark, told apart by shape as well as colour: a ring (open), a half-filled ring (active),
+// a filled disc with a check (done) and a dashed ring (closed).
+const marks = {
+  open: '<circle cx="12" cy="12" r="7.5"/>',
+  active: '<circle cx="12" cy="12" r="7.5"/><path d="M12 8a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"/>',
+  done: '<circle cx="12" cy="12" r="8.75" fill="currentColor" stroke="none"/><path class="knock" d="m8.6 12.3 2.3 2.3 4.5-4.7"/>',
+  closed: '<circle cx="12" cy="12" r="7.5" stroke-dasharray="3.1 2.8"/>'
+};
+export function statusIcon(category, className = 'icon') {
+  const svg = icon('fragment', className);
+  svg.innerHTML = marks[category] || marks.open;
+  svg.dataset.tone = category || 'open';
+  return svg;
+}
 // Replace [data-icon] placeholders in static markup.
 export function hydrateIcons(root = document) {
   for (const el of root.querySelectorAll('[data-icon]')) {

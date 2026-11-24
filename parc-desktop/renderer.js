@@ -1,7 +1,7 @@
 import '@luntta/aihio';
 import { markdownEditor, fold } from './editor.js';
 import { dictation } from './speech.js';
-import { icon, typeIcon, hydrateIcons } from './icons.js';
+import { icon, typeIcon, statusIcon, hydrateIcons } from './icons.js';
 import { vaultGraph } from './graph.js';
 import { palette } from './palette.js';
 import { searchAssist } from './assist.js';
@@ -50,13 +50,14 @@ const stamp = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyl
 const rel = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
 const midnight = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 const cleanError = err => String(err?.message ?? err).replace(/^Error invoking remote method '[^']+': Error: /, '');
-function age(iso) { // compact, for lists
+const monthYear = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric' });
+function age(iso) { // compact, for lists: a few characters, so it fits beside a one-line title
   const t = new Date(iso), s = (Date.now() - t) / 1000, days = Math.round((midnight(Date.now()) - midnight(t)) / dayMs);
-  if (s < 60) return 'Now';
+  if (s < 60) return 'now';
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (days === 0) return `${Math.floor(s / 3600)}h`;
-  if (days === 1) return 'Yesterday';
-  return t.getFullYear() === new Date().getFullYear() ? shortDate.format(t) : longDate.format(t);
+  if (days < 7) return `${days}d`;
+  return t.getFullYear() === new Date().getFullYear() ? shortDate.format(t) : monthYear.format(t);
 }
 function edited(iso) { // prose, for the status bar
   const t = new Date(iso), s = (Date.now() - t) / 1000, days = Math.round((midnight(Date.now()) - midnight(t)) / dayMs);
@@ -331,20 +332,22 @@ function snippet(text) {
 function openRow(r, focus = false) {
   return action(() => openFragment(r)).then(() => { if (focus && opened && key(opened) === key(r) && mode === 'capture') editor.focus(); });
 }
-// A fragment row. In the sidebar (compact) the glyph says the type, so the row keeps its room for the title.
-// Its age is the last edit, or the creation when the list is in creation order.
+// A fragment row in results: type glyph, title and age, then type, state and tags.
 const createdAt = r => r.created_at || r.updated_at;
-function row(r, { withSnippet = false, compact = false, created = false } = {}) {
+function timeOf(r, created) { // the last edit, or the creation when the list is in creation order
+  const at = created ? createdAt(r) : r.updated_at, time = el('time', '', age(at));
+  time.dateTime = at; time.title = `${created ? 'Created' : 'Edited'} ${stamp.format(new Date(at))}`;
+  return time;
+}
+function row(r, { withSnippet = false } = {}) {
   const b = el('button', 'row'); b.type = 'button';
   const meta = el('span', 'row-meta'), facts = el('span', 'row-facts'), main = el('span', 'row-main');
-  const at = created ? createdAt(r) : r.updated_at;
-  const time = el('time', '', age(at)); time.dateTime = at; time.title = `${created ? 'Created' : 'Edited'} ${stamp.format(new Date(at))}`;
   if (!scope) facts.append(el('span', 'where', name(r.vault)));
-  if (!compact) facts.append(el('span', '', typeLabel(r.type)));
+  facts.append(el('span', '', typeLabel(r.type)));
   if (r.status) facts.append(state(r.vault, r.type, r.status));
   if (r.archived) facts.append(el('span', 'archived', 'Archived'));
-  if (!compact && r.tags?.length) facts.append(el('span', 'tags', r.tags.map(t => `#${t}`).join(' ')));
-  meta.append(facts, time);
+  if (r.tags?.length) facts.append(el('span', 'tags', r.tags.map(t => `#${t}`).join(' ')));
+  meta.append(facts, timeOf(r));
   main.append(el('span', 'row-title' + (r.title ? '' : ' untitled'), r.title || 'Untitled'), meta);
   b.append(typeIcon(r.type), main);
   if (withSnippet && r.snippet) b.append(snippet(r.snippet));
@@ -353,12 +356,32 @@ function row(r, { withSnippet = false, compact = false, created = false } = {}) 
   b.onclick = e => openRow(r, e.detail === 0);
   return b;
 }
-const rowItem = (r, options) => { const li = el('li'); li.append(row(r, options)); return li; };
 function rowList(items, options) {
   const ul = el('ul', 'results');
-  ul.append(...items.map(r => rowItem(r, options)));
+  ul.append(...items.map(r => { const li = el('li'); li.append(row(r, options)); return li; }));
   return ul;
 }
+// A sidebar row: one line, so a screen holds a screenful. Its leading mark says what the group header doesn't:
+// grouped by type it is the status (its category: open, active, done or closed), otherwise the type's glyph.
+// Archived rows recede. The words behind the marks are in its tooltip and accessible name.
+function sideRow(r, { created = false, mark = 'type' } = {}) {
+  const b = el('button', 'row side-row'); b.type = 'button';
+  const category = r.status ? tone(r.vault, r.type, r.status) : '';
+  const lead = mark === 'type' ? typeIcon(r.type, 'icon lead') : r.status ? statusIcon(category, 'icon lead status') : el('span', 'lead');
+  const facts = [mark === 'type' && typeLabel(r.type), r.status && capital(r.status), r.archived && 'Archived', !scope && name(r.vault)].filter(Boolean);
+  const end = el('span', 'row-end');
+  if (facts.length) end.append(el('span', 'sr', `, ${facts.join(', ')}, `));
+  if (r.archived) end.append(icon('archive', 'icon archived'));
+  if (!scope) { const dot = el('span', 'vault-dot'); dot.style.setProperty('--vault-hue', hue(r.vault)); end.append(dot); }
+  end.append(timeOf(r, created));
+  b.append(lead, el('span', 'row-title' + (r.title ? '' : ' untitled'), r.title || 'Untitled'), end);
+  b.title = [r.title || 'Untitled', [...facts, ...(r.tags || []).map(t => `#${t}`)].join(' · ')].filter(Boolean).join('\n');
+  if (r.archived) b.dataset.archived = '';
+  if (opened && key(opened) === key(r) && mode === 'capture') b.setAttribute('aria-current', 'page');
+  b.onclick = e => openRow(r, e.detail === 0);
+  return b;
+}
+const sideItem = (r, options) => { const li = el('li'); li.append(sideRow(r, options)); return li; };
 
 // ── Sidebar filter ──
 // Plain words filter the list as you type, by title, type, status, tags and vault. Anything in the search
@@ -427,22 +450,24 @@ function grouped(items) {
   const groups = new Map();
   const add = (id, label, glyph, r) => { if (!groups.has(id)) groups.set(id, { id, label, glyph, items: [] }); groups.get(id).items.push(r); };
   for (const r of items) {
-    if (listView.group === 'type') { add(`type:${r.type}`, typeLabel(r.type), r.type, r); continue; }
+    if (listView.group === 'type') { add(`type:${r.type}`, typeLabel(r.type), () => typeIcon(r.type, 'icon glyph'), r); continue; }
     const tags = new Map((r.tags || []).map(t => [t.toLowerCase(), t])); // tags are case-insensitive
-    if (!tags.size) add('tag:', 'No tags', null, r);
-    for (const [low, t] of tags) add(`tag:${low}`, `#${t}`, null, r);
+    if (!tags.size) add('tag:', 'No tags', () => el('span', 'glyph'), r);
+    for (const [low, t] of tags) add(`tag:${low}`, t, () => icon('hash', 'icon glyph'), r);
   }
-  const sortName = g => g.label.replace(/^#/, '');
-  return [...groups.values()].sort((a, b) => (a.id === 'tag:') - (b.id === 'tag:') || collator.compare(sortName(a), sortName(b)));
+  return [...groups.values()].sort((a, b) => (a.id === 'tag:') - (b.id === 'tag:') || collator.compare(a.label, b.label));
 }
+// A group's header: its glyph over the rows' marks, its name over their titles, and a fold mark at the end
+// that shows while folded or pointed at. It sticks to the top while its rows scroll under it.
 function groupItem(g, options) {
   const li = el('li', 'group'), head = el('button', 'group-head'), open = !folded.has(g.id);
+  const label = g.id.startsWith('tag:') && g.id !== 'tag:' ? `#${g.label}` : g.label;
   li.dataset.group = g.id;
   head.type = 'button'; head.setAttribute('aria-expanded', String(open));
-  head.append(icon('chevron', 'icon fold'), g.glyph ? typeIcon(g.glyph) : icon('tag'), el('span', 'group-name', g.label), el('span', 'group-count', g.items.length.toLocaleString()));
+  head.append(g.glyph(), el('span', 'group-name', g.label), el('span', 'group-count', g.items.length.toLocaleString()), icon('chevron', 'icon fold'));
   head.onclick = () => foldGroup(g.id);
   li.append(head);
-  if (open) { const ul = el('ul', 'group-rows'); ul.setAttribute('aria-label', g.label); ul.append(...g.items.map(r => rowItem(r, options))); li.append(ul); }
+  if (open) { const ul = el('ul', 'group-rows'); ul.setAttribute('aria-label', label); ul.append(...g.items.map(r => sideItem(r, options))); li.append(ul); }
   return li;
 }
 function foldGroup(id, fold = !folded.has(id)) {
@@ -470,12 +495,20 @@ function viewMenu() {
   menu.querySelector('aihio-button').title = `Group and sort the list (now ${how})`;
 }
 
+let revealed = null; // the open fragment the list last scrolled to
 function list() {
   const shown = ordered(visible()), narrowed = !!filterText.trim() || openOnly;
-  const options = { compact: true, created: listView.sort === 'created' };
-  $('recent').replaceChildren(...(listView.group === 'none' ? shown.map(r => rowItem(r, options)) : grouped(shown).map(g => groupItem(g, options))));
+  const options = { created: listView.sort === 'created', mark: listView.group === 'type' ? 'status' : 'type' };
+  $('recent').replaceChildren(...(listView.group === 'none' ? shown.map(r => sideItem(r, options)) : grouped(shown).map(g => groupItem(g, options))));
   $('listHeading').textContent = { none: 'Fragments', type: 'Fragments by type', tag: 'Fragments by tag' }[listView.group];
-  $('count').textContent = rows.length ? narrowed ? `${shown.length} of ${rows.length}` : rows.length : '';
+  // The count sits at the end of the filter box; the box's text stops short of it.
+  const count = !rows.length ? '' : narrowed ? `${shown.length.toLocaleString()} of ${rows.length.toLocaleString()}` : rows.length.toLocaleString();
+  $('count').textContent = count;
+  $('filterBox').style.setProperty('--count-ch', count.length);
+  // A fragment opened from elsewhere (Go to…, a link, the graph) is scrolled into view once.
+  const current = opened && mode === 'capture' ? key(opened) : null;
+  if (current !== revealed) $('recent').querySelector('.row[aria-current]')?.scrollIntoView({ block: 'nearest' });
+  revealed = current;
   $('empty').textContent = !rows.length
     ? suggested.length && scope === vaults[0]?.path
       ? `No fragments yet. Press + to capture, or open your ${suggested[0].name} vault (${suggested[0].hint}) from the vault menu.`

@@ -8,17 +8,16 @@
   <script defer src="dist/workspace.js"></script>
 </head><body data-phase="loading">
   <aside id="sidebar" aria-label="Archive navigation">
-    <aihio-dropdown id="vaultMenu" class="switcher-menu">
-      <aihio-button slot="trigger" id="scope" class="switcher" variant="ghost" disabled>
-        <span id="vaultMark" class="vault-mark" aria-hidden="true"></span>
-        <span class="switcher-name"><span class="sr">Vault: </span><span id="vaultName">Opening…</span></span>
-        <i data-icon="chevrons" class="icon chevrons"></i>
-      </aihio-button>
-    </aihio-dropdown>
-
-    <aihio-button id="newCapture" class="new" data-view="capture" variant="outline" aria-keyshortcuts="+ Control+N">
-      <i data-icon="plus" class="icon"></i><span>New capture</span><kbd aria-hidden="true">+</kbd>
-    </aihio-button>
+    <div class="side-head">
+      <aihio-dropdown id="vaultMenu" class="switcher-menu">
+        <aihio-button slot="trigger" id="scope" class="switcher" variant="ghost" disabled>
+          <span id="vaultMark" class="vault-mark" aria-hidden="true"></span>
+          <span class="switcher-name"><span class="sr">Vault: </span><span id="vaultName">Opening…</span></span>
+          <i data-icon="chevrons" class="icon chevrons"></i>
+        </aihio-button>
+      </aihio-dropdown>
+      <aihio-button id="newCapture" class="compose" data-view="capture" variant="ghost" size="icon" aria-label="New capture" title="New capture (+)" aria-keyshortcuts="+ Control+N"><i data-icon="compose" class="icon"></i></aihio-button>
+    </div>
 
     <nav aria-label="Workspace">
       <button type="button" id="goTo" aria-keyshortcuts="Control+K"><i data-icon="command" class="icon"></i><span>Go to…</span><kbd aria-hidden="true">Ctrl K</kbd></button>
@@ -29,10 +28,14 @@
     </nav>
 
     <section class="list" aria-labelledby="listHeading">
-      <div class="list-head"><h2 id="listHeading">Fragments</h2><span id="count"></span></div>
+      <h2 id="listHeading" class="sr">Fragments</h2>
       <div class="list-tools">
-        <aihio-input id="filter" type="search" size="sm" placeholder="Filter, or type:todo #tag" aria-label="Filter fragments" autocomplete="off"></aihio-input>
-        <button type="button" id="openOnly" class="chip" aria-pressed="false" title="Hide done, closed and archived fragments">Open</button>
+        <div class="filter-box" id="filterBox">
+          <i data-icon="search" class="icon"></i>
+          <aihio-input id="filter" type="search" size="sm" placeholder="Filter" aria-label="Filter fragments" aria-describedby="count" title="Words, or the search language: type:todo #tag due:overdue" autocomplete="off"></aihio-input>
+          <span id="count"></span>
+        </div>
+        <button type="button" id="openOnly" class="chip" aria-pressed="false" title="Show only open work: hide done, closed and archived fragments"><i data-icon="ring" class="icon"></i>Open</button>
         <aihio-dropdown id="listView" class="list-view" align="end">
           <aihio-button slot="trigger" variant="ghost" size="icon" aria-label="Group and sort the list" title="Group and sort the list"><i data-icon="sort" class="icon"></i></aihio-button>
         </aihio-dropdown>
