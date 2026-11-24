@@ -24,6 +24,9 @@ require('electron').dialog.showMessageBox = async (_win, options) => {
   if (!answers.length) { console.error(`Unexpected dialog: ${options.message}`); return { response: 0 }; }
   return { response: answers.shift() };
 };
+// Copies land here, not on the desktop's clipboard.
+let copied = '';
+require('electron').clipboard.writeText = text => { copied = text; };
 require('../main.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function check() {
@@ -290,6 +293,10 @@ async function check() {
   await js('document.querySelector("#openSettings").click()');
   await until('document.querySelectorAll("#modelList li").length === 5');
   assert.equal(await js('document.querySelector("#themeChoice input:checked")?.value'), 'system');
+  // The command to bind in a desktop's own shortcut settings copies with one click.
+  assert.match(await js('document.querySelector("#captureCommand").textContent'), / --capture$/);
+  await js('document.querySelector("#copyCaptureCommand").click()');
+  await eventually(async () => copied === await js('document.querySelector("#captureCommand").textContent'));
   await js(`document.querySelector("#themeChoice input[value=${systemDark ? 'light' : 'dark'}]").click()`);
   await until(`${dark} === ${!systemDark}`);
   await js('document.querySelector("#settings aihio-button[command=\\"--close\\"]").click()');
@@ -347,7 +354,7 @@ async function check() {
   assert.deepEqual(kinds.find(k => k.name === 'bug').fields[0].categories, { open: 'open', done: 'done' });
   await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Done")).click()');
   await until('!document.querySelector("#vaultSettings").hasAttribute("open")');
-  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, theme preview and save, dictation languages and model list, vault settings');
+  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

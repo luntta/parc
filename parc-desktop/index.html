@@ -168,7 +168,10 @@
           <aihio-input id="shortcutInput" placeholder="CommandOrControl+Shift+Space" autocomplete="off"></aihio-input>
           <span slot="description" id="shortcutState">Leave empty for none.</span>
         </aihio-field>
-        <p class="setting-hint">Where the desktop doesn’t let apps register shortcuts, bind one in its own settings to <code id="captureCommand"></code></p>
+        <div class="setting">
+          <div class="setting-text"><strong>Or bind a key in your desktop</strong><span class="setting-sub">The reliable way on Wayland: in the desktop’s own shortcut settings, have a key run <code id="captureCommand"></code></span></div>
+          <aihio-button id="copyCaptureCommand" variant="outline" size="sm">Copy</aihio-button>
+        </div>
       </section>
     </div>
     <aihio-dialog-footer>

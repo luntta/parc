@@ -125,12 +125,16 @@ else app.whenReady().then(() => {
   // System follows the desktop; Light and Dark override it for every window, prefers-color-scheme included.
   function applyTheme(theme = settings.theme) { nativeTheme.themeSource = theme; }
   nativeTheme.on('updated', () => { for (const w of BrowserWindow.getAllWindows()) w.setBackgroundColor(canvas()); });
+  // On Wayland, Electron asks the desktop portal for the shortcut and reports success whether or not the
+  // portal agrees. Hyprland's refuses an app it can't match to an installed .desktop file, so all we know is
+  // that we asked.
+  const viaPortal = process.platform === 'linux' && !!process.env.WAYLAND_DISPLAY;
   function applyShortcut() {
     globalShortcut.unregisterAll();
     if (!settings.quickCaptureShortcut) return (shortcut = { active: false });
     try {
       return (shortcut = globalShortcut.register(settings.quickCaptureShortcut, openCapture)
-        ? { active: true }
+        ? (viaPortal ? { active: false, asked: true } : { active: true })
         : { active: false, error: 'Couldn’t register it: another app may use it, or this desktop doesn’t let apps register shortcuts.' });
     } catch { return (shortcut = { active: false, error: 'That isn’t a shortcut Electron understands, e.g. CommandOrControl+Shift+Space.' }); }
   }

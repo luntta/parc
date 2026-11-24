@@ -1279,8 +1279,9 @@ function renderSettings(view = settingsView) {
   const where = speech.language && speech.language !== 'auto' ? ` in ${languageName(speech.language)}` : '';
   $('speechState').textContent = speech.ready ? speech.warning || `Ready to dictate${where}.` : speech.problem || 'Not set up.';
   $('speechState').dataset.tone = speech.ready && !speech.warning ? 'ok' : 'warn';
-  $('shortcutState').textContent = view.shortcut?.error || (view.shortcut?.active ? `${view.quickCaptureShortcut} opens quick capture.` : 'Leave empty for none.');
-  $('shortcutState').dataset.tone = view.shortcut?.error ? 'error' : '';
+  const asked = `Asked the desktop for ${view.quickCaptureShortcut}. Wayland desktops don’t say whether they agreed: if it does nothing, bind the command below instead.`;
+  $('shortcutState').textContent = view.shortcut?.error || (view.shortcut?.asked ? asked : view.shortcut?.active ? `${view.quickCaptureShortcut} opens quick capture.` : 'Leave empty for none.');
+  $('shortcutState').dataset.tone = view.shortcut?.error ? 'error' : view.shortcut?.asked ? 'warn' : '';
   $('captureCommand').textContent = view.captureCommand;
   renderLanguages(); renderModels();
 }
@@ -1412,11 +1413,21 @@ $('settings').addEventListener('aihio-close', () => api.previewTheme().catch(() 
 $('pickModel').addEventListener('click', () => pickFor('model').catch(status));
 $('pickBin').addEventListener('click', () => pickFor('binary').catch(status));
 $('clearBin').addEventListener('click', async () => { pending.whisperBin = ''; renderSettings(await api.settings()); });
+$('copyCaptureCommand').addEventListener('click', () => {
+  api.copyText(settingsView.captureCommand).then(() => status('Copied the quick capture command. Bind a key to it in your desktop’s shortcut settings.'), status);
+});
 $('settingsSave').addEventListener('click', async () => {
   try {
+    const before = settingsView?.quickCaptureShortcut;
     const view = await api.saveSettings({ ...pending, quickCaptureShortcut: $('shortcutInput').value });
     await checkSpeech(); renderSettings(view);
-    if (!view.shortcut?.error) { $('settings').close(); status(speech.ready ? 'Settings saved. Dictation is ready.' : 'Settings saved.'); }
+    if (!view.shortcut?.error) {
+      $('settings').close();
+      // Wayland desktops don't confirm a shortcut, so say what to do if a new one doesn't work.
+      status(view.shortcut?.asked && view.quickCaptureShortcut !== before
+        ? `Settings saved. If ${view.quickCaptureShortcut} does nothing, bind the quick capture command in your desktop instead.`
+        : speech.ready ? 'Settings saved. Dictation is ready.' : 'Settings saved.');
+    }
   } catch (err) { $('shortcutState').textContent = cleanError(err); $('shortcutState').dataset.tone = 'error'; }
 });
 

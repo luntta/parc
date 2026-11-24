@@ -84,7 +84,35 @@ A small window over whatever you're doing: pick a vault and type, write, Ctrl+S,
 ./node_modules/.bin/electron . --capture
 ```
 
-A second launch hands `--capture` to the running app; with none running it opens only the capture window. Some desktops, including many Wayland compositors, don't let apps register global shortcuts: bind that command in the desktop's own shortcut settings instead (Settings shows the exact command).
+A second launch hands `--capture` to the running app; with none running it opens only the capture window. Either way it is quick enough that the app doesn't need to keep running in the background: on Hyprland the window appeared about 140 ms after the command with the app running, about 230 ms from a cold start, and about 300 ms with the app's files dropped from the disk cache, as after login. The text box has focus by the time the window shows.
+
+On Wayland, bind that command in the desktop's own shortcut settings: **Settings → Quick capture** shows it with a **Copy** button. The app's own shortcut goes through the desktop portal, which may refuse it without saying so (Hyprland's refuses apps it can't match to an installed `.desktop` file, as with `npm start`), so Settings only says the desktop was asked. On X11, macOS and Windows, Electron registers the app's own shortcut directly and says when it can't.
+
+### Hyprland
+
+Hyprland 0.56 reads Lua. Add this to your config (on Omarchy, `~/.config/hypr/bindings.lua`), with the command from Settings:
+
+```lua
+-- Quick capture on Super+N: focus the capture window if it's open, otherwise open one.
+-- On Wayland the app can't raise its own window, so the binding does.
+local parc_capture = "<the command from Settings → Quick capture>"
+hl.bind("SUPER + N", function()
+  for _, window in ipairs(hl.get_windows()) do
+    if window.class == "parc-capture" and window.title == "Quick capture — parc" then
+      return hl.dispatch(hl.dsp.focus({ window = "address:" .. window.address }))
+    end
+  end
+  hl.exec_cmd(parc_capture)
+end, { description = "parc quick capture" })
+
+-- Float it over whatever you're doing, centred, on every workspace. Without this it tiles.
+hl.window_rule({
+  match = { class = "^parc-capture$", title = "^Quick capture — parc$" },
+  float = true, center = true, size = { 620, 440 }, pin = true,
+})
+```
+
+Both match the capture window by its title, `Quick capture — parc`; the main window shares the `parc-capture` class. Check the config with `hyprctl configerrors`.
 
 ## Local dictation (optional)
 
@@ -111,6 +139,6 @@ npm test             # temporary vault round trips; transcription cleanup & erro
 npm run test:smoke   # requires a graphical session
 ```
 
-The smoke test opens a temporary Electron window with a synthetic microphone and a stub recognizer. It checks that the app starts on Pulse, records, converts the recording to WAV in the renderer, saves, reopens and edits Markdown, searches the new revision, captures a todo and toggles it, reloads after an outside save, restores a draft across a window reload, checks cross-vault browsing, save routing and both graphs, then opens a fragment from Go to… (checking its preview), greps for a heading and opens the match, filters the sidebar, groups it by type and by tag, folds a group and sorts by title and by creation, moves a todo across its board by drag and drop and by Shift+→ and undoes it, places a risk on the matrix and steps it down a row, switches to the risk board and opens it from Pulse, restores a version from History, archives and trashes with Undo, searches as it types and saves from the quick capture window, previews a theme in Settings and cancels it, then adds two dictation languages (saving Dark with them) (checking the model list and its recommendation) and dictates in each. It does not test real speech accuracy or microphone hardware.
+The smoke test opens a temporary Electron window with a synthetic microphone and a stub recognizer. It checks that the app starts on Pulse, records, converts the recording to WAV in the renderer, saves, reopens and edits Markdown, searches the new revision, captures a todo and toggles it, reloads after an outside save, restores a draft across a window reload, checks cross-vault browsing, save routing and both graphs, then opens a fragment from Go to… (checking its preview), greps for a heading and opens the match, filters the sidebar, groups it by type and by tag, folds a group and sorts by title and by creation, moves a todo across its board by drag and drop and by Shift+→ and undoes it, places a risk on the matrix and steps it down a row, switches to the risk board and opens it from Pulse, restores a version from History, archives and trashes with Undo, searches as it types and saves from the quick capture window, copies the quick capture command in Settings, previews a theme and cancels it, then adds two dictation languages (saving Dark with them) (checking the model list and its recommendation) and dictates in each. It does not test real speech accuracy or microphone hardware.
 
 Scope: a desktop workspace prototype, not a packaged installer, LLM session or historical-recall engine. The next harness increment should consume shared, cited results through parc-server rather than keeping a separate desktop-only archive.

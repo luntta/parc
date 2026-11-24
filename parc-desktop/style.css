@@ -927,6 +927,8 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 .setting-hint { margin-top: .5rem; color: var(--muted); font-size: var(--aihio-font-size-badge); line-height: 1.5; }
 .setting-hint code { overflow-wrap: anywhere; color: var(--aihio-color-page-fg); }
 #shortcutState[data-tone="error"] { color: var(--aihio-color-destructive-text); }
+#shortcutState[data-tone="warn"] { color: var(--aihio-color-warning-text); }
+.setting-sub code { overflow-wrap: anywhere; color: var(--aihio-color-page-fg); }
 
 /* ───────────────────────── Vault settings: types, fields, statuses ───────────────────────── */
 .vault-settings { --aihio-dialog-width: min(42rem, calc(100vw - 2rem)); }
