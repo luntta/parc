@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, session, systemPreferences, dialog, nativeT
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
-const { watch } = require('node:fs');
+const { watch, readFileSync } = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const { archive, speechConfig, transcribe } = require('./backend.cjs');
 const models = require('./models.cjs');
@@ -13,6 +13,7 @@ const capturePage = pathToFileURL(path.join(__dirname, 'capture.html')).href;
 const QUICK = '--capture'; // `electron . --capture` opens the quick capture window, in the running app if there is one
 const webPreferences = { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true };
 const canvas = () => nativeTheme.shouldUseDarkColors ? '#000000' : '#ffffff';
+const THEMES = ['system', 'light', 'dark'];
 // Wayland compositors hand out global shortcuts through the desktop portal.
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
 
@@ -56,7 +57,11 @@ else app.whenReady().then(() => {
   const stores = new Map([[vault, archive(vault)]]);
   let init, globalVault = null;
   const modelDir = path.join(app.getPath('userData'), 'models');
-  let settings = { whisperModel: '', whisperBin: '', quickCaptureShortcut: '', speechLanguages: [], speechLanguage: '' }, shortcut = { active: false };
+  let settings = { whisperModel: '', whisperBin: '', quickCaptureShortcut: '', speechLanguages: [], speechLanguage: '', theme: 'system' }, shortcut = { active: false };
+  // Read before the first window, so a saved theme is the one it paints in.
+  try { settings = clean(JSON.parse(readFileSync(settingsFile, 'utf8'))); }
+  catch { /* none yet, or unreadable: defaults */ }
+  applyTheme();
   async function initialize() {
     await stores.get(vault).init();
     globalVault = await fs.realpath(home).catch(() => null);
@@ -65,8 +70,6 @@ else app.whenReady().then(() => {
     catch (err) { if (err.code !== 'ENOENT') throw err; }
     for (const p of paths) if (!stores.has(p)) stores.set(p, archive(p));
     for (const p of stores.keys()) watchVault(p);
-    try { settings = clean(JSON.parse(await fs.readFile(settingsFile, 'utf8'))); }
-    catch { /* none yet, or unreadable: defaults */ }
   }
   const ready = () => init ||= initialize().catch(err => { init = undefined; throw err; });
   const label = p => p === vault ? 'Prototype' : p === globalVault ? 'Global' : path.basename(path.dirname(p));
@@ -87,7 +90,7 @@ else app.whenReady().then(() => {
   };
   const trusted = wc => !!wc && ((wc === window?.webContents && wc.getURL() === page) || (wc === captureWindow?.webContents && wc.getURL() === capturePage));
 
-  // ── Settings: dictation (model, whisper-cli, languages) and the quick capture shortcut, kept beside the vault registry ──
+  // ── Settings: the theme, dictation (model, whisper-cli, languages) and the quick capture shortcut, kept beside the vault registry ──
   function clean(input) {
     const next = { ...settings };
     for (const k of ['whisperModel', 'whisperBin']) {
@@ -108,6 +111,10 @@ else app.whenReady().then(() => {
       if (v && v !== 'auto' && !LANGUAGES.includes(v)) throw new Error('Choose a language from the list.'); // '' = the first preferred
       next.speechLanguage = v;
     }
+    if (input?.theme !== undefined) {
+      if (!THEMES.includes(input.theme)) throw new Error('Choose System, Light or Dark.');
+      next.theme = input.theme;
+    }
     if (input?.quickCaptureShortcut !== undefined) {
       const v = String(input.quickCaptureShortcut).trim();
       if (v && !/^[A-Za-z0-9+ ]{1,64}$/.test(v)) throw new Error('Write the shortcut like CommandOrControl+Shift+Space.');
@@ -115,6 +122,9 @@ else app.whenReady().then(() => {
     }
     return next;
   }
+  // System follows the desktop; Light and Dark override it for every window, prefers-color-scheme included.
+  function applyTheme(theme = settings.theme) { nativeTheme.themeSource = theme; }
+  nativeTheme.on('updated', () => { for (const w of BrowserWindow.getAllWindows()) w.setBackgroundColor(canvas()); });
   function applyShortcut() {
     globalShortcut.unregisterAll();
     if (!settings.quickCaptureShortcut) return (shortcut = { active: false });
@@ -255,9 +265,12 @@ else app.whenReady().then(() => {
     await ready();
     settings = clean(input);
     await persist();
+    applyTheme();
     applyShortcut();
     return settingsView();
   });
+  // Settings shows a theme as soon as it is picked. Called with nothing, it puts the saved one back (closed without Save).
+  handle('preview-theme', theme => applyTheme(theme === undefined ? settings.theme : clean({ theme }).theme));
   // The dictation language picked next to Dictate: one setting, saved at once.
   handle('set-speech-language', async code => {
     await ready();

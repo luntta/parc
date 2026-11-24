@@ -120,6 +120,17 @@
       <aihio-dialog-description>Kept on this computer, beside the list of opened vaults.</aihio-dialog-description>
     </aihio-dialog-header>
     <div class="settings-body">
+      <section aria-labelledby="appearanceHeading">
+        <h3 id="appearanceHeading">Appearance</h3>
+        <div class="setting">
+          <div class="setting-text"><strong id="themeLabel">Theme</strong><span class="setting-sub">System follows your desktop’s light or dark setting.</span></div>
+          <div id="themeChoice" class="segmented" role="radiogroup" aria-labelledby="themeLabel">
+            <label><input type="radio" name="theme" value="system"><i data-icon="monitor" class="icon"></i>System</label>
+            <label><input type="radio" name="theme" value="light"><i data-icon="sun" class="icon"></i>Light</label>
+            <label><input type="radio" name="theme" value="dark"><i data-icon="moon" class="icon"></i>Dark</label>
+          </div>
+        </div>
+      </section>
       <section aria-labelledby="dictationHeading">
         <h3 id="dictationHeading">Dictation</h3>
         <p id="speechState" class="setting-state"></p>

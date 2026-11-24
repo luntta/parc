@@ -651,16 +651,19 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 .view-bar aihio-button .icon { width: .875rem; height: .875rem; }
 .view-bar .chip { border: 1px solid var(--rule); }
 .view-bar .chip[aria-pressed="false"] .icon { opacity: .4; }
-/* Matrix | Board: a two-way switch, the chosen side raised. */
-.lens { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--aihio-radius-interactive); background: var(--hover); }
-.lens-option {
+/* Matrix | Board, and Settings' System | Light | Dark (radios): a segmented switch, the chosen side raised. */
+.lens, .segmented { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--aihio-radius-interactive); background: var(--hover); }
+.lens-option, .segmented label {
   display: inline-flex; align-items: center; gap: .375rem; height: 1.625rem; padding: 0 .625rem; border: 0; border-radius: var(--aihio-radius-interactive-compact);
   background: transparent; color: var(--muted); font-size: var(--aihio-font-size-badge); font-weight: var(--aihio-font-weight-control);
   transition: background-color var(--aihio-duration-feedback-fast) ease, color var(--aihio-duration-feedback-fast) ease;
 }
-.lens-option .icon { width: .875rem; height: .875rem; }
-.lens-option:hover { color: var(--aihio-color-page-fg); }
-.lens-option[aria-pressed="true"] { background: var(--aihio-color-page-bg); color: var(--aihio-color-page-fg); box-shadow: var(--aihio-shadow-surface); }
+.lens-option .icon, .segmented .icon { width: .875rem; height: .875rem; }
+.lens-option:hover, .segmented label:hover { color: var(--aihio-color-page-fg); }
+.lens-option[aria-pressed="true"], .segmented label:has(:checked) { background: var(--aihio-color-page-bg); color: var(--aihio-color-page-fg); box-shadow: var(--aihio-shadow-surface); }
+.segmented label { position: relative; }
+.segmented input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.segmented label:has(:focus-visible) { outline: 2px solid var(--aihio-color-focus-ring); outline-offset: 1px; }
 
 /* Cards: the title, then the facts the schema makes worth a glance. */
 .card {
@@ -896,6 +899,23 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 @media (max-width: 56rem) { .history { grid-template-columns: minmax(0, 1fr); } .versions { position: static; max-height: 14rem; } }
 
 /* ───────────────────────── Settings ───────────────────────── */
+/* Both settings dialogs keep clear of the window's edges, with the title and the actions pinned: only the body scrolls,
+   edge to edge so its scrollbar sits where the panel's did. A rule shows on a side with more to scroll to. */
+:is(#settings, #vaultSettings)[open]::part(panel) {
+  display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box;
+  max-height: min(46rem, calc(100dvh - clamp(3rem, 14dvh, 8rem)));
+}
+:is(#settings, #vaultSettings) .settings-body {
+  flex: 0 1 auto; min-height: 0; max-width: none; overflow-y: auto; overscroll-behavior: contain;
+  margin-inline: calc(-1 * var(--aihio-dialog-padding)); padding-inline: var(--aihio-dialog-padding);
+  border-block: 1px solid transparent;
+  animation: scroll-edges linear both; animation-timeline: scroll(self);
+}
+@keyframes scroll-edges {
+  0% { border-top-color: transparent; border-bottom-color: var(--rule); }
+  2%, 98% { border-top-color: var(--rule); border-bottom-color: var(--rule); }
+  100% { border-top-color: var(--rule); border-bottom-color: transparent; }
+}
 .settings-body { display: grid; gap: 1.5rem; min-width: 0; max-width: 34rem; padding-block: .5rem; }
 .settings-body h3 { margin: 0 0 .5rem; font-size: var(--aihio-font-size-body-sm); font-weight: var(--aihio-font-weight-heading); }
 .setting { display: flex; align-items: center; gap: .5rem; padding: .625rem 0; border-top: 1px solid var(--rule); }

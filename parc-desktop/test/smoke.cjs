@@ -283,10 +283,21 @@ async function check() {
   await eventually(async () => quick.isDestroyed());
   const idea = (await prototype.list()).find(r => r.title === 'Ferry timetable as a widget');
   assert.equal(idea?.type, 'idea');
-  // Settings: the model list recommends by language; two languages put a picker next to Dictate.
+  // Settings: a theme shows as soon as it is picked; Cancel puts the saved one back.
   await js('document.querySelector("[data-view=capture]").click()'); await until(idle);
+  const dark = 'matchMedia("(prefers-color-scheme: dark)").matches';
+  const systemDark = await js(dark);
   await js('document.querySelector("#openSettings").click()');
   await until('document.querySelectorAll("#modelList li").length === 5');
+  assert.equal(await js('document.querySelector("#themeChoice input:checked")?.value'), 'system');
+  await js(`document.querySelector("#themeChoice input[value=${systemDark ? 'light' : 'dark'}]").click()`);
+  await until(`${dark} === ${!systemDark}`);
+  await js('document.querySelector("#settings aihio-button[command=\\"--close\\"]").click()');
+  await until(`!document.querySelector("#settings").hasAttribute("open") && ${dark} === ${systemDark}`);
+  // The model list recommends by language; two languages put a picker next to Dictate. Dark is saved with them.
+  await js('document.querySelector("#openSettings").click()');
+  await until('document.querySelectorAll("#modelList li").length === 5');
+  await js('document.querySelector("#themeChoice input[value=dark]").click()');
   const recommended = 'document.querySelector("#modelList aihio-badge")?.closest("li").dataset.id';
   assert.equal(await js(recommended), 'small.en');
   assert.equal(await js('[...document.querySelectorAll("#modelList li")].every(li => li.querySelector("aihio-button")?.textContent === "Download")'), true);
@@ -306,7 +317,10 @@ async function check() {
   assert.equal(argAfter('-l'), 'fi');
   await js('document.querySelector("#languageSlot aihio-dropdown-item[value=en]").click()');
   await until('document.querySelector("#languageSlot .language-code")?.textContent === "EN"');
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).speechLanguages, ['fi', 'en']);
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+  assert.deepEqual(saved.speechLanguages, ['fi', 'en']);
+  assert.equal(saved.theme, 'dark');
+  assert.equal(await js(dark), true);
   // Vault settings: turn a type off, rename a status (its fragments follow), add a type.
   const invoice = await prototype.save({ title: 'Settle the invoice', body: '', type: 'todo', fields: { status: 'in-progress' } });
   await until(idle);
@@ -333,7 +347,7 @@ async function check() {
   assert.deepEqual(kinds.find(k => k.name === 'bug').fields[0].categories, { open: 'open', done: 'done' });
   await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Done")).click()');
   await until('!document.querySelector("#vaultSettings").hasAttribute("open")');
-  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, dictation languages and model list, vault settings');
+  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, theme preview and save, dictation languages and model list, vault settings');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

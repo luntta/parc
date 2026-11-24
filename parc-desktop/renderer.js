@@ -1392,7 +1392,8 @@ api.onModelProgress(p => {
 });
 async function openSettings() {
   const view = await api.settings();
-  pending = { whisperModel: view.whisperModel, whisperBin: view.whisperBin, speechLanguages: [...(view.speechLanguages || [])] };
+  pending = { whisperModel: view.whisperModel, whisperBin: view.whisperBin, speechLanguages: [...(view.speechLanguages || [])], theme: view.theme };
+  for (const radio of $('themeChoice').querySelectorAll('input')) radio.checked = radio.value === view.theme;
   $('shortcutInput').value = view.quickCaptureShortcut;
   modelMessage('');
   [models] = await Promise.all([api.speechModels(pending.speechLanguages).catch(() => null), checkSpeech()]);
@@ -1405,6 +1406,9 @@ async function pickFor(kind) {
   pending[kind === 'model' ? 'whisperModel' : 'whisperBin'] = path;
   renderSettings(await api.settings());
 }
+// A theme shows at once; closing without Save puts the saved one back (a no-op after Save).
+$('themeChoice').addEventListener('change', e => { pending.theme = e.target.value; api.previewTheme(pending.theme).catch(status); });
+$('settings').addEventListener('aihio-close', () => api.previewTheme().catch(() => {}));
 $('pickModel').addEventListener('click', () => pickFor('model').catch(status));
 $('pickBin').addEventListener('click', () => pickFor('binary').catch(status));
 $('clearBin').addEventListener('click', async () => { pending.whisperBin = ''; renderSettings(await api.settings()); });
@@ -1488,7 +1492,7 @@ function commands() {
   add('Quick capture window', () => api.openCapture(), { icon: 'bolt' });
   if (!speech.ready) add('Set up dictation', openSettings, { icon: 'mic', keywords: 'whisper speech' });
   add('Vault settings', () => openVaultSettings(), { icon: 'settings', keywords: 'types statuses fields schema turn off' });
-  add('Settings', openSettings, { icon: 'settings', keywords: 'preferences dictation shortcut' });
+  add('Settings', openSettings, { icon: 'settings', keywords: 'preferences theme dark light appearance dictation shortcut' });
   return out;
 }
 // Its preview reads fragments as saved. A few stay cached, each until its row says it changed.

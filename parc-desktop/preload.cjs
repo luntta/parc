@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('parc', {
   schemas: invoke('schemas'), links: invoke('links'),
   vaultSettings: invoke('vault-settings'), updateVaultSettings: invoke('update-vault-settings'),
   schemaUsage: invoke('schema-usage'), builtinSchema: invoke('builtin-schema'), saveSchema: invoke('save-schema'), deleteSchema: invoke('delete-schema'), copyText: invoke('copy-text'), openCapture: invoke('open-capture'),
-  settings: invoke('settings'), saveSettings: invoke('save-settings'), pickFile: invoke('pick-file'),
+  settings: invoke('settings'), saveSettings: invoke('save-settings'), previewTheme: invoke('preview-theme'), pickFile: invoke('pick-file'),
   speechStatus: invoke('speech-status'), speechReady: invoke('speech-ready'), transcribe: invoke('transcribe'),
   setSpeechLanguage: invoke('set-speech-language'), speechModels: invoke('speech-models'),
   downloadModel: invoke('download-model'), cancelDownload: invoke('cancel-download'), deleteModel: invoke('delete-model'),
