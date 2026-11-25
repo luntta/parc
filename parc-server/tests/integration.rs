@@ -1115,3 +1115,70 @@ fn test_recall_context_rejects_unclear_requests() {
     ));
     assert!(resp.get("error").is_some(), "an unknown ID is an error");
 }
+
+#[test]
+fn test_promote_templates_and_trash_management() {
+    let mut h = ServerHarness::new();
+
+    // schema.list exposes non-empty body templates (e.g. decision) and null for blank ones (note).
+    let resp = h.send_rpc(rpc(1, "schema.list", serde_json::json!({})));
+    let schemas = result_of(&resp).as_array().unwrap();
+    let decision = schemas.iter().find(|s| s["name"] == "decision").unwrap();
+    assert!(decision["template"].as_str().unwrap().contains("## Context"));
+    let note_schema = schemas.iter().find(|s| s["name"] == "note").unwrap();
+    assert!(note_schema["template"].is_null());
+
+    // Promote a note to a todo; preserves body/tags and fills defaults.
+    let resp = h.send_rpc(rpc(
+        2,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Ship v2", "body": "Checklist", "tags": ["release"] }),
+    ));
+    let created = result_of(&resp).clone();
+    let id = created["id"].as_str().unwrap().to_string();
+    let rev = created["revision"].as_str().unwrap().to_string();
+
+    let resp = h.send_rpc(rpc(
+        3,
+        "fragment.promote",
+        serde_json::json!({ "id": &id, "type": "todo", "expected_revision": &rev }),
+    ));
+    let promoted = result_of(&resp).clone();
+    assert_eq!(promoted["type"], "todo");
+    assert_eq!(promoted["status"], "open");
+    assert_eq!(promoted["body"].as_str().unwrap().trim(), "Checklist");
+    assert_eq!(promoted["tags"], serde_json::json!(["release"]));
+    assert_ne!(promoted["revision"], created["revision"]);
+
+    // Stale expected_revision is refused on promote.
+    let resp = h.send_rpc(rpc(
+        4,
+        "fragment.promote",
+        serde_json::json!({ "id": &id, "type": "risk", "expected_revision": &rev }),
+    ));
+    assert_eq!(error_of(&resp)["code"], -32010);
+
+    // Trash list + purge (single and empty).
+    let resp = h.send_rpc(rpc(
+        5,
+        "fragment.create",
+        serde_json::json!({ "type": "note", "title": "Drop me" }),
+    ));
+    let id2 = result_of(&resp)["id"].as_str().unwrap().to_string();
+    h.send_rpc(rpc(6, "fragment.delete", serde_json::json!({ "id": &id })));
+    h.send_rpc(rpc(7, "fragment.delete", serde_json::json!({ "id": &id2 })));
+
+    let resp = h.send_rpc(rpc(8, "trash.list", serde_json::json!({})));
+    let trashed = result_of(&resp).as_array().unwrap();
+    assert_eq!(trashed.len(), 2);
+
+    let resp = h.send_rpc(rpc(9, "trash.purge", serde_json::json!({ "id": &id2 })));
+    assert_eq!(result_of(&resp)["purged"], id2.as_str());
+    let resp = h.send_rpc(rpc(10, "trash.list", serde_json::json!({})));
+    assert_eq!(result_of(&resp).as_array().unwrap().len(), 1);
+
+    let resp = h.send_rpc(rpc(11, "trash.purge", serde_json::json!({})));
+    assert_eq!(result_of(&resp)["purged_count"], 1);
+    let resp = h.send_rpc(rpc(12, "trash.list", serde_json::json!({})));
+    assert_eq!(result_of(&resp).as_array().unwrap().len(), 0);
+}

@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use parc_core::attachment as att;
 use parc_core::fragment;
+use parc_core::index;
 
 use crate::jsonrpc::RpcError;
 use crate::router::{extract_params, map_parc_error};
@@ -28,6 +29,10 @@ pub fn attach(vault: &Path, params: Value) -> Result<Value, RpcError> {
 
     let filename = att::attach_file(vault, &p.id, source, false).map_err(map_parc_error)?;
     let full_id = fragment::resolve_id(vault, &p.id).map_err(map_parc_error)?;
+    let frag = fragment::read_fragment(vault, &full_id).map_err(map_parc_error)?;
+    let conn = index::open_index(vault).map_err(map_parc_error)?;
+    index::index_fragment_auto(&conn, &frag, vault).map_err(map_parc_error)?;
+    let revision = fragment::revision(vault, &full_id).map_err(map_parc_error)?;
 
     let size = source.metadata().map(|m| m.len()).unwrap_or(0);
 
@@ -35,6 +40,8 @@ pub fn attach(vault: &Path, params: Value) -> Result<Value, RpcError> {
         "id": full_id,
         "filename": filename,
         "size": size,
+        "attachments": frag.attachments,
+        "revision": revision,
     }))
 }
 
@@ -48,11 +55,17 @@ pub fn detach(vault: &Path, params: Value) -> Result<Value, RpcError> {
     let p: DetachParams = extract_params(params)?;
     let full_id = fragment::resolve_id(vault, &p.id).map_err(map_parc_error)?;
     att::detach_file(vault, &p.id, &p.filename).map_err(map_parc_error)?;
+    let frag = fragment::read_fragment(vault, &full_id).map_err(map_parc_error)?;
+    let conn = index::open_index(vault).map_err(map_parc_error)?;
+    index::index_fragment_auto(&conn, &frag, vault).map_err(map_parc_error)?;
+    let revision = fragment::revision(vault, &full_id).map_err(map_parc_error)?;
 
     Ok(serde_json::json!({
         "id": full_id,
         "filename": p.filename,
         "detached": true,
+        "attachments": frag.attachments,
+        "revision": revision,
     }))
 }
 

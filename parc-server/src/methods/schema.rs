@@ -29,12 +29,32 @@ impl TypeState {
     }
 }
 
+/// Extract the body of a type's Markdown template (stripping optional YAML
+/// frontmatter), or `None` when the template is blank.
+fn template_body(vault: &Path, type_name: &str) -> Option<String> {
+    let raw = schema::load_template(vault, type_name)?;
+    let trimmed = raw.trim_start();
+    let body = if let Some(rest) = trimmed.strip_prefix("---") {
+        let rest = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n')).unwrap_or(rest);
+        if let Some(end) = rest.find("\n---") {
+            let after = &rest[end + 4..];
+            after.strip_prefix("\r\n").or_else(|| after.strip_prefix('\n')).unwrap_or(after)
+        } else {
+            raw.as_str()
+        }
+    } else {
+        raw.as_str()
+    };
+    let clean = body.trim_start_matches(['\r', '\n']);
+    (!clean.trim().is_empty()).then(|| clean.to_string())
+}
+
 /// A schema as clients see it. `type` keeps its original debug spelling for
 /// existing clients; `kind`, `values` and `toggle` are what a form needs.
 /// The status field carries `categories`: every value with what it means
 /// (open, active, done or closed). `enabled` and `default` come from the
 /// vault's `types:` settings; `builtin` marks the five types parc ships.
-fn schema_to_json(s: &Schema, state: &TypeState) -> Value {
+fn schema_to_json(vault: &Path, s: &Schema, state: &TypeState) -> Value {
     let fields: Vec<Value> = s
         .fields
         .iter()
@@ -72,6 +92,7 @@ fn schema_to_json(s: &Schema, state: &TypeState) -> Value {
         "enabled": state.types.is_enabled(&s.name),
         "default": state.default.as_deref() == Some(s.name.as_str()),
         "builtin": schema::is_builtin(&s.name),
+        "template": template_body(vault, &s.name),
     })
 }
 
@@ -82,7 +103,7 @@ pub fn list(vault: &Path, _params: Value) -> Result<Value, RpcError> {
         registry
             .list()
             .iter()
-            .map(|s| schema_to_json(s, &state))
+            .map(|s| schema_to_json(vault, s, &state))
             .collect(),
     ))
 }
@@ -101,7 +122,7 @@ pub fn get(vault: &Path, params: Value) -> Result<Value, RpcError> {
         .resolve(&p.type_name)
         .ok_or_else(|| RpcError::invalid_params(&format!("unknown type: {}", p.type_name)))?;
 
-    Ok(schema_to_json(schema, &TypeState::load(vault, &registry)?))
+    Ok(schema_to_json(vault, schema, &TypeState::load(vault, &registry)?))
 }
 
 /// The definition parc ships for a built-in type, to put an edited one back.
@@ -111,7 +132,7 @@ pub fn builtin(vault: &Path, params: Value) -> Result<Value, RpcError> {
         RpcError::invalid_params(&format!("'{}' is not a built-in type", p.type_name))
     })?;
     let registry = load_schemas(vault).map_err(map_parc_error)?;
-    Ok(schema_to_json(&schema, &TypeState::load(vault, &registry)?))
+    Ok(schema_to_json(vault, &schema, &TypeState::load(vault, &registry)?))
 }
 
 /// How many fragments a type has, and how many hold each value of each of
@@ -250,7 +271,7 @@ pub fn save(vault: &Path, params: Value) -> Result<Value, RpcError> {
         .get_by_name(&schema.name)
         .ok_or_else(|| RpcError::internal_error("the saved type did not load"))?;
     let result = serde_json::json!({
-        "schema": schema_to_json(saved, &TypeState::load(vault, &registry)?),
+        "schema": schema_to_json(vault, saved, &TypeState::load(vault, &registry)?),
         "migrated": migrated,
     });
     Ok(with_warnings(result, &mut w))

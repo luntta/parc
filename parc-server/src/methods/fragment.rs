@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -254,6 +255,44 @@ pub fn update(vault: &Path, params: Value) -> Result<Value, RpcError> {
         let schemas = load_schemas(vault).map_err(map_parc_error)?;
         let schema = schemas.resolve(&frag.fragment_type).cloned();
         apply_fields(&mut frag, schema.as_ref(), p.fields)?;
+    }
+
+    let mut writer = write::writer(vault);
+    let frag = writer.update(frag).map_err(map_parc_error)?;
+    Ok(write::with_warnings(saved_json(vault, &frag)?, &mut writer))
+}
+
+#[derive(Deserialize)]
+pub struct PromoteParams {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub new_type: String,
+    #[serde(default)]
+    pub fields: Map<String, Value>,
+    /// Refuse if the file changed since this revision, as in `fragment.update`.
+    pub expected_revision: Option<String>,
+}
+
+/// Convert a saved fragment to another enabled schema type, preserving its body,
+/// title, tags and links while applying defaults for the target type.
+pub fn promote(vault: &Path, params: Value) -> Result<Value, RpcError> {
+    let p: PromoteParams = extract_params(params)?;
+    let mut frag = fragment::read_fragment(vault, &p.id).map_err(map_parc_error)?;
+
+    if let Some(expected) = &p.expected_revision {
+        if *expected != fragment::revision(vault, &frag.id).map_err(map_parc_error)? {
+            return Err(RpcError::conflict(&frag.updated_at.to_rfc3339()));
+        }
+    }
+
+    let schemas = load_schemas(vault).map_err(map_parc_error)?;
+    let schema = schemas
+        .resolve(&p.new_type)
+        .ok_or_else(|| RpcError::invalid_params(&format!("unknown type: {}", p.new_type)))?;
+
+    fragment::apply_promotion(&mut frag, schema, BTreeMap::new()).map_err(map_parc_error)?;
+    if !p.fields.is_empty() {
+        apply_fields(&mut frag, Some(schema), p.fields)?;
     }
 
     let mut writer = write::writer(vault);
