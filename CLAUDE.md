@@ -87,7 +87,7 @@ Parsed in `parc-core` into `SearchQuery` AST, compiled to FTS5 MATCH + SQL WHERE
 2. Library first — core has no I/O assumptions
 3. One engine, many types — new type = new YAML schema file
 4. Progressive complexity — `parc n "thought"` to full DSL + plugins
-5. Offline and local — no network, no accounts
+5. Offline and local — no network, no accounts. The desktop app's exceptions are opt-in: speech model downloads, and the Agent (ChatGPT or GitHub Copilot sign-in), which sends only what a question needs, only when asked
 6. Unix-friendly — pipe-able, `--json`, meaningful exit codes, `$EDITOR`
 7. Vault-scoped — global for personal, local for project
 8. Tags everywhere — frontmatter + inline `#hashtags`, merged and searchable

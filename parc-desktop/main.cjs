@@ -1,10 +1,13 @@
-const { app, BrowserWindow, ipcMain, session, systemPreferences, dialog, nativeTheme, clipboard, globalShortcut, net } = require('electron');
+const { app, BrowserWindow, ipcMain, session, systemPreferences, dialog, nativeTheme, clipboard, globalShortcut, net, shell, safeStorage } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
 const { watch, readFileSync } = require('node:fs');
 const { pathToFileURL } = require('node:url');
-const { archive, speechConfig, transcribe } = require('./backend.cjs');
+const { randomUUID } = require('node:crypto');
+const { archive, binary, speechConfig, transcribe } = require('./backend.cjs');
+const agent = require('./agent.cjs');
+const copilot = require('./copilot.cjs');
 const models = require('./models.cjs');
 const { LANGUAGES } = require('./languages.cjs');
 
@@ -16,6 +19,13 @@ const canvas = () => nativeTheme.shouldUseDarkColors ? '#000000' : '#ffffff';
 const THEMES = ['system', 'light', 'dark'];
 // Wayland compositors hand out global shortcuts through the desktop portal.
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
+// Chromium picks the keyring by the desktop's name, and on one it doesn't know (Hyprland, sway, i3…) keeps secrets
+// under a fixed key even when a Secret Service (gnome-keyring, KeePassXC) is running. Ask for libsecret there; with no
+// Secret Service it still falls back. A --password-store given on the command line wins.
+if (process.platform === 'linux' && !app.commandLine.hasSwitch('password-store')
+  && !/gnome|cinnamon|deepin|pantheon|xfce|ukui|unity|kde/i.test(process.env.XDG_CURRENT_DESKTOP || '')) {
+  app.commandLine.appendSwitch('password-store', 'gnome-libsecret');
+}
 
 let window, captureWindow;
 function guard(win) {
@@ -162,7 +172,7 @@ else app.whenReady().then(() => {
       watchers.set(p, watcher);
     } catch { /* no fragments/ yet: the next request to this vault retries */ }
   }
-  app.on('will-quit', () => { globalShortcut.unregisterAll(); for (const w of watchers.values()) w.close(); });
+  app.on('will-quit', () => { globalShortcut.unregisterAll(); for (const w of watchers.values()) w.close(); for (const s of toolServers.values()) s.close(); copilotRuntime.stop(); });
 
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
     callback(trusted(wc) && permission === 'media' && details.mediaTypes?.join() === 'audio');
@@ -385,6 +395,134 @@ else app.whenReady().then(() => {
     busy = true;
     try { return await transcribe(audio, await speechConfig(process.env, settings)); } finally { busy = false; }
   });
+
+  // ── Agent: Sign in with ChatGPT and the model loop (agent.cjs) ──
+  // Only Continue with ChatGPT and a question asked in the Agent view reach the network. The credential is sealed
+  // with the system keyring; where there is none (safeStorage falls back to a fixed key), it isn't written at all.
+  const agentFile = path.join(app.getPath('userData'), 'agent.json');      // this installation's device ID and model
+  const credentialFile = path.join(app.getPath('userData'), 'chatgpt.bin'); // the sealed sign-in
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  let agentPrefs = null;
+  async function savePrefs() {
+    await fs.writeFile(agentFile + '.tmp', JSON.stringify(agentPrefs, null, 2), { mode: 0o600 });
+    await fs.rename(agentFile + '.tmp', agentFile);
+  }
+  async function prefs() {
+    if (agentPrefs) return agentPrefs;
+    try { agentPrefs = JSON.parse(await fs.readFile(agentFile, 'utf8')); } catch { agentPrefs = {}; }
+    if (!agentPrefs || typeof agentPrefs !== 'object') agentPrefs = {};
+    if (typeof agentPrefs.deviceId !== 'string' || !UUID.test(agentPrefs.deviceId)) { agentPrefs.deviceId = randomUUID(); await savePrefs(); }
+    return agentPrefs;
+  }
+  const keyring = {
+    available: async () => await safeStorage.isAsyncEncryptionAvailable()
+      && !(process.platform === 'linux' && ['basic_text', 'unknown'].includes(safeStorage.getSelectedStorageBackend())),
+    seal: text => safeStorage.encryptStringAsync(text),
+    unseal: async data => (await safeStorage.decryptStringAsync(data)).result
+  };
+  const auth = agent.chatgpt({
+    file: credentialFile,
+    keyring,
+    deviceId: () => agentPrefs.deviceId,
+    open: url => {
+      if (!url.startsWith(`${agent.ENDPOINTS.authorize}?`)) throw new Error('Unexpected sign-in address.');
+      return shell.openExternal(url);
+    },
+    fetch: (url, init) => net.fetch(url, init)
+  });
+  const toolServers = new Map();
+  const toolServer = p => {
+    if (!toolServers.has(p)) toolServers.set(p, agent.mcpServer(binary('parc-server'), ['--vault', p, '--mcp', '--read-only']));
+    return toolServers.get(p);
+  };
+  // GitHub Copilot: sign-in with GitHub (device flow), and Copilot's runtime with its data in parc's user data.
+  // GitHub's code page: opened at sign-in, and again from the Agent view; only ever a page on GitHub's own host.
+  let devicePage = null;
+  const openDevicePage = url => {
+    const u = new URL(url);
+    const github = new URL(copilot.GITHUB.device);
+    if (u.protocol !== github.protocol || u.host !== github.host) throw new Error('Unexpected sign-in address.');
+    devicePage = u.toString();
+    return shell.openExternal(devicePage);
+  };
+  const gitHub = copilot.github({
+    file: path.join(app.getPath('userData'), 'github.bin'), keyring, fetch: (url, init) => net.fetch(url, init), open: openDevicePage
+  });
+  const copilotRuntime = copilot.copilotRuntime({
+    auth: gitHub, sdk: () => require('@microsoft/copilot-sdk'),
+    home: path.join(app.getPath('userData'), 'copilot'), work: path.join(app.getPath('userData'), 'copilot', 'work')
+  });
+  const PROVIDERS = ['chatgpt', 'copilot'];
+  const bot = agent.harness({
+    auth, server: toolServer, read: (p, id) => store(p).get(id), fetch: (url, init) => net.fetch(url, init),
+    settings: { load: prefs, save: async changes => { Object.assign(await prefs(), changes); await savePrefs(); } },
+    store: agent.chatStore(path.join(app.getPath('userData'), 'chats')), // saved chats, on this computer only
+    copilot: copilotRuntime
+  });
+  const chatsChanged = () => window?.webContents.send('agent-chats-changed');
+  // Errors the Agent view acts on (signed out, cancelled) come back as values: a thrown error loses its fields.
+  const outcome = err => ({ error: err.message, signedOut: !!err.signedOut, cancelled: !!err.cancelled });
+  const chatId = id => { if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new Error('Invalid chat'); return id; };
+  const provider = p => { if (!PROVIDERS.includes(p)) throw new Error('Unknown provider'); return p; };
+  // Both accounts, and the provider new chats start on.
+  handle('agent-status', async () => {
+    const [chatgpt, copilot] = await Promise.all([auth.status(), gitHub.status()]);
+    return { chatgpt, copilot, provider: PROVIDERS.includes((await prefs()).provider) ? agentPrefs.provider : 'chatgpt' };
+  });
+  handle('agent-set-provider', async p => { (await prefs()).provider = provider(p); await savePrefs(); });
+  // The code to type at GitHub goes to the window as soon as GitHub gives it; the call resolves once signed in.
+  handle('copilot-sign-in', async function () {
+    const sender = this?.webContents;
+    try {
+      const s = await gitHub.signIn(code => { if (!sender?.isDestroyed()) sender.send('copilot-code', code); });
+      this?.focus();
+      return s;
+    } catch (err) { this?.focus(); return outcome(err); }
+  });
+  handle('copilot-cancel-sign-in', () => gitHub.cancel());
+  handle('copilot-open', () => devicePage && shell.openExternal(devicePage));
+  handle('copilot-sign-out', async () => { await copilotRuntime.signedOut(); return gitHub.signOut(); });
+  handle('agent-sign-in', async function () {
+    await prefs();
+    try { const s = await auth.signIn(); this?.focus(); return s; } catch (err) { this?.focus(); return outcome(err); }
+  });
+  handle('agent-cancel-sign-in', () => auth.cancel());
+  handle('agent-sign-out', async () => { bot.signedOut(); return auth.signOut(); });
+  handle('agent-models', async (force, p = 'chatgpt') => {
+    provider(p);
+    try { return { models: await bot.models(force === true, p), model: await bot.model(p) }; } catch (err) { return outcome(err); }
+  });
+  handle('agent-set-model', (id, p = 'chatgpt') => bot.setModel(String(id), provider(p)));
+  // One question. vaults: the opened vaults in view, for a new chat (a saved chat keeps its own); subject: { vault, id }
+  // of the fragment the user has open, or null.
+  handle('agent-ask', async function (chat, { text, vaults: paths, subject, provider: wanted = 'chatgpt' } = {}) {
+    chatId(chat);
+    const on = (await bot.providerOf(chat)) || provider(wanted);
+    if (typeof text !== 'string' || !text.trim() || text.length > 20000) throw new Error('Ask in up to 20,000 characters.');
+    paths = (await bot.vaultsOf(chat)) || paths;
+    if (!Array.isArray(paths) || !paths.length || paths.length > 32) throw new Error('Choose the vaults to ask about.');
+    const gone = paths.find(p => !stores.has(p));
+    if (gone) return { error: `This chat searches ${gone}, which isn’t open in parc any more. Open that vault to go on.` };
+    const named = vaults(), scope = paths.map(p => { store(p); return { path: p, name: named.find(v => v.path === p).name }; });
+    if (subject != null) {
+      if (!scope.some(v => v.path === subject.vault) || typeof subject.id !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(subject.id)) throw new Error('Invalid fragment');
+      subject = { vault: subject.vault, id: subject.id };
+    }
+    const sender = this?.webContents;
+    try {
+      const summary = await bot.ask(chat, { text: text.trim(), vaults: scope, subject: subject || null, provider: on }, event => { if (!sender?.isDestroyed()) sender.send('agent-event', { chat, ...event }); });
+      chatsChanged();
+      return { ok: true, chat: summary };
+    } catch (err) { return outcome(err); }
+  });
+  handle('agent-stop', chat => bot.stop(chatId(chat)));
+  handle('agent-forget', chat => bot.forget(chatId(chat)));
+  handle('agent-chats', () => bot.chats());
+  handle('agent-chat', id => bot.chat(chatId(id)));
+  handle('agent-delete-chat', async id => { await bot.remove(chatId(id)); chatsChanged(); });
+  handle('agent-restore-chat', async id => { await bot.restore(chatId(id)); chatsChanged(); });
+  // The workspace starts (or reloads) with no chats: whatever main still holds belongs to a page that is gone.
+  handle('agent-reset', () => bot.reset());
 
   ready().then(applyShortcut, () => {});
   if (process.argv.includes(QUICK)) openCapture(); else openWindow();

@@ -230,4 +230,4 @@ async function transcribe(audio, config, execute = run) {
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 }
 
-module.exports = { archive, speechConfig, speechLanguage, checkWav, transcribe };
+module.exports = { archive, binary, speechConfig, speechLanguage, checkWav, transcribe };

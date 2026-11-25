@@ -11,6 +11,7 @@ import { vaultSettings } from './vaultsettings.js';
 import { typeView, dragging } from './board.js';
 import { relatedPanel } from './related.js';
 import { workspace, FRAGMENT } from './tabs.js';
+import { agentChat } from './agent.js';
 
 const $ = id => document.getElementById(id), api = window.parc;
 hydrateIcons();
@@ -123,16 +124,18 @@ const allTags = () => [...new Set(rows.flatMap(r => r.tags || []))].sort();
 // Each tab is a fragment in the editor or a view. A fragment tab (kind 'doc') has its own text, editor and Related
 // panel: `opened` is the saved fragment, or null for a new capture, whose type, fields and tags wait in `fresh`
 // until its first save (`dest`: the vault chosen for it when the scope is every vault); `dirty` while its text has
-// unsaved changes. A view tab (kind 'view') shows `view`: pulse, search, graph, agent, history (of `target`) or type
-// (`viewType`'s board, matrix or cards). A fragment is open in at most one tab. The current group's shown tab (`tab`)
-// is what the bar, the keys and Go to… act on; `recentDoc` is the fragment tab used last (the Agent view's subject).
+// unsaved changes. A view tab (kind 'view') shows `view`: pulse, search, graph, agent (its chat in `agent`), history
+// (of `target`) or type (`viewType`'s board, matrix or cards). A fragment is open in at most one tab. The current
+// group's shown tab (`tab`) is what the bar, the keys and Go to… act on; `recentDoc` is the fragment tab used last
+// (what the Agent view offers to share with a question).
 let tab = null, recentDoc = null, tabSeq = 0, keepNext = null;
 const cur = () => tab?.kind === 'doc' ? tab : null;
 const modeOf = t => !t ? 'empty' : t.kind === 'doc' ? 'capture' : t.view;
 const docTabs = () => ws.tabs().filter(t => t.kind === 'doc');
 const viewTabs = () => ws.tabs().filter(t => t.kind === 'view');
 const tabOf = r => docTabs().find(d => d.opened && d.opened.vault === r.vault && d.opened.id === r.id) || null;
-const viewLabel = t => t.view === 'type' ? plural(t.viewType) : t.view === 'history' ? `History of ${t.target?.title || 'Untitled'}` : labels[t.view];
+const viewLabel = t => t.view === 'type' ? plural(t.viewType) : t.view === 'history' ? `History of ${t.target?.title || 'Untitled'}`
+  : t.view === 'agent' ? t.agent?.title() || labels.agent : labels[t.view];
 const blankCapture = d => ({ type: defaultType(scope || d?.dest), fields: {}, tags: [] });
 const isEmpty = d => !d.ui.title.value.trim() && !d.editor.text().trim();
 const destination = d => d.opened?.vault || scope || d.dest;
@@ -168,9 +171,9 @@ function docTab(note = null) {
   load(d, note);
   return d;
 }
-function viewTab(view, { type = null, target = null, query = '' } = {}) {
+function viewTab(view, { type = null, target = null, query = '', chat = null } = {}) {
   const n = ++tabSeq, { root, ui } = instance('viewTemplate', n);
-  const v = { kind: 'view', n, view, viewType: type, target, panel: root, ui, stale: true, rendering: null, everything: false };
+  const v = { kind: 'view', n, view, viewType: type, target, panel: root, ui, stale: true, rendering: null, everything: false, chatId: chat };
   root.tabIndex = -1; // a view's page takes focus, so it scrolls from the keyboard
   ui.tool.dataset.view = view;
   ui.searchForm.hidden = view !== 'search';
@@ -208,6 +211,7 @@ function emptyGroup() {
 }
 // Tab commands in a tab's context menu, beside the layout's own.
 function tabMenu(t) {
+  if (t.view === 'agent' && t.agent?.saved()) return [{ label: 'Delete chat', run: () => deleteChat(t.agent.id(), t.agent.title()) }];
   if (t.kind !== 'doc' || !t.opened) return [];
   return [
     { label: 'Copy link', run: () => copyLink(t) },
@@ -240,6 +244,7 @@ function activated(t, focus) {
     const s = g.shown;
     if (s?.kind === 'view' && s.stale) draw(s);
     else if (s?.kind === 'doc') s.related.now();
+    else if (s?.view === 'agent') s.agent?.shown();
   }
   paint(); list();
   if (focus) focusTab(t);
@@ -248,10 +253,11 @@ function focusTab(t) {
   if (!t) { ws.group?.empty.querySelector('.watermark')?.focus?.(); return; }
   if (t.kind === 'doc') { if (t.opened || t.ui.title.value) t.editor.focus(); else t.ui.title.focus(); }
   else if (t.view === 'search') t.ui.query.focus();
+  else if (t.view === 'agent' && t.agent?.focus()) return;
   else t.ui.scroller.focus({ preventScroll: true });
 }
 // A tab that never joined the layout, or left it: its editor and Related panel stop.
-function discard(t) { if (t.kind === 'doc') { t.related.reset(); t.editor.destroy(); } }
+function discard(t) { if (t.kind === 'doc') { t.related.reset(); t.editor.destroy(); } else t.agent?.destroy(); }
 // Ctrl+W closes the current tab, or the current group when it is empty and not the only one.
 function closeTab(t = tab) {
   if (blocking()) return;
@@ -276,7 +282,8 @@ function reopenTab() {
 // restoring an old draft over a newer file still ends in the overwrite question.
 function saveTab(t) {
   if (t.kind === 'view') {
-    return { view: t.view, ...(t.viewType ? { type: t.viewType } : {}), ...(t.target ? { target: t.target } : {}), ...(t.view === 'search' ? { query: t.ui.query.value } : {}) };
+    const chat = t.view === 'agent' ? (t.agent ? (t.agent.saved() ? t.agent.id() : null) : t.chatId) : null;
+    return { view: t.view, ...(t.viewType ? { type: t.viewType } : {}), ...(t.target ? { target: t.target } : {}), ...(t.view === 'search' ? { query: t.ui.query.value } : {}), ...(chat ? { chat } : {}) };
   }
   const draft = t.dirty && !isEmpty(t) ? { title: t.ui.title.value, body: t.editor.text(), base: t.opened?.revision ?? null, at: new Date().toISOString() } : null;
   return t.opened ? { vault: t.opened.vault, id: t.opened.id, draft } : { vault: destination(t) || '', fresh: t.fresh, draft };
@@ -298,7 +305,8 @@ async function restoreTab(e) {
     if (!labels[e.view] && e.view !== 'type') return null;
     if (e.view === 'type' && typeof e.type !== 'string') return null;
     if (e.view === 'history' && !(e.target?.id && known(e.target.vault))) return null;
-    return viewTab(e.view, { type: e.type, target: e.target, query: typeof e.query === 'string' ? e.query : '' });
+    const chat = e.view === 'agent' && typeof e.chat === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(e.chat) ? e.chat : null;
+    return viewTab(e.view, { type: e.type, target: e.target, query: typeof e.query === 'string' ? e.query : '', chat });
   }
   if (e.vault && !known(e.vault)) return null;
   const draft = e.draft && typeof e.draft.body === 'string' ? e.draft : null;
@@ -364,12 +372,14 @@ function linksFor(d) {
 }
 // Tabs on a vault outside the scope keep its rows, so their links still resolve.
 async function syncOutside() {
-  const need = new Set(docTabs().map(d => d.opened?.vault).filter(p => p && !inScope(p)));
+  const chats = viewTabs().filter(v => v.view === 'agent').flatMap(v => v.agent?.vaults() || []);
+  const need = new Set([...docTabs().map(d => d.opened?.vault), ...chats].filter(p => p && !inScope(p) && vaults.some(v => v.path === p)));
   for (const p of outside.keys()) if (!need.has(p)) outside.delete(p);
   const missing = [...need].filter(p => !outside.has(p));
   if (!missing.length) return;
   await Promise.all(missing.map(async p => { try { outside.set(p, await listVault(p)); } catch { /* asked again next time */ } }));
   for (const d of docTabs()) d.editor.refresh();
+  for (const v of viewTabs()) v.agent?.relink();
 }
 
 // ── Related ──
@@ -1465,18 +1475,6 @@ function hints(v) {
     return b;
   }));
 }
-function highlight(json) {
-  const pre = el('pre', 'context');
-  let last = 0;
-  for (const m of json.matchAll(/("(?:\\.|[^"\\])*")(\s*:)?|([{}[\],])|(\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?)/g)) {
-    if (m.index > last) pre.append(json.slice(last, m.index));
-    if (m[1]) { if (m[2]) { pre.append(el('span', 'k', m[1]), el('span', 'p', m[2])); } else pre.append(m[1]); }
-    else pre.append(el('span', m[3] ? 'p' : 'n', m[0]));
-    last = m.index + m[0].length;
-  }
-  pre.append(json.slice(last));
-  return pre;
-}
 // Each count opens the search that lists what it counts.
 function pulse(out, overdueCount) {
   const openOf = type => rows.filter(r => r.type === type && !settled(r)).length;
@@ -1548,6 +1546,7 @@ async function renderPulse(v) {
 function refreshViews(all = false) {
   for (const v of viewTabs()) {
     if (v.view === 'type') continue;
+    if (v.view === 'agent') v.agent?.relink(); // citations in answers resolve against the fragments in view
     const live = ['pulse'].includes(v.view) || (all && v.view !== 'history');
     if (!live) { if (v.view === 'history') v.stale = true; continue; }
     if (ws.shown(v)) draw(v); else v.stale = true;
@@ -1588,6 +1587,7 @@ async function renderView(v) {
   if (view === 'history') { await historyView(v); return; }
   if (view === 'type') { renderTypeView(v); return; }
   if (view === 'pulse') { await renderPulse(v); return; }
+  if (view === 'agent') { await renderAgent(v); return; }
   out.replaceChildren();
   if (view === 'graph') {
     intro.textContent = `Every fragment in ${scope ? where : 'your opened vaults'} and the links between them. Select one to open it (${mod}+click: beside); scroll to zoom, drag to pan.`;
@@ -1600,18 +1600,82 @@ async function renderView(v) {
     }));
     return;
   }
-  const seed = recentDoc?.opened || rows[0];
-  if (!seed) { intro.textContent = 'The context an agent can read.'; out.append(emptyState('Capture a fragment first', 'This view works from the fragment you used last, or the most recent one.')); return; }
-  const note = await api.note(seed.vault, seed.id);
-  intro.textContent = 'Exactly what an agent would read from this fragment. No model is connected, and nothing leaves this device.';
-  const card = document.createElement('aihio-card'); card.className = 'context-card';
-  const header = document.createElement('aihio-card-header'), title = document.createElement('aihio-card-title'), desc = document.createElement('aihio-card-description'), content = document.createElement('aihio-card-content');
-  title.append(typeIcon(note.type), note.title || 'Untitled');
-  desc.textContent = `Saved ${typeLabel(note.type).toLowerCase()} in ${name(seed.vault)}, ${stamp.format(new Date(note.updated_at))}. Unsaved edits are not included.`;
-  header.append(title, desc);
-  content.append(highlight(JSON.stringify({ vault: name(seed.vault), id: note.id, type: note.type, title: note.title, body: (note.body || '').replace(/^\n/, ''), links: note.links }, null, 2)));
-  card.append(header, content); out.replaceChildren(card);
 }
+
+// ── Agent ──
+// A chat per Agent tab (agent.js); the model and its tools run in the main process (agent.cjs). A new chat searches
+// the vaults in view; once saved it keeps its own, so its citations resolve in those vaults wherever the scope is.
+const agentScope = () => ({
+  vaults: (scope ? vaults.filter(x => x.path === scope) : vaults).map(x => ({ path: x.path, name: x.name })),
+  label: scope ? name(scope) : 'every opened vault'
+});
+const agentVaults = paths => paths.map(p => {
+  const v = vaults.find(x => x.path === p);
+  return { path: p, name: v?.name || p.split('/').slice(-2, -1)[0] || p, open: !!v };
+});
+function agentSubject() {
+  const o = recentDoc?.opened;
+  return o ? { vault: o.vault, id: o.id, title: o.title, type: o.type } : null;
+}
+// Citations resolve in the chat's vaults; a prefix names one fragment there or none.
+function agentLinks(paths) {
+  const find = prefix => { const hits = paths.flatMap(rowsIn).filter(r => r.id.startsWith(prefix)); return hits.length === 1 ? hits[0] : null; };
+  return {
+    resolve(prefix) { const r = find(prefix); return r ? { title: r.title, type: r.type } : null; },
+    open(prefix, e) { const r = find(prefix); if (r) openRow(r, clickHow(e)); },
+    pool: () => [], shortId: r => r.id, describe: () => []
+  };
+}
+const chatTab = id => viewTabs().find(t => t.view === 'agent' && (t.agent ? t.agent.id() === id : t.chatId === id)) || null;
+async function renderAgent(v) {
+  v.ui.intro.textContent = 'Ask about your notes. The agent searches and reads your fragments to answer, and cites the ones it used. It can’t change anything.';
+  v.agent ||= agentChat(v.ui.results, {
+    api, chatId: v.chatId, scope: agentScope, vaultNames: agentVaults, subject: agentSubject, links: agentLinks, clickHow,
+    notify: (message, act) => status(message, act),
+    open: (id, how) => openChat(id, how, v), fresh: how => newChat(how), remove: deleteChat,
+    changed: () => {
+      // Asked or reopened: the tab is the chat's, named for it, and stays when another is opened.
+      if (v.agent?.saved()) ws.keep(v);
+      v.chatId = v.agent?.saved() ? v.agent.id() : null;
+      v.ui.toolTitle.textContent = viewLabel(v); ws.update(v); rememberWorkspace();
+      syncOutside().catch(() => {});
+    }
+  });
+  await v.agent.render();
+}
+// A saved chat: its tab if it has one; else in place of the empty chat it was picked from; else a new tab.
+function openChat(id, how = {}, from = null) {
+  return action(async () => {
+    const here = chatTab(id);
+    if (here) {
+      if (how.side && here.group === ws.group && here.group.tabs.length > 1) ws.toNeighbour(here, 1);
+      else ws.activate(here, { focus: true });
+      return;
+    }
+    if (from?.agent?.empty() && !how.side && !how.group) { await from.agent.load(id); return; }
+    ws.open(viewTab('agent', { chat: id }), { ...placement({ ...how, tab: true }), focus: true });
+  });
+}
+// An empty chat: the current tab's or the group's if there is one, else a new tab.
+function newChat(how = {}) {
+  return action(async () => {
+    const blank = t => t?.view === 'agent' && (t.agent ? t.agent.empty() && !t.agent.saved() : !t.chatId);
+    const here = !how.side && (blank(tab) ? tab : ws.group?.tabs.find(blank));
+    if (here) { ws.activate(here, { focus: true }); here.agent?.focus(); return; }
+    ws.open(viewTab('agent'), { ...placement({ ...how, tab: true }), focus: true });
+  });
+}
+// Deleted until the app next starts: Undo brings it back (its tab doesn't come back with it).
+async function deleteChat(id, title) {
+  const t = chatTab(id);
+  if (t) { await ws.close(t); if (chatTab(id)) return; }
+  await api.agentDeleteChat(id);
+  status(`Deleted the chat “${title || 'Untitled'}”.`, { label: 'Undo', run: () => api.agentRestoreChat(id).then(() => status(`Restored the chat “${title || 'Untitled'}”.`), status) });
+}
+// Saved chats for Go to…, most recent first.
+let savedChats = [];
+const refreshChats = () => api.agentChats().then(list => { savedChats = list; }, () => {});
+api.onAgentChats(refreshChats);
 
 // ── Settings ──
 // Choices wait for Save (`pending`); downloading and deleting a model happen at once.
@@ -1825,7 +1889,9 @@ function commands() {
     const lenses = typeContext({ viewType: s.name }).lenses.map(([, label]) => label.toLowerCase());
     add(plural(s.name), () => openTypeView(s.name), { glyph: typeIcon(s.name), keywords: `view type ${lenses.join(' ')} ${lenses.includes('board') ? 'kanban columns' : 'cards'}` });
   }
-  add('Agent context', () => action(() => openView('agent')), { icon: 'agent', keys: 'A' });
+  add('Agent', () => action(() => openView('agent')), { icon: 'agent', keys: 'A', keywords: 'ask chatgpt question chat answer' });
+  add('New chat', () => newChat(), { icon: 'compose', keywords: 'agent ask chatgpt question conversation' });
+  for (const c of savedChats.slice(0, 20)) add(c.title || 'Untitled chat', () => openChat(c.id), { icon: 'agent', keywords: 'chat agent conversation' });
   if (d?.dirty) add('Save', save, { icon: 'check', keys: `${mod} S` });
   if (d?.opened) {
     const t = schemaFor(d.opened.vault, d.opened.type)?.toggle;
@@ -2012,6 +2078,8 @@ window.addEventListener('beforeunload', e => { rememberWorkspace(true); if (['re
 applySide(); viewMenu();
 (async () => {
   try {
+    api.agentReset().catch(() => {}); // chats open before a reload leave memory; saved ones come back with their tabs
+    refreshChats();
     vaults = await api.vaults();
     const known = p => vaults.some(v => v.path === p), last = remember.get(SCOPE);
     scope = last === '' || known(last) ? last : vaults[0].path;

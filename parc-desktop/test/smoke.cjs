@@ -7,6 +7,7 @@ const dir = process.argv[2];
 if (!dir || !path.basename(dir).startsWith('parc-ui-test-')) throw new Error('Launch via npm run test:smoke');
 app.setPath('userData', dir);
 app.commandLine.appendSwitch('use-fake-device-for-media-stream');
+app.commandLine.appendSwitch('password-store', 'basic'); // the ChatGPT sign-in stays out of the desktop's keyring
 process.env.PARC_WHISPER_MODEL = path.join(dir, 'model');
 process.env.PARC_WHISPER_BIN = path.join(dir, 'stub');
 fs.writeFileSync(process.env.PARC_WHISPER_MODEL, 'test');
@@ -24,6 +25,14 @@ require('electron').dialog.showMessageBox = async (_win, options) => {
   if (!answers.length) { console.error(`Unexpected dialog: ${options.message}`); return { response: 0 }; }
   return { response: answers.shift() };
 };
+// Sign in with ChatGPT goes to a fake OpenAI; the "browser" follows its redirect back to parc.
+const { fakeOpenAI, browser, message, completed } = require('./fake-openai.cjs');
+// GitHub Copilot: a fake github.com for the device flow, and a fake Copilot SDK in place of the real one.
+const { fakeGitHub, fakeSdk } = require('./fake-copilot.cjs');
+const copilotSdk = fakeSdk(), sdkPath = require.resolve('@microsoft/copilot-sdk');
+require.cache[sdkPath] = { id: sdkPath, filename: sdkPath, loaded: true, exports: copilotSdk.module };
+const githubPages = [];
+require('electron').shell.openExternal = url => url.includes('/login/device') ? (githubPages.push(url), Promise.resolve()) : browser(url);
 // Copies land here, not on the desktop's clipboard.
 let copied = '';
 require('electron').clipboard.writeText = text => { copied = text; };
@@ -476,7 +485,109 @@ async function check() {
   await tabsAre([['~Pulse', 'Settle the invoice'], ['Old observation', 'Call the ferry office']]);
   assert.equal(await js('document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[0]'), true);
   assert.equal(await js('document.querySelectorAll(".pane")[1].querySelector(".scroll:not([hidden]) .cm-content").textContent.includes("Unsent in a split.")'), true);
-  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs (preview, keep, beside, move, drag to split and along a strip, drop from the list, close, reopen, groups by key) and the layout and drafts across a reload');
+  // The Agent: signed out, it says what signing in means; Continue with ChatGPT goes through the browser and back.
+  // A question shows the search the agent made and an answer whose citation reads as a title and opens the fragment.
+  const openai = await fakeOpenAI();
+  await js('document.querySelector("nav [data-view=agent]").click()');
+  await until('!!document.querySelector("[data-current] .agent-continue") && document.querySelector("[data-current] .agent-compose").hidden');
+  assert.match(await js('document.querySelector("[data-current] .agent-privacy").textContent'), /go to OpenAI/);
+  await js('document.querySelector("[data-current] .agent-continue").click()');
+  await until('document.querySelector("[data-current] .agent-provider")?.selectedOptions[0]?.textContent === "ChatGPT · reader@example.com"');
+  assert.equal(await js('[...document.querySelectorAll("[data-current] .agent-model option")].map(o => o.textContent).join()'), 'GPT Test,GPT Other');
+  assert.equal(openai.fake.seen.authorize[0].agent_name_hint, 'parc');
+  openai.fake.respond.push(request => {
+    const vault = request.tools[0].parameters.properties.vault?.enum?.[0];
+    return [completed([{ type: 'function_call', id: 'fc_1', call_id: 'c1', name: 'search', arguments: JSON.stringify({ query: 'ferry', ...(vault ? { vault } : {}) }) }])];
+  }, request => {
+    const found = request.input.find(i => i.type === 'function_call_output').output.match(/\b[0-9A-HJKMNP-TV-Z]{26}\b/)[0];
+    return [{ type: 'response.output_text.delta', delta: `It’s in [[${found}]].` }, completed([message(`It’s in [[${found}]].`)])];
+  });
+  await js('document.querySelector("[data-current] .agent-input").focus()');
+  await win.webContents.insertText('Where did I note the ferry?');
+  await js('document.querySelector("[data-current] .agent-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))');
+  await until('document.querySelector("[data-current] .agent-step-label")?.textContent.startsWith("Searched “ferry”") && !!document.querySelector("[data-current] .agent-text .md-wiki") && !document.querySelector("[data-current] .agent-turn[aria-busy]")');
+  assert.equal(await js('document.querySelector("[data-current] .agent-question").textContent'), 'Where did I note the ferry?');
+  assert.match(await js('document.querySelector("[data-current] .agent-step-meta").textContent'), /found$/);
+  assert.equal(openai.fake.seen.responses[0].store, false);
+  const cited = await js('document.querySelector("[data-current] .agent-text .md-wiki").textContent');
+  assert.match(cited, /ferry/i);
+  await js('document.querySelector("[data-current] .agent-text .md-wiki").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }))');
+  await until(`document.querySelector("[data-current] .doc-title")?.value === ${JSON.stringify(cited)}`);
+  // Chats are saved. The chat's tab is named for its first question and kept; New chat opens another, which lists
+  // the saved ones. Picking one shows the tab it is open in, or, once that is closed, shows it in place, as it was;
+  // a follow-up goes on from it, and it comes back after a reload. Deleting it closes its tab; Undo brings it back.
+  const question = 'Where did I note the ferry?', tabNamed = t => `[...document.querySelectorAll(".tab")].find(x => x.querySelector(".tab-label").textContent === ${JSON.stringify(t)})`;
+  await until(`${tabs}.includes(${JSON.stringify(JSON.stringify(question))})`);
+  await js(`${tabNamed(question)}.click()`);
+  await until(`document.querySelector("[data-current] .tool-title")?.textContent === ${JSON.stringify(question)} && ${idle}`);
+  await js('document.querySelector("[data-current] .agent-compose-row aihio-button").click()');
+  await until('document.querySelector("[data-current] .tool-title")?.textContent === "Agent" && [...document.querySelectorAll("[data-current] .agent-chat-title")].map(n => n.textContent).join() === "Where did I note the ferry?"');
+  const count = await js('document.querySelectorAll(".tab").length');
+  await js('document.querySelector("[data-current] .agent-chat-open").click()');
+  await until(`document.querySelector("[data-current] .tool-title")?.textContent === ${JSON.stringify(question)}`);
+  assert.equal(await js('document.querySelectorAll(".tab").length'), count, 'an open chat is shown in its tab, not opened again');
+  await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "w", ctrlKey: true, bubbles: true }))');
+  await until(`!${tabNamed(question)}`);
+  await js(`${tabNamed('Agent')}.click()`);
+  await until('!!document.querySelector("[data-current] .agent-chat-open")');
+  await js('document.querySelector("[data-current] .agent-chat-open").click()');
+  await until(`document.querySelector("[data-current] .agent-question")?.textContent === ${JSON.stringify(question)} && !!document.querySelector("[data-current] .agent-text .md-wiki")`);
+  assert.equal(await js('document.querySelectorAll(".tab").length'), count - 1, 'shown in place of the empty chat');
+  assert.match(await js('document.querySelector("[data-current] .agent-step-label").textContent'), /^Searched “ferry”/);
+  assert.equal(await js('document.querySelector("[data-current] .tool-title").textContent'), question);
+  openai.fake.respond.push(() => [completed([message('Nowhere else.')])]);
+  await js('document.querySelector("[data-current] .agent-input").focus()');
+  await win.webContents.insertText('Anywhere else?');
+  await js('document.querySelector("[data-current] .agent-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))');
+  await until('document.querySelectorAll("[data-current] .agent-question").length === 2 && !document.querySelector("[data-current] .agent-turn[aria-busy]")');
+  assert.ok(openai.fake.seen.responses.at(-1).input.some(i => i.type === 'function_call_output'), 'the follow-up carries the saved chat');
+  await delay(400);
+  win.webContents.reload();
+  await until(`!!${tabNamed(question)} && ${idle}`);
+  await js(`${tabNamed(question)}.click()`);
+  await until('[...document.querySelectorAll("[data-current] .agent-question")].map(q => q.textContent).join("|") === "Where did I note the ferry?|Anywhere else?"');
+  await js('document.querySelector("[data-current] .agent-compose-row aihio-button").click()');
+  await until('!!document.querySelector("[data-current] .agent-chat-delete")');
+  await js('document.querySelector("[data-current] .agent-chat-delete").click()');
+  await until(`!${tabNamed(question)} && !document.querySelector("[data-current] .agent-chat-open") && !!document.querySelector("#status .status-action")`);
+  await js('document.querySelector("#status .status-action").click()');
+  await until('[...document.querySelectorAll("[data-current] .agent-chat-title")].map(n => n.textContent).join() === "Where did I note the ferry?"');
+  // GitHub Copilot: a new chat switched to it offers its sign-in; the code to type at GitHub is shown while parc
+  // waits; signed in, the plan's models are offered and a question runs parc's tools on Copilot.
+  const github = await fakeGitHub();
+  github.fake.polls = [];
+  await until(`!!document.querySelector("[data-current] .agent-provider") && ${idle}`);
+  assert.equal(await js('[...document.querySelectorAll("[data-current] .agent-provider option")].map(o => o.textContent).join("|")'), 'ChatGPT · reader@example.com|GitHub Copilot (sign in)');
+  await js('(() => { const s = document.querySelector("[data-current] .agent-provider"); s.value = "copilot"; s.dispatchEvent(new Event("change")); })()');
+  await until('!!document.querySelector("[data-current] .agent-continue-copilot")');
+  assert.match(await js('document.querySelector("[data-current] .agent-privacy").textContent'), /go to GitHub/);
+  await js('document.querySelector("[data-current] .agent-continue-copilot").click()');
+  await until('document.querySelector("[data-current] .agent-code-value")?.textContent === "ABCD-1234"');
+  await until('document.querySelector("[data-current] .agent-provider")?.selectedOptions[0]?.textContent === "GitHub Copilot · octo"');
+  assert.equal(githubPages.length, 1);
+  assert.deepEqual(github.fake.seen.device[0], { client_id: 'Ov23liparctest00000', scope: 'read:user' });
+  await until('[...document.querySelectorAll("[data-current] .agent-model option")].map(o => o.textContent).join() === "Claude Sonnet X,GPT Y"');
+  copilotSdk.fake.script.push(async session => {
+    const vault = session.options.tools.definitions[0].parameters.properties.vault?.enum?.[0];
+    const found = await session.tool('parc_search', { query: 'ferry', ...(vault ? { vault } : {}) });
+    const id = found.match(/\b[0-9A-HJKMNP-TV-Z]{26}\b/)[0];
+    session.say(`On Copilot: [[${id}]].`);
+    session.emit('session.idle');
+  });
+  await js('document.querySelector("[data-current] .agent-input").focus()');
+  await win.webContents.insertText('Ferry, on Copilot?');
+  await js('document.querySelector("[data-current] .agent-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))');
+  await until('document.querySelector("[data-current] .agent-step-label")?.textContent.startsWith("Searched “ferry”") && !!document.querySelector("[data-current] .agent-text .md-wiki") && !document.querySelector("[data-current] .agent-turn[aria-busy]")');
+  assert.equal(await js('document.querySelector("[data-current] .tool-title").textContent'), 'Ferry, on Copilot?');
+  assert.equal(await js('document.querySelector("[data-current] .agent-who-name").textContent'), 'GitHub Copilot · octo', 'a saved chat names its provider');
+  assert.deepEqual(copilotSdk.fake.seen.sessions[0].options.tools.availableTools, ['custom:*']);
+  // Chats on both providers are listed together, each marked.
+  await js('document.querySelector("[data-current] .agent-compose-row aihio-button").click()');
+  await until('document.querySelectorAll("[data-current] .agent-chat").length === 2');
+  assert.equal(await js('[...document.querySelectorAll("[data-current] .agent-chat-vault")].map(n => n.textContent).join()'), 'Copilot,ChatGPT');
+  github.close();
+  openai.close();
+  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs (preview, keep, beside, move, drag to split and along a strip, drop from the list, close, reopen, groups by key) and the layout and drafts across a reload, the Agent (Sign in with ChatGPT, a question, its search and a citation that opens; saved chats: new, reopen in place, follow-up, across a reload, delete and undo; GitHub Copilot sign-in and a question on it)');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

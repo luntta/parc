@@ -727,17 +727,116 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 .vault-graph[data-focus] .vg-edges line:not(.lit) { opacity: .2; }
 @media (prefers-reduced-motion: reduce) { .vg-node, .vg-node text, .vg-edges line { transition: none; } }
 
-/* Agent */
-.context-card aihio-card-header { display: flex; flex-direction: column; gap: .25rem; }
-.context-card aihio-card-title { display: flex; align-items: center; gap: .5rem; }
-.context {
-  margin: 0; padding: 1rem 1.125rem; border-radius: var(--aihio-radius-interactive);
-  background: var(--aihio-color-page-bg); border: 1px solid var(--rule);
-  font: .8125rem/1.7 var(--aihio-font-family-code); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2;
+/* Agent: a chat down the page, its composer held at the bottom of the view while the conversation scrolls. */
+.agent { display: flex; flex-direction: column; gap: 1.5rem; min-height: calc(100dvh - var(--bar-height) - var(--tabs-height) - var(--status-height) - 14rem); }
+.agent-signin { display: flex; flex-direction: column; gap: .625rem; max-width: 36rem; padding: 1.5rem 1.625rem; border: 1px solid var(--rule); border-radius: var(--aihio-radius-surface); line-height: 1.6; text-wrap: pretty; }
+.agent-signin-title { font-size: var(--aihio-font-size-body); font-weight: var(--aihio-font-weight-heading); letter-spacing: var(--aihio-letter-spacing-heading); }
+.agent-privacy { color: var(--muted); font-size: .8125rem; }
+.agent-signin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-top: .5rem; }
+.agent-signin-actions .agent-error { flex-basis: 100%; }
+.agent-waiting-note { color: var(--muted); }
+.agent-who { display: flex; align-items: center; gap: .75rem; margin-top: -.75rem; color: var(--muted); font-size: .8125rem; }
+.agent-who-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-model, .agent-provider {
+  height: 1.75rem; max-width: 16rem; padding: 0 .5rem; border: 1px solid var(--rule); border-radius: var(--aihio-radius-interactive-compact);
+  background: var(--aihio-color-page-bg); color: var(--aihio-color-page-fg); font-size: .8125rem;
 }
-.context .k { color: var(--muted); }
-.context .p { color: var(--faint); }
-.context .n { color: var(--aihio-color-page-fg); font-weight: 600; }
+.agent-provider { max-width: 20rem; }
+/* Signing in to Copilot: the code to type at GitHub, large enough to read across the room. */
+.agent-code { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; flex-basis: 100%; }
+.agent-code-text { color: var(--muted); }
+.agent-code-value {
+  padding: .25rem .625rem; border: 1px solid var(--rule); border-radius: var(--aihio-radius-interactive);
+  font: 600 1.25rem/1.4 var(--aihio-font-family-code); letter-spacing: .08em; user-select: all;
+}
+/* aihio-button's host is display: contents, so the space before Sign out (and before Ask) is taken by its neighbour. */
+.agent-who > :nth-last-child(2) { margin-inline-end: auto; }
+.agent-log { display: flex; flex-direction: column; gap: 1.5rem; margin: 0; padding: 0; list-style: none; }
+.agent-log:empty { display: none; }
+.agent-turn[data-role="user"] { align-self: flex-end; max-width: min(36rem, 85%); }
+.agent-shared { margin: 0 0 .25rem; color: var(--faint); font-size: var(--aihio-font-size-badge); text-align: end; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-question {
+  padding: .625rem .875rem; border-radius: var(--aihio-radius-surface); background: var(--selected);
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; font-size: .9375rem;
+}
+.agent-parts { display: flex; flex-direction: column; gap: .75rem; }
+.agent-text .cm-editor { font-size: .9375rem; }
+.agent-text .cm-editor .cm-content { min-height: 0; padding: 0; caret-color: transparent; }
+.agent-steps { display: flex; flex-direction: column; margin: 0 0 0 -.5rem; padding: 0; list-style: none; }
+.agent-step-head {
+  display: grid; grid-template-columns: 1rem minmax(0, 1fr) auto; align-items: center; column-gap: .5rem;
+  width: 100%; height: 1.75rem; padding: 0 .5rem; border: 0; border-radius: var(--aihio-radius-interactive-compact);
+  background: none; color: var(--muted); font: inherit; font-size: .8125rem; text-align: start; cursor: pointer;
+}
+.agent-step-head:hover, .agent-step-head[aria-expanded="true"] { background: var(--hover); color: var(--aihio-color-page-fg); }
+.agent-step-head .icon { width: .875rem; height: .875rem; }
+.agent-step-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-step-meta { color: var(--faint); font-size: var(--aihio-font-size-badge); font-variant-numeric: tabular-nums; }
+.agent-step[data-state="running"] .agent-step-meta { animation: agent-pulse 1.2s ease-in-out infinite; }
+.agent-step[data-state="failed"] .agent-step-meta { color: var(--aihio-color-destructive-text); }
+.agent-step-body {
+  max-height: 14rem; overflow: auto; margin: .25rem 0 .5rem 2rem; padding: .625rem .75rem; border-radius: var(--aihio-radius-interactive);
+  background: var(--aihio-color-surface-bg); font: .75rem/1.6 var(--aihio-font-family-code); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.agent-waiting { color: var(--muted); font-size: .8125rem; animation: agent-pulse 1.2s ease-in-out infinite; }
+@keyframes agent-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .agent-waiting, .agent-step[data-state="running"] .agent-step-meta { animation: none; } }
+.agent-foot { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; }
+.agent-foot:empty { display: none; }
+.agent-error { color: var(--aihio-color-destructive-text); font-size: .8125rem; line-height: 1.5; }
+.agent-note { color: var(--muted); font-size: .8125rem; }
+.agent-start .section-label { color: var(--muted); }
+/* Saved chats on an empty chat: one line each, the title, the vault when there are several, and how long ago. */
+.agent-chats { display: flex; flex-direction: column; margin: 0 -.5rem; padding: 0; list-style: none; }
+.agent-chat { display: flex; align-items: center; border-radius: var(--aihio-radius-interactive); }
+.agent-chat:is(:hover, :focus-within) { background: var(--hover); }
+.agent-chat-open {
+  display: grid; grid-template-columns: 1rem minmax(0, 1fr) auto auto; align-items: center; column-gap: .625rem; flex: 1; min-width: 0;
+  height: 2.25rem; padding: 0 .5rem; border: 0; border-radius: var(--aihio-radius-interactive); background: none; color: inherit;
+  font: inherit; font-size: .875rem; text-align: start; cursor: pointer;
+}
+.agent-chat-open .icon { width: .875rem; height: .875rem; color: var(--muted); }
+.agent-chat-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-chat-vault, .agent-chat-when { color: var(--faint); font-size: var(--aihio-font-size-badge); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.agent-chat-delete {
+  display: grid; place-items: center; flex: none; width: 2rem; height: 2rem; margin-inline-end: .125rem; padding: 0; border: 0;
+  border-radius: var(--aihio-radius-interactive-compact); background: none; color: var(--faint); cursor: pointer; opacity: 0;
+}
+.agent-chat:is(:hover, :focus-within) .agent-chat-delete { opacity: 1; }
+.agent-chat-delete:hover { background: var(--selected); color: var(--aihio-color-destructive-text); }
+.agent-chat-delete .icon { width: .875rem; height: .875rem; }
+@media (hover: none) { .agent-chat-delete { opacity: 1; } }
+.agent-ideas { display: flex; flex-wrap: wrap; gap: .5rem; }
+.agent-idea {
+  padding: .4375rem .75rem; border: 1px solid var(--rule); border-radius: var(--aihio-radius-interactive);
+  background: transparent; color: var(--aihio-color-page-fg); font: inherit; font-size: .8125rem; text-align: start; cursor: pointer;
+  transition: background-color var(--aihio-duration-feedback-fast) ease, border-color var(--aihio-duration-feedback-fast) ease;
+}
+.agent-idea:hover { background: var(--hover); border-color: var(--aihio-color-field-border); }
+.agent-compose {
+  position: sticky; bottom: 0; z-index: 2; margin-top: auto; padding: .625rem .75rem .5rem;
+  border: 1px solid var(--aihio-color-field-border); border-radius: var(--aihio-radius-surface);
+  background: var(--aihio-color-page-bg); box-shadow: 0 -1.25rem 1.5rem -.5rem var(--aihio-color-page-bg);
+}
+.agent-compose:focus-within { border-color: var(--aihio-color-focus-ring); }
+.agent-context { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; min-height: 1.5rem; }
+.agent-where { display: inline-flex; align-items: center; gap: .3125rem; color: var(--faint); font-size: var(--aihio-font-size-badge); }
+.agent-where .icon { width: .75rem; height: .75rem; }
+.agent-where[data-gone] { color: var(--aihio-color-warning-text); }
+.agent-about { height: 1.5rem; max-width: 100%; }
+.agent-about .icon { flex: none; }
+.agent-about-verb { color: var(--muted); }
+.agent-about[aria-pressed="false"] { color: var(--faint); }
+.agent-about-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-input {
+  display: block; width: 100%; min-height: 2.5rem; max-height: 33vh; margin: .25rem 0; padding: .25rem 0; resize: none;
+  border: 0; background: transparent; color: var(--aihio-color-page-fg); font-size: .9375rem; line-height: 1.55;
+}
+.agent-input:focus { outline: none; }
+.agent-input::placeholder { color: var(--faint); }
+.agent-compose-row { display: flex; align-items: center; gap: .5rem; }
+.agent-keys { flex: 1; min-width: 0; overflow: hidden; text-align: end; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: var(--aihio-font-size-badge); }
+@container workspace (width < 36rem) { .agent-keys { visibility: hidden; } }
 
 /* Pulse */
 .figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-block: 1px solid var(--rule); }

@@ -39,6 +39,17 @@ Updated 2026-11-24. From a ranked list of what would make parc a world-class app
   - **Code:** `parc-desktop/tabs.js` (groups, strips, drag and drop, keys, context menu). In `renderer.js` each fragment's state (`opened`, `dirty`, its editor and Related panel) lives on its tab instead of in globals.
   - **Tests:** smoke-test checks for previews, keeping, beside, moving by key and by drag, dropping from the list, closing (with unsaved text) and reopening, groups by key, and the layout and a draft in a split after a reload.
 
+- **Agent view: Sign in with ChatGPT** in the desktop app (2026-11-24):
+  - **Sign-in:** OpenAI's Sign in with ChatGPT for open-source apps. OAuth with PKCE through the browser and a loopback callback; the first sign-in registers parc (`client_id=dynamic_agent_client`, `agent_name_hint=parc`) and keeps the issued client ID for later ones. A sign-in without `chatgpt.tokens.use.direct` is refused. The credential is sealed with the system keyring (async `safeStorage`; on desktops Chromium doesn't recognise, such as Hyprland, parc asks for libsecret) and refreshed one at a time.
+  - **Loop:** the Responses API with `store: false`, the whole chat sent back each time (reasoning items encrypted), at most 10 rounds of tool calls. The plan's error codes become plain messages; a failed or stopped question is taken back out of the chat.
+  - **Tools:** one `parc-server --mcp --read-only` child per vault, so the agent can only search, recall, read and list. With several vaults each tool takes a `vault` naming one of them.
+  - **View:** a chat per Agent tab: each search and read above the answer (select it for what it returned), `[[ID]]` citations shown as titles that open the fragment, the fragment used last shared on request, the plan's models in a menu.
+  - **Code:** `parc-desktop/agent.cjs` (main process: sign-in, loop, MCP), `parc-desktop/agent.js` (the view).
+  - **Tests:** `test/agent.test.cjs` against a fake OpenAI and a real read-only parc-server (sign-in, sealing, refresh, the requests the plan accepts, the tool allowlist, errors, stop); the smoke test signs in, asks and opens a citation.
+  - **Saved chats:** one JSON file per chat in the app's user data (`chats/`), never in a vault: a chat holds model state and fragment excerpts, and a vault travels over git. Saved after each answered question and named for the first one; a failed or stopped question isn't. A chat keeps the vaults it started in. An empty chat lists recent ones; picking one shows its tab, or loads it in place; Ctrl+click opens it beside. Tabs remember their chat across restarts; Go to… lists chats; deleting can be undone until the app quits.
+  - **GitHub Copilot** as a second provider (2026-11-25): GitHub's device sign-in with parc's own OAuth app (`read:user`), then GitHub's Copilot SDK (`@microsoft/copilot-sdk`, ~200 MB of native runtime) in `empty` mode, as a child process with its data in parc's user data: `tools.availableTools: ['custom:*']`, parc's read-only tools as custom tools named `parc_*`, permission requests refused, custom instructions and telemetry off. A chat keeps its provider; Copilot chats save what was shown (`turns`) and a new session after a restart is told the earlier questions and answers. Code: `parc-desktop/copilot.cjs`. Chosen over Pi's way (VS Code's Copilot client ID and headers), which impersonates VS Code. parc's GitHub OAuth app is registered (client ID in `GITHUB.clientId`, device flow on, checked against github.com); a real Copilot sign-in and question are still to be tried.
+  - **Not yet tried against OpenAI itself:** the protocol follows OpenAI's documentation and Pi's working client, but no real account has signed in.
+
 ## Next
 
 ### 1. Recall
@@ -55,6 +66,13 @@ Each step can be reviewed on its own:
    - in a debug build each request starts a `parc-server` (about 50–75 ms on 10,000 notes); a long-running server child would cut that, and step 3 needs one anyway to keep its model loaded
 
 Cheap lexical improvements to measure with the benchmark before step 3: prefix matching for long words (Finnish inflection) and ranking tag matches by something other than newest first (the tagged case misses at rank 4).
+
+### 2. Agent
+
+1. Sign in with a real ChatGPT account and ask a question; adjust to what the real service does.
+2. **Save an answer** as a note through `Writer`, with its citations as links (step 5 of [ai-second-brain.md](ai-second-brain.md)).
+3. More providers: an API key (Anthropic, OpenAI-compatible endpoints) and a local model server, for those without a ChatGPT plan and for keeping everything on the computer.
+4. Measure the agent on the recall benchmark: can searching again in other words find what lexical recall misses?
 
 ## Later
 
