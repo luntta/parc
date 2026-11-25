@@ -103,15 +103,20 @@ async function check() {
   await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
   const todo = (await prototype.list()).find(r => r.title === 'Call the ferry office');
   assert.equal(todo.type, 'todo'); assert.equal(todo.status, 'open');
+  // Metadata changes do not lock the editor.
   await js('document.querySelector("[data-current] .toggle-mark").click()');
+  assert.equal(await js('document.querySelector("[data-current] .cm-content").contentEditable'), 'true');
+  assert.equal(await js('document.querySelector("[data-current] .doc-title").readOnly'), false);
   await eventually(async () => (await prototype.get(todo.id)).status === 'done');
   // A save from elsewhere reloads the clean open fragment.
   await prototype.update(todo.id, { fields: { priority: 'low' } });
   await until('document.querySelector("[data-current] .prop[data-field=priority]")?.textContent.includes("Low priority")');
-  // Unsaved text outlives a reload of the window, in its tab, with the other tabs as they were; closing it asks first.
+  // Unsaved text is stored on disk (not inline in localStorage) and outlives a reload of the window; closing it asks first.
   await js('document.querySelector("[data-current] .cm-content").focus()');
   await win.webContents.insertText('Unsent thought');
   await delay(500);
+  assert.equal(await js('localStorage.getItem("parc.workspace").includes("Unsent thought")'), false, 'draft body lives on disk, not in localStorage');
+  assert.ok(fs.readdirSync(path.join(dir, 'drafts')).some(f => f.endsWith('.json')), 'draft written to userData/drafts');
   win.webContents.reload();
   await until(`document.querySelector("[data-current] .cm-content")?.textContent.includes("Unsent thought") && document.querySelector("#status").textContent.startsWith("Restored") && ${idle}`);
   assert.equal(await js('document.querySelector("[data-current] .doc-title")?.value'), 'Call the ferry office');
@@ -587,7 +592,95 @@ async function check() {
   assert.equal(await js('[...document.querySelectorAll("[data-current] .agent-chat-vault")].map(n => n.textContent).join()'), 'Copilot,ChatGPT');
   github.close();
   openai.close();
-  console.log('PASS: Pulse as home, dictation, live Markdown, [[ link picker, search, typed capture and toggle, external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash with undo, live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs (preview, keep, beside, move, drag to split and along a strip, drop from the list, close, reopen, groups by key) and the layout and drafts across a reload, the Agent (Sign in with ChatGPT, a question, its search and a citation that opens; saved chats: new, reopen in place, follow-up, across a reload, delete and undo; GitHub Copilot sign-in and a question on it)');
+
+  // Step 2 parity: templates, list & string field editors, promote/convert type, drop-to-attach with
+  // inline parc-attach:// raster preview, Trash view restore, Vault health + reindex, Pulse daily review,
+  // and removing a secondary vault without deleting disk files.
+  const protoPath = path.join(dir, 'prototype', '.parc');
+  await js(`document.querySelector('#vaultMenu aihio-dropdown-item[value=${JSON.stringify(protoPath)}]').click()`);
+  await until(`document.querySelector("#vaultName").textContent === "Prototype" && ${idle}`);
+  await js('document.querySelector("[data-view=capture]").click()');
+  await until(`!!document.querySelector("[data-current] .doc") && document.querySelector("[data-current] .doc-title")?.value === "" && ${idle}`);
+  await js('document.querySelector("[data-current] .type-menu aihio-dropdown-item[value=decision]").click()');
+  await until('document.querySelector("[data-current] .cm-line.md-h2")?.textContent === "Context"');
+  assert.equal(await js('document.querySelector("#revision").textContent'), '', 'untouched template is not marked dirty');
+  assert.equal(await js('document.querySelector("#save > button").disabled'), true, 'untouched template cannot be saved empty');
+  await js('document.querySelector("[data-current] .prop-list[data-field=deciders] .add-list").click()');
+  await js('{ const i = document.querySelector("[data-current] .prop-list[data-field=deciders] .tag-input"); i.value = "Ada"; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); }');
+  await until('document.querySelector("[data-current] .prop-list[data-field=deciders] .list-chip")?.textContent.includes("Ada")');
+  await js('const t = document.querySelector("[data-current] .doc-title"); t.value = "Choose SQLite"; t.dispatchEvent(new Event("input"))');
+  await js(saveKey);
+  await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
+  const dec = (await prototype.list()).find(r => r.title === 'Choose SQLite');
+  assert.equal(dec?.type, 'decision');
+  assert.deepEqual((await prototype.get(dec.id)).deciders, ['Ada']);
+  assert.match((await prototype.get(dec.id)).body, /## Context/);
+
+  // Convert a saved note into a todo, then edit its inline string field (assignee).
+  const prom = await prototype.save({ title: 'Promote me', body: 'Stays intact.' });
+  await until(`!!${rowNamed('Promote me')} && ${idle}`);
+  await js(`${rowNamed('Promote me')}.click()`);
+  await until(`document.querySelector("[data-current] .doc-title")?.value === "Promote me" && ${idle}`);
+  await js('document.querySelector("[data-current] .saved-type aihio-dropdown-item[value=todo]").click()');
+  await eventually(async () => (await prototype.get(prom.id)).type === 'todo');
+  await until(`!!document.querySelector("[data-current] .prop-text[data-field=assignee]") && ${idle}`);
+  await js('document.querySelector("[data-current] .prop-text[data-field=assignee] .prop-button").click()');
+  await js('{ const i = document.querySelector("[data-current] .prop-text[data-field=assignee] .prop-input"); i.value = "Raine"; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); }');
+  await eventually(async () => (await prototype.get(prom.id)).assignee === 'Raine');
+  await until(`document.querySelector("[data-current] .prop-text[data-field=assignee]")?.textContent.includes("Assignee: Raine") && ${idle}`);
+
+  // Drop a PNG onto the fragment: attaches, inserts ![[attach:dot.png]], renders inline via parc-attach://, then detaches.
+  const pngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
+  await js(`{
+    const bin = atob(${JSON.stringify(pngB64)}), bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes], "dot.png", { type: "image/png" }));
+    document.querySelector("[data-current] .doc").dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+  }`);
+  await until(`document.querySelector("[data-current] .doc-attachments:not([hidden]) .attach-name")?.textContent === "dot.png" && ${idle}`);
+  await js('document.activeElement?.blur(); document.querySelector("[data-current] .doc-title").focus()');
+  await until('(() => { const img = document.querySelector("[data-current] .cm-content .md-attach-img"); return !!img && img.src.startsWith("parc-attach://") && img.complete && img.naturalWidth === 1; })()');
+  answers.push(1); // Remove attachment
+  await js('document.querySelector("[data-current] .attach-remove").click()');
+  await until(`document.querySelector("[data-current] .doc-attachments")?.hidden === true && ${idle}`);
+  assert.equal((await prototype.attachments(prom.id)).length, 0);
+  await js(saveKey);
+  await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
+
+  // Trash view lists trashed fragments and restores them.
+  answers.push(1); // Move to trash
+  await js('document.querySelector("#fragmentMenu aihio-dropdown-item[value=trash]").click()');
+  await until(`document.querySelector("#status").textContent.startsWith("Moved") && ${idle}`);
+  await js('document.querySelector("#vaultMenu aihio-dropdown-item[value=\\"@trash\\"]").click()');
+  await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Trash" && document.querySelector("[data-current] .trash-row")?.textContent.includes("Promote me") && ${idle}`);
+  await js('document.querySelector("[data-current] .trash-actions aihio-button").click()');
+  await until(`document.querySelector("[data-current] .doc-title")?.value === "Promote me" && ${idle}`);
+  assert.equal((await prototype.get(prom.id)).title, 'Promote me');
+
+  // Vault health detects broken links and rebuilds the SQLite index.
+  await prototype.save({ title: 'Broken ref note', body: 'Points to [[01AAAAAAAAAAAAAAAAAAAAAAAA]].' });
+  await until(`!!${rowNamed('Broken ref note')} && ${idle}`);
+  await js('document.querySelector("#vaultMenu aihio-dropdown-item[value=\\"@doctor\\"]").click()');
+  await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Vault health" && document.querySelector("[data-current] .doctor-list")?.textContent.includes("01AAAAAAAAAAAAAAAAAAAAAAAA") && ${idle}`);
+  await js('[...document.querySelectorAll("[data-current] .doctor-actions aihio-button")].find(b => b.textContent.includes("Rebuild index")).click()');
+  await until(`document.querySelector("#status").textContent.startsWith("Rebuilt index") && ${idle}`);
+
+  // Pulse daily review highlights overdue items in Needs attention.
+  await prototype.save({ title: 'Overdue filing', body: 'Do now', type: 'todo', fields: { due: '2020-01-01' } });
+  await until(`!!${rowNamed('Overdue filing')} && ${idle}`);
+  await js('document.querySelector("[data-view=pulse]").click()');
+  await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Pulse" && document.querySelector("[data-current] .pulse-list")?.textContent.includes("Overdue filing") && ${idle}`);
+  assert.match(await js('document.querySelector("[data-current] .pulse-pill[data-tone=alert]").textContent'), /^Overdue/);
+
+  // Removing a secondary vault detaches it from parc without touching files on disk.
+  await js(`document.querySelector('#vaultMenu aihio-dropdown-item[value=${JSON.stringify(second)}]').click()`);
+  await until(`document.querySelector("#vaultName").textContent === "Research" && ${idle}`);
+  answers.push(1); // Remove
+  await js('document.querySelector("#vaultMenu aihio-dropdown-item[value=\\"@close\\"]").click()');
+  await until(`document.querySelector("#vaultName").textContent === "Prototype" && document.querySelector("#status").textContent.includes("files on disk were not changed") && ${idle}`);
+  assert.equal(fs.existsSync(path.join(second, 'config.yml')), true, 'removing a vault leaves its files on disk');
+
+  console.log('PASS: Pulse as home (with daily review), dictation, live Markdown, [[ link picker, search, typed capture (templates, string & list fields, toggle, promote), attachments (drop, strip, inline parc-attach:// preview, detach), external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash view with undo/restore, vault health and reindex, remove vault, live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs and the layout and drafts across a reload, and the Agent (ChatGPT + GitHub Copilot)');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

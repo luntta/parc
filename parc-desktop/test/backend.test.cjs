@@ -5,8 +5,10 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { archive, speechConfig, speechLanguage, checkWav, transcribe } = require('../backend.cjs');
+const { draftStore } = require('../drafts.cjs');
 const models = require('../models.cjs');
 const wav = import('../wav.mjs');
+const graphLayout = import('../graph-layout.mjs');
 
 test('explicit save is readable from a separate RPC process in an isolated vault', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-desktop-test-'));
@@ -346,4 +348,162 @@ test('the catalog recommends by language and knows English-only models', () => {
   assert.equal(models.englishOnly('/x/ggml-small.en-q5_1.bin'), true);
   assert.equal(models.englishOnly('/x/ggml-large-v3-turbo-q5_0.bin'), false);
   assert.equal(models.englishOnly('/x/ggml-medium.bin'), false);
+});
+
+test('persistent parc-server child is reused across pipelined calls and recovers after crash or close', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-persistent-test-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const store = archive(path.join(dir, '.parc'), { idleMs: 60000 });
+  t.after(() => store.close());
+  await store.init();
+  assert.equal(store.pid(), null, 'server starts lazily on first RPC');
+
+  const first = await store.save({ title: 'First', body: 'Alpha' });
+  const pid1 = store.pid();
+  assert.ok(Number.isInteger(pid1) && pid1 > 0);
+
+  // Concurrent pipelined calls reuse the exact same child process.
+  const [second, list, got, schemas] = await Promise.all([
+    store.save({ title: 'Second', body: 'Beta' }),
+    store.list(),
+    store.get(first.id),
+    store.schemas()
+  ]);
+  assert.equal(store.pid(), pid1);
+  assert.equal(got.title, 'First');
+  assert.equal(second.title, 'Second');
+  assert.ok(list.length >= 1 && schemas.length >= 5);
+
+  // If the child crashes unexpectedly, the next request transparently spawns a fresh one.
+  process.kill(pid1, 'SIGKILL');
+  await new Promise(r => setTimeout(r, 80));
+  const afterCrash = await store.get(second.id);
+  const pid2 = store.pid();
+  assert.equal(afterCrash.title, 'Second');
+  assert.ok(Number.isInteger(pid2) && pid2 !== pid1);
+
+  // Explicit close terminates the child; a subsequent call restarts cleanly.
+  store.close();
+  assert.equal(store.pid(), null);
+  assert.equal((await store.list()).length, 2);
+  assert.ok(store.pid() !== null);
+});
+
+test('disk draft store saves atomically, flushes synchronously, prunes orphans and validates IDs', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-drafts-test-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const store = draftStore(path.join(dir, 'drafts'));
+
+  await store.save('tab-1', { title: 'Draft 1', body: 'Unsent text', base: '0123456789abcdef', at: '2026-11-25T00:00:00Z' });
+  const loaded = await store.load('tab-1');
+  assert.deepEqual(loaded, { title: 'Draft 1', body: 'Unsent text', base: '0123456789abcdef', at: '2026-11-25T00:00:00Z' });
+  assert.equal((await fs.stat(path.join(dir, 'drafts', 'tab-1.json'))).mode & 0o777, 0o600);
+
+  store.saveSync('tab-2', { title: 'Sync draft', body: 'Saved on unload', base: null, at: '2026-11-25T00:01:00Z' });
+  assert.equal((await store.load('tab-2')).body, 'Saved on unload');
+
+  await fs.writeFile(path.join(dir, 'drafts', 'stale.tmp'), 'partial');
+  await store.prune(['tab-2']);
+  assert.equal(await store.load('tab-1'), null);
+  assert.equal((await store.load('tab-2')).body, 'Saved on unload');
+  await assert.rejects(fs.access(path.join(dir, 'drafts', 'stale.tmp')));
+
+  store.removeSync('tab-2');
+  assert.equal(await store.load('tab-2'), null);
+
+  await assert.rejects(store.save('../escape', { title: 'x', body: 'y' }), /Invalid draft ID/);
+  await assert.rejects(store.save('huge', { title: '', body: 'x'.repeat(1_000_001) }), /too large/);
+});
+
+test('graph layout is deterministic for both small exact and large Barnes-Hut graphs', async () => {
+  const { layout, ring } = await graphLayout;
+  const make = n => ({
+    nodes: Array.from({ length: n }, (_, i) => ({ key: `n${i}` })),
+    links: Array.from({ length: n - 1 }, (_, i) => ({ source: `n${i}`, target: `n${(i * 7 + 1) % n}` }))
+  });
+
+  // Small exact path (<= 200)
+  const s1 = make(30), s2 = make(30);
+  layout(s1.nodes, s1.links); layout(s2.nodes, s2.links);
+  assert.deepEqual(s1.nodes.map(d => [d.x, d.y]), s2.nodes.map(d => [d.x, d.y]));
+
+  // Large Barnes-Hut path (> 200)
+  const b1 = make(450), b2 = make(450);
+  const t0 = Date.now();
+  layout(b1.nodes, b1.links);
+  const elapsed = Date.now() - t0;
+  layout(b2.nodes, b2.links);
+  assert.ok(b1.nodes.every(d => Number.isFinite(d.x) && Number.isFinite(d.y)));
+  assert.deepEqual(b1.nodes.map(d => [d.x, d.y]), b2.nodes.map(d => [d.x, d.y]));
+  assert.ok(elapsed < 3000, `Barnes-Hut layout on 450 nodes took ${elapsed}ms`);
+
+  const loose = [{ key: 'u0' }, { key: 'u1' }];
+  ring(loose, b1.nodes);
+  assert.ok(loose.every(d => Number.isFinite(d.x) && Number.isFinite(d.y)));
+});
+
+test('promote, templates, attachments, trash management, doctor and reindex', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-parity-test-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const vault = path.join(dir, '.parc'), store = archive(vault);
+  t.after(() => store.close());
+  await store.init();
+
+  // Schemas include built-in body templates (decision has sections, note is blank).
+  const schemas = await store.schemas();
+  assert.match(schemaOf(schemas, 'decision').template || '', /## Context/);
+  assert.equal(schemaOf(schemas, 'note').template, null);
+
+  // Promote converts a note into a todo while preserving body/tags and checking expected_revision.
+  const note = await store.save({ title: 'Convert me', body: 'Keep this text.', tags: ['ops'] });
+  const promoted = await store.promote(note.id, 'todo', note.revision, { assignee: 'Alex' });
+  assert.equal(promoted.type, 'todo');
+  assert.equal(promoted.status, 'open');
+  assert.equal(promoted.assignee, 'Alex');
+  assert.deepEqual(promoted.tags, ['ops']);
+  assert.equal(promoted.body.trim(), 'Keep this text.');
+  assert.notEqual(promoted.revision, note.revision);
+  assert.equal((await store.promote(note.id, 'idea', note.revision)).conflict, true);
+
+  // List fields (e.g. decision.deciders) save and clear cleanly.
+  const dec = await store.save({ title: 'Pick engine', body: '## Context\nFast.', type: 'decision', fields: { deciders: ['Ada', 'Linus'] } });
+  assert.deepEqual((await store.get(dec.id)).deciders, ['Ada', 'Linus']);
+  const cleared = await store.update(dec.id, { fields: { deciders: null } }, dec.revision);
+  assert.equal(cleared.deciders, undefined);
+
+  // Attachments: attach updates index + revision, lists size, and detach cleans up.
+  const sample = path.join(dir, 'diagram.txt');
+  await fs.writeFile(sample, 'hello attachment');
+  const attached = await store.attach(promoted.id, sample);
+  assert.equal(attached.filename, 'diagram.txt');
+  assert.deepEqual(attached.attachments, ['diagram.txt']);
+  assert.ok(/^[0-9a-f]{16}$/.test(attached.revision));
+  const listedAtt = await store.attachments(promoted.id);
+  assert.deepEqual(listedAtt, [{ filename: 'diagram.txt', size: 16 }]);
+  assert.equal((await store.search('has:attachments')).some(r => r.id === promoted.id), true);
+  await assert.rejects(store.detach(promoted.id, '../escape'), /Invalid attachment/);
+  const detached = await store.detach(promoted.id, 'diagram.txt');
+  assert.equal(detached.detached, true);
+  assert.deepEqual(detached.attachments, []);
+  assert.deepEqual(await store.attachments(promoted.id), []);
+
+  // Trash list & purge (single and empty all).
+  const t1 = await store.save({ title: 'Discard one', body: 'one' });
+  const t2 = await store.save({ title: 'Discard two', body: 'two' });
+  await store.remove(t1.id);
+  await store.remove(t2.id);
+  assert.equal((await store.trashList()).length, 2);
+  assert.equal((await store.trashPurge(t1.id)).purged, t1.id);
+  assert.deepEqual((await store.trashList()).map(x => x.id), [t2.id]);
+  assert.equal((await store.trashPurge(null)).purged_count, 1);
+  assert.deepEqual(await store.trashList(), []);
+
+  // Doctor detects broken links and reindex rebuilds cleanly.
+  const broken = await store.save({ title: 'Dangling', body: 'See [[01AAAAAAAAAAAAAAAAAAAAAAAA]].' });
+  const health = await store.doctor();
+  assert.ok(health.fragments_checked >= 3);
+  assert.ok(health.findings.some(f => f.type === 'broken_link' && f.source_id === broken.id));
+  const reindexed = await store.reindex();
+  assert.ok(reindexed.indexed >= 3);
+  assert.deepEqual(reindexed.problems, []);
 });

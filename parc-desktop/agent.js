@@ -416,15 +416,18 @@ export function agentChat(host, deps) {
     changed(); paint();
     log.lastElementChild?.scrollIntoView({ block: 'end' });
   }
-  function clear() { log.replaceChildren(); texts.length = 0; turn = null; last = ''; }
+  function dropTexts() { for (const part of texts) { cancelAnimationFrame(part.frame); part.view.destroy(); } texts.length = 0; }
+  function clear() { dropTexts(); log.replaceChildren(); turn = null; last = ''; }
   // An answer's parts as saved: its steps and its text, drawn afresh.
   function fill(t, parts) {
     t.parts.replaceChildren(); t.steps.clear(); t.current = null;
+    for (let i = texts.length - 1; i >= 0; i--) {
+      if (!texts[i].box.isConnected) { cancelAnimationFrame(texts[i].frame); texts[i].view.destroy(); texts.splice(i, 1); }
+    }
     for (const part of parts) {
       if (part.kind === 'steps') { for (const s of part.steps) stepDone(step(t, s), s.ok, s.text); }
       else { const p = textPart(t); p.text = part.text; p.view.show(p.text, { links: links() }); }
     }
-    for (let i = texts.length - 1; i >= 0; i--) if (!texts[i].box.isConnected) texts.splice(i, 1);
   }
 
   // The box grows with the question, up to a third of the window.
@@ -459,6 +462,6 @@ export function agentChat(host, deps) {
     title: () => chat.title,
     vaults: () => chat.vaults || [],
     empty: () => empty() && !loading && !busy,
-    destroy() { unsubscribe(); unsubscribeChats(); unsubscribeCode(); if (busy) api.agentStop(chat.id); api.agentForget(chat.id).catch(() => {}); }
+    destroy() { unsubscribe(); unsubscribeChats(); unsubscribeCode(); dropTexts(); if (busy) api.agentStop(chat.id); api.agentForget(chat.id).catch(() => {}); }
   };
 }

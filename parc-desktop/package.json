@@ -5,7 +5,7 @@
   "private": true,
   "main": "main.cjs",
   "scripts": {
-    "build": "esbuild workspace=renderer.js capture=capture.js --bundle --outdir=dist --format=iife --log-level=warning",
+    "build": "esbuild workspace=renderer.js capture=capture.js graph-worker=graph-worker.js --bundle --outdir=dist --format=iife --log-level=warning",
     "prestart": "npm run build",
     "pretest:smoke": "npm run build",
     "start": "electron .",

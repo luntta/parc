@@ -1,8 +1,8 @@
 const fs = require('node:fs/promises');
-const { constants, existsSync } = require('node:fs');
+const { constants, existsSync, statSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const { LANGUAGES } = require('./languages.cjs');
 const { englishOnly } = require('./models.cjs');
 
@@ -19,9 +19,126 @@ function run(file, args, input = '', timeout = 15000) {
   });
 }
 
+// Prefer the newest local cargo build (release wins ties), falling back to PATH.
 function binary(name) {
-  const local = path.join(__dirname, '..', 'target', 'debug', name);
-  return existsSync(local) ? local : name;
+  const candidates = ['release', 'debug']
+    .map(dir => path.join(__dirname, '..', 'target', dir, name))
+    .map(file => { try { return { file, mtime: statSync(file).mtimeMs }; } catch { return null; } })
+    .filter(Boolean);
+  if (!candidates.length) return name;
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  return candidates[0].file;
+}
+
+// Track persistent parc-server children so none ever outlives the host process.
+const liveChildren = new Set();
+let exitHooked = false;
+function trackChild(child) {
+  liveChildren.add(child);
+  if (!exitHooked) {
+    exitHooked = true;
+    process.once('exit', () => { for (const c of liveChildren) { try { c.kill('SIGKILL'); } catch { /* already gone */ } } });
+  }
+}
+
+// One persistent stdio JSON-RPC `parc-server` child per vault, started lazily on the first request,
+// restarted automatically if it exits, and closed after an idle period or on explicit close().
+function rpcClient(vault, { timeout = 15000, idleMs = 30000 } = {}) {
+  let child = null, buffer = '', stderr = '', seq = 0, idleTimer = null;
+  const waiting = new Map();
+
+  function failAll(err) {
+    for (const w of waiting.values()) { clearTimeout(w.timer); w.reject(err); }
+    waiting.clear();
+  }
+  function setActive(active) {
+    clearTimeout(idleTimer); idleTimer = null;
+    if (!child) return;
+    const method = active ? 'ref' : 'unref';
+    child[method]?.(); child.stdout?.[method]?.(); child.stderr?.[method]?.(); child.stdin?.[method]?.();
+    if (!active && idleMs > 0) {
+      idleTimer = setTimeout(close, idleMs);
+      idleTimer.unref?.();
+    }
+  }
+  function close(reason = new Error('parc-server closed.')) {
+    clearTimeout(idleTimer); idleTimer = null;
+    const old = child;
+    child = null; buffer = ''; stderr = '';
+    if (old) {
+      liveChildren.delete(old);
+      try { old.stdin?.end(); } catch { /* ignore */ }
+      try { old.kill(); } catch { /* ignore */ }
+    }
+    failAll(reason);
+  }
+  function start() {
+    const file = binary('parc-server');
+    const self = spawn(file, ['--vault', vault], { stdio: ['pipe', 'pipe', 'pipe'] });
+    child = self; buffer = ''; stderr = '';
+    trackChild(self);
+    self.stdout.setEncoding('utf8');
+    self.stderr.setEncoding('utf8');
+    self.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096); });
+    self.stdout.on('data', chunk => {
+      if (child !== self) return;
+      buffer += chunk;
+      if (buffer.length > 32 * 1024 * 1024) {
+        close(new Error('parc-server response exceeded size limit.'));
+        return;
+      }
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl); buffer = buffer.slice(nl + 1);
+        if (!line.trim()) continue;
+        let reply;
+        try { reply = JSON.parse(line); } catch { continue; }
+        const w = waiting.get(reply.id);
+        if (!w) continue;
+        waiting.delete(reply.id); clearTimeout(w.timer);
+        w.resolve(reply);
+      }
+      if (!waiting.size) setActive(false);
+    });
+    self.stdin.on('error', () => {});
+    self.on('error', err => {
+      if (child !== self) return;
+      child = null; buffer = ''; stderr = ''; liveChildren.delete(self); clearTimeout(idleTimer); idleTimer = null;
+      const msg = err?.code === 'ENOENT'
+        ? `Cannot find ${path.basename(file)}. See desktop setup instructions.`
+        : `parc-server failed. ${err.message}`;
+      failAll(new Error(msg));
+    });
+    self.on('exit', (code, signal) => {
+      liveChildren.delete(self);
+      if (child !== self) return;
+      const detail = stderr.trim().split('\n').slice(-3).join(' ').trim();
+      child = null; buffer = ''; stderr = ''; clearTimeout(idleTimer); idleTimer = null;
+      failAll(new Error(`parc-server failed${signal ? ` (${signal})` : code ? ` (exit ${code})` : ''}.${detail ? ` ${detail}` : ''}`));
+    });
+  }
+  function send(method, params) {
+    if (!child) start();
+    setActive(true);
+    const id = ++seq;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        reject(new Error('parc-server failed (timeout).'));
+        // A hung line blocks subsequent stdio reads on the same child; reset it cleanly.
+        close();
+      }, timeout);
+      waiting.set(id, { resolve, reject, timer });
+      try {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+      } catch (err) {
+        waiting.delete(id); clearTimeout(timer);
+        if (!waiting.size) setActive(false);
+        reject(new Error(`parc-server failed. ${err.message}`));
+      }
+    });
+  }
+  return { send, close, pid: () => child?.pid ?? null };
 }
 
 const CONFLICT = -32010; // parc-server: the fragment changed since the client read it
@@ -78,12 +195,18 @@ function validRenames(renames) {
   if (!Array.isArray(renames) || renames.length > 256 || !renames.every(r => r && word(r.field) && word(r.from) && word(r.to))) throw new Error('Invalid value changes');
   return renames.map(({ field, from, to }) => ({ field, from, to }));
 }
+function validAttachment(name) {
+  if (typeof name !== 'string' || !name || name.length > 255 || name === '.' || name === '..' || /[/\\\0]/.test(name)) {
+    throw new Error('Invalid attachment filename');
+  }
+  return name;
+}
 
-function archive(vault) {
+function archive(vault, options) {
   if (!path.isAbsolute(vault) || path.basename(vault) !== '.parc') throw new Error('Expected an absolute .parc vault path');
+  const client = rpcClient(vault, options);
   async function request(method, params) {
-    const line = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
-    const reply = JSON.parse(await run(binary('parc-server'), ['--vault', vault], line + '\n'));
+    const reply = await client.send(method, params);
     if (reply.error?.code === CONFLICT) return { conflict: true, updated_at: reply.error.data?.updated_at ?? null };
     if (reply.error) throw new Error(typeof reply.error.data === 'string' ? reply.error.data : reply.error.message);
     return reply.result;
@@ -125,6 +248,18 @@ function archive(vault) {
       if (changes.tags !== undefined) params.tags = validTags(changes.tags);
       return request('fragment.update', params);
     },
+    // Convert a saved fragment to another enabled schema type, preserving its body and history.
+    async promote(id, type, expected, fields) {
+      const params = { id: validId(id), type: validType(type), ...expectation(expected) };
+      if (fields !== undefined) params.fields = validFields(fields);
+      return request('fragment.promote', params);
+    },
+    attachments: async id => request('fragment.attachments', { id: validId(id) }),
+    async attach(id, filePath) {
+      if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || filePath.length > 4096) throw new Error('Invalid file path');
+      return request('fragment.attach', { id: validId(id), path: filePath });
+    },
+    detach: async (id, filename) => request('fragment.detach', { id: validId(id), filename: validAttachment(filename) }),
     schemas: () => request('schema.list', {}),
     // Vault settings, kept in the vault for everyone who uses it: which types are on, and what each type holds.
     vaultSettings: () => request('settings.get', {}),
@@ -162,10 +297,16 @@ function archive(vault) {
       return request('fragment.archive', { id: validId(id), archived, ...expectation(expected) });
     },
     remove: async id => request('fragment.delete', { id: validId(id) }),     // to the vault's trash
+    trashList: () => request('trash.list', {}),
+    trashPurge: async id => request('trash.purge', id != null ? { id: validId(id) } : {}),
     untrash: async id => request('trash.restore', { id: validId(id) }),
+    doctor: () => request('vault.doctor', {}),
+    reindex: () => request('vault.reindex', {}),
     history: async id => request('history.list', { id: validId(id) }),
     version: async (id, timestamp) => request('history.get', { id: validId(id), timestamp: validStamp(timestamp) }),
-    restoreVersion: async (id, timestamp) => request('history.restore', { id: validId(id), timestamp: validStamp(timestamp) })
+    restoreVersion: async (id, timestamp) => request('history.restore', { id: validId(id), timestamp: validStamp(timestamp) }),
+    close: () => client.close(),
+    pid: () => client.pid()
   };
 }
 

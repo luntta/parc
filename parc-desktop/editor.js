@@ -64,9 +64,44 @@ class WikiHint extends WidgetType {
     return hint;
   }
 }
+// ![[attach:filename]] or ![[attach:filename|label]] shown as an inline image preview or clickable chip.
+class AttachWidget extends WidgetType {
+  constructor(filename, label, info, open) { super(); Object.assign(this, { filename, label, info, open }); }
+  eq(o) { return o.filename === this.filename && o.label === this.label && o.info?.exists === this.info?.exists && o.info?.imageUrl === this.info?.imageUrl; }
+  toDOM() {
+    if (this.info?.imageUrl) {
+      const wrap = document.createElement('span');
+      wrap.className = 'md-attach-figure';
+      const img = document.createElement('img');
+      img.className = 'md-attach-img'; img.src = this.info.imageUrl; img.alt = this.label || this.filename;
+      img.title = `Open ${this.filename}`;
+      img.addEventListener('mousedown', e => { e.preventDefault(); this.open?.(this.filename); });
+      wrap.append(img);
+      if (this.label) {
+        const cap = document.createElement('span');
+        cap.className = 'md-attach-caption'; cap.textContent = this.label;
+        wrap.append(cap);
+      }
+      return wrap;
+    }
+    const chip = document.createElement('span');
+    chip.className = 'md-attach';
+    if (this.info?.exists) {
+      chip.append(icon('paperclip'), this.label || this.filename);
+      chip.title = `Open ${this.filename}`;
+      chip.addEventListener('mousedown', e => { e.preventDefault(); this.open?.(this.filename); });
+    } else {
+      chip.dataset.missing = ''; chip.append(icon('paperclip'), this.label || this.filename);
+      chip.title = `Attachment “${this.filename}” is not attached to this fragment`;
+    }
+    return chip;
+  }
+  ignoreEvent() { return !!this.info?.exists; }
+}
 const refresh = StateEffect.define();
 const CODE = new Set(['InlineCode', 'CodeText', 'FencedCode', 'CodeBlock', 'URL', 'Autolink', 'HTMLTag', 'Comment']);
 const WIKI = /\[\[([0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{4,26})(?:\|([^\]\n]*))?\]\]/g;
+const ATTACH = /!\[\[attach:([^\]\n|]+?)(?:\|([^\]\n]*))?\]\]/g;
 const TAG = /(^|[\s(])(#[\p{L}\p{N}][\p{L}\p{N}_/-]*)/gu;
 
 // ── [[ link completion ──
@@ -205,6 +240,17 @@ function liveMarks(view, links) {
       }
       else ranges.push(Decoration.replace({ widget: new WikiLink(m[1].toUpperCase(), m[2]?.trim(), links.resolve(m[1].toUpperCase()), links.open) }).range(start, end));
     }
+    for (const m of text.matchAll(ATTACH)) {
+      const start = from + m.index, end = start + m[0].length;
+      if (inCode(start)) continue;
+      const filename = m[1].trim(), label = m[2]?.trim() || '';
+      if (active(doc.lineAt(start).number)) {
+        ranges.push(Decoration.mark({ class: 'md-wikisrc' }).range(start, end));
+      } else {
+        const info = links.attachment?.(filename) || null;
+        ranges.push(Decoration.replace({ widget: new AttachWidget(filename, label, info, links.openAttachment) }).range(start, end));
+      }
+    }
     for (const m of text.matchAll(TAG)) {
       const start = from + m.index + m[1].length, end = start + m[2].length;
       if (!inCode(start) && !/^#\d+$/.test(m[2])) ranges.push(Decoration.mark({ class: 'md-tag' }).range(start, end));
@@ -251,22 +297,36 @@ function liveView(getLinks) {
   }, { decorations: v => v.decorations });
 }
 
-// A fragment as it reads, not editable: Go to…'s preview. With a grep pattern, every match is marked and the one
-// at (line, column) stands out; show() returns its range so the caller can scroll to it.
+// A fragment as it reads, not editable: Go to…'s preview and Agent answers. Updates incrementally (appends during
+// streaming, relinks in place) instead of rebuilding EditorState from scratch on every frame. With a grep pattern,
+// every match is marked and the one at (line, column) stands out; show() returns its range so the caller can scroll.
 export function markdownPreview(parent) {
-  let links = NO_LINKS;
+  let links = NO_LINKS, hasHits = false;
+  const hits = new Compartment();
   const base = [EditorView.cspNonce.of('parc-editor'), markdown({ base: markdownLanguage }), liveView(() => links), syntaxHighlighting(style), EditorView.lineWrapping,
-    EditorView.editable.of(false), EditorState.readOnly.of(true), EditorView.contentAttributes.of({ 'aria-label': 'Fragment preview' })];
+    EditorView.editable.of(false), EditorState.readOnly.of(true), EditorView.contentAttributes.of({ 'aria-label': 'Fragment preview' }), hits.of([])];
   const view = new EditorView({ state: EditorState.create({ extensions: base }), parent });
   return {
     show(doc, { links: next = NO_LINKS, pattern = '', line = 0, column = 0 } = {}) {
       links = next;
-      const text = EditorState.create({ doc }).doc, re = pattern ? grepRegex(pattern) : null;
-      const current = re && line ? matchAt(text, line, column, re) : null;
-      view.setState(EditorState.create({ doc: text, extensions: re ? [...base, EditorView.decorations.of(hitMarks(text, re, current))] : base }));
+      const text = String(doc ?? ''), prev = view.state.doc.toString();
+      const changes = text === prev ? undefined : text.startsWith(prev)
+        ? { from: prev.length, insert: text.slice(prev.length) }
+        : { from: 0, to: prev.length, insert: text };
+      if (!pattern) {
+        const effects = hasHits ? [hits.reconfigure([]), refresh.of(null)] : changes ? [] : [refresh.of(null)];
+        hasHits = false;
+        view.dispatch({ ...(changes ? { changes } : {}), ...(effects.length ? { effects } : {}) });
+        return null;
+      }
+      if (changes) view.dispatch({ changes });
+      const re = grepRegex(pattern), current = line ? matchAt(view.state.doc, line, column, re) : null;
+      hasHits = true;
+      view.dispatch({ effects: [hits.reconfigure(EditorView.decorations.of(hitMarks(view.state.doc, re, current))), refresh.of(null)] });
       return current;
     },
-    scrollTo(pos) { view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) }); }
+    scrollTo(pos) { view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) }); },
+    destroy() { view.destroy(); }
   };
 }
 

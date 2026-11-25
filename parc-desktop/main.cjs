@@ -1,15 +1,24 @@
-const { app, BrowserWindow, ipcMain, session, systemPreferences, dialog, nativeTheme, clipboard, globalShortcut, net, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, session, systemPreferences, dialog, nativeTheme, clipboard, globalShortcut, net, shell, safeStorage, protocol } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
 const { watch, readFileSync } = require('node:fs');
 const { pathToFileURL } = require('node:url');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, randomBytes, createHash } = require('node:crypto');
 const { archive, binary, speechConfig, transcribe } = require('./backend.cjs');
+const { draftStore } = require('./drafts.cjs');
 const agent = require('./agent.cjs');
 const copilot = require('./copilot.cjs');
 const models = require('./models.cjs');
 const { LANGUAGES } = require('./languages.cjs');
+
+// Narrow scheme for raster image previews inside opened vaults' attachments/ directories (never arbitrary files).
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'parc-attach', privileges: { standard: true, secure: true, supportFetchAPI: false } }
+]);
+const IMAGE_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif' };
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const safeFile = name => typeof name === 'string' && name.length > 0 && name.length <= 255 && name !== '.' && name !== '..' && !/[/\\\0]/.test(name);
 
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
 const capturePage = pathToFileURL(path.join(__dirname, 'capture.html')).href;
@@ -88,9 +97,45 @@ else app.whenReady().then(() => {
   }
   const ready = () => init ||= initialize().catch(err => { init = undefined; throw err; });
   const label = p => p === vault ? 'Prototype' : p === globalVault ? 'Global' : path.basename(path.dirname(p));
+  // Opaque per-session tokens for opened vaults so parc-attach:// URLs never expose local paths.
+  const tokenToVault = new Map(), vaultToToken = new Map();
+  function tokenFor(p) {
+    if (!vaultToToken.has(p)) { const t = randomBytes(8).toString('hex'); vaultToToken.set(p, t); tokenToVault.set(t, p); }
+    return vaultToToken.get(p);
+  }
+  function dropToken(p) { const t = vaultToToken.get(p); if (t) { vaultToToken.delete(p); tokenToVault.delete(t); } }
+  async function resolveAttachmentFile(vaultPath, id, filename) {
+    if (!stores.has(vaultPath) || !ULID_RE.test(id) || !safeFile(filename)) return null;
+    try {
+      const dir = await fs.realpath(path.join(vaultPath, 'attachments', id));
+      const file = await fs.realpath(path.join(dir, filename));
+      if (!file.startsWith(dir + path.sep)) return null;
+      const stat = await fs.stat(file);
+      return stat.isFile() ? { file, size: stat.size } : null;
+    } catch { return null; }
+  }
+  protocol.handle('parc-attach', async req => {
+    try {
+      const url = new URL(req.url);
+      const vaultPath = tokenToVault.get(url.hostname);
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (!vaultPath || parts.length !== 2) return new Response('Not found', { status: 404 });
+      const id = parts[0], filename = decodeURIComponent(parts[1]);
+      const mime = IMAGE_MIME[path.extname(filename).toLowerCase()];
+      if (!mime) return new Response('Forbidden', { status: 403 });
+      const found = await resolveAttachmentFile(vaultPath, id, filename);
+      if (!found || found.size > 20 * 1024 * 1024) return new Response('Not found', { status: 404 });
+      const bytes = await fs.readFile(found.file);
+      return new Response(bytes, { headers: { 'content-type': mime, 'cache-control': 'private, max-age=60' } });
+    } catch { return new Response('Not found', { status: 404 }); }
+  });
   function vaults() {
-    const entries = [...stores.keys()].map(p => ({ path: p, name: label(p) }));
+    const entries = [...stores.keys()].map(p => ({ path: p, name: label(p), token: tokenFor(p), removable: p !== vault }));
     return entries.map(v => entries.some(other => other !== v && other.name === v.name) ? { ...v, name: path.dirname(v.path) } : v);
+  }
+  async function saveRegistry() {
+    await fs.writeFile(registry + '.tmp', JSON.stringify([...stores.keys()].filter(x => x !== vault)), { mode: 0o600 });
+    await fs.rename(registry + '.tmp', registry);
   }
   // Vaults the app can offer by name. Only parc's own global vault: the machine is never scanned.
   async function suggestions() {
@@ -157,22 +202,97 @@ else app.whenReady().then(() => {
   const captureCommand = [process.execPath, ...(app.isPackaged ? [] : [app.getAppPath()]), QUICK].map(a => /\s/.test(a) ? `"${a}"` : a).join(' ');
   const settingsView = () => ({ ...settings, shortcut, captureCommand });
 
-  // Saves from the CLI, the TUI, another window or a git pull land in fragments/; tell the workspace which vault
-  // changed so it can refresh its list and notice when the open fragment moved on under it.
-  const watchers = new Map();
+  // Saves from the CLI, the TUI, another window or a git pull land in fragments/, schemas/ or config.yml; tell the
+  // workspace which vault changed so it can refresh its list and notice when an open fragment moved on under it.
+  // Writes made by the main workspace itself record the resulting file's SHA-256 hash so its own watcher echo is
+  // suppressed without ever missing an external edit (even one made in the same millisecond).
+  const watchers = new Map(); // vault → { close() }
+  const ownWrites = new Map(); // vault → Map<relPath, { hash: string | null, at: number }>
+  async function fileHash(filePath) {
+    try { return createHash('sha256').update(await fs.readFile(filePath)).digest('hex'); }
+    catch (err) { if (err.code === 'ENOENT') return null; return undefined; }
+  }
+  async function recordOwn(vaultPath, relPath) {
+    if (!ownWrites.has(vaultPath)) ownWrites.set(vaultPath, new Map());
+    const hash = await fileHash(path.join(vaultPath, relPath));
+    if (hash !== undefined) ownWrites.get(vaultPath).set(relPath, { hash, at: Date.now() });
+  }
+  async function isOnlyOwn(vaultPath, changed) {
+    if (!changed.size || changed.has(null)) return false;
+    const known = ownWrites.get(vaultPath);
+    if (!known || !known.size) return false;
+    const now = Date.now();
+    for (const [k, v] of known) if (now - v.at > 5000) known.delete(k);
+    for (const rel of changed) {
+      const entry = known.get(rel);
+      if (!entry) return false;
+      const current = await fileHash(path.join(vaultPath, rel));
+      if (current !== entry.hash) { known.delete(rel); return false; }
+    }
+    return true;
+  }
   function watchVault(p) {
     if (watchers.has(p)) return;
-    let timer;
+    const handles = [];
+    let fragTimer, schemaTimer, closed = false;
+    const pendingFrags = new Set(), pendingSchemas = new Set();
+    const notify = (kind, pending) => {
+      const batch = new Set(pending);
+      pending.clear();
+      isOnlyOwn(p, batch).then(suppress => {
+        if (!suppress && !closed) window?.webContents.send('vault-changed', { vault: p, kind });
+      }, () => { if (!closed) window?.webContents.send('vault-changed', { vault: p, kind }); });
+    };
     try {
-      const watcher = watch(path.join(p, 'fragments'), () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => window?.webContents.send('vault-changed', p), 150);
+      const fw = watch(path.join(p, 'fragments'), (_event, name) => {
+        if (name && (name.startsWith('.') || name.endsWith('.tmp'))) return;
+        pendingFrags.add(name ? `fragments/${name}` : null);
+        clearTimeout(fragTimer);
+        fragTimer = setTimeout(() => notify('fragments', pendingFrags), 150);
       });
-      watcher.on('error', () => { watcher.close(); watchers.delete(p); });
-      watchers.set(p, watcher);
-    } catch { /* no fragments/ yet: the next request to this vault retries */ }
+      fw.on('error', () => { closeAll(); });
+      handles.push(fw);
+    } catch { /* no fragments/ yet: the next request to this vault retries */ return; }
+    try {
+      const sw = watch(path.join(p, 'schemas'), (_event, name) => {
+        if (name && (name.startsWith('.') || name.endsWith('.tmp'))) return;
+        pendingSchemas.add(name ? `schemas/${name}` : null);
+        clearTimeout(schemaTimer);
+        schemaTimer = setTimeout(() => notify('schemas', pendingSchemas), 150);
+      });
+      sw.on('error', () => { sw.close(); });
+      handles.push(sw);
+    } catch { /* optional */ }
+    let cw = null;
+    function watchConfig() {
+      if (closed) return;
+      try {
+        cw = watch(path.join(p, 'config.yml'), event => {
+          pendingSchemas.add('config.yml');
+          clearTimeout(schemaTimer);
+          schemaTimer = setTimeout(() => notify('schemas', pendingSchemas), 150);
+          if (event === 'rename') { cw?.close(); cw = null; setTimeout(watchConfig, 50); }
+        });
+        cw.on('error', () => { cw?.close(); cw = null; });
+      } catch { /* optional */ }
+    }
+    watchConfig();
+    function closeAll() {
+      closed = true;
+      clearTimeout(fragTimer); clearTimeout(schemaTimer);
+      for (const h of handles) { try { h.close(); } catch { /* ignore */ } }
+      try { cw?.close(); } catch { /* ignore */ }
+      watchers.delete(p);
+    }
+    watchers.set(p, { close: closeAll });
   }
-  app.on('will-quit', () => { globalShortcut.unregisterAll(); for (const w of watchers.values()) w.close(); for (const s of toolServers.values()) s.close(); copilotRuntime.stop(); });
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll();
+    for (const w of watchers.values()) w.close();
+    for (const s of stores.values()) s.close();
+    for (const s of toolServers.values()) s.close();
+    copilotRuntime.stop();
+  });
 
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
     callback(trusted(wc) && permission === 'media' && details.mediaTypes?.join() === 'audio');
@@ -207,12 +327,51 @@ else app.whenReady().then(() => {
       const answer = await dialog.showMessageBox(this, { type: 'question', message: 'Open this trusted vault?', detail: `${p}\nSaving fragments may run this vault’s local hooks.`, buttons: ['Cancel', 'Open vault'], cancelId: 0, defaultId: 0 });
       if (!answer.response) return null;
       const next = archive(p);
-      await fs.writeFile(registry + '.tmp', JSON.stringify([...stores.keys(), p].filter(x => x !== vault)), { mode: 0o600 });
-      await fs.rename(registry + '.tmp', registry);
       stores.set(p, next);
+      await saveRegistry();
       watchVault(p);
     }
     return { path: p, vaults: vaults() };
+  });
+  // Create a new .parc vault inside a user-picked folder (or open it if one already exists there).
+  handle('create-vault', async function () {
+    await ready();
+    const choice = await dialog.showOpenDialog(this, {
+      title: 'Choose a folder for the new parc vault',
+      properties: ['openDirectory', 'createDirectory', 'showHiddenFiles']
+    });
+    if (choice.canceled) return null;
+    const folder = await fs.realpath(choice.filePaths[0]);
+    const target = path.basename(folder) === '.parc' ? folder : path.join(folder, '.parc');
+    const exists = await fs.stat(path.join(target, 'config.yml')).then(s => s.isFile(), () => false);
+    if (!stores.has(target)) {
+      const next = archive(target);
+      if (!exists) await next.init();
+      stores.set(target, next);
+      await saveRegistry();
+      watchVault(target);
+    }
+    return { path: target, vaults: vaults(), existed: exists };
+  });
+  // Remove an opened vault from the app's registry without deleting any files on disk.
+  handle('close-vault', async function (p) {
+    await ready();
+    if (!stores.has(p) || p === vault) throw new Error('This vault cannot be removed.');
+    const { response } = await dialog.showMessageBox(this, {
+      message: `Remove “${label(p)}” from parc Capture?`,
+      detail: `${p}\nIts files on disk stay untouched. You can open it again any time.`,
+      buttons: ['Cancel', 'Remove'], cancelId: 0, defaultId: 0
+    });
+    if (response !== 1) return { closed: false, vaults: vaults() };
+    watchers.get(p)?.close();
+    stores.get(p)?.close();
+    stores.delete(p);
+    toolServers.get(p)?.close();
+    toolServers.delete(p);
+    ownWrites.delete(p);
+    dropToken(p);
+    await saveRegistry();
+    return { closed: true, vaults: vaults() };
   });
   // Leaving unsaved work: 'save', 'discard' or 'cancel'. Save is offered only when the draft can be saved.
   handle('discard', async function ({ title = '', canSave = false } = {}) {
@@ -239,30 +398,131 @@ else app.whenReady().then(() => {
   handle('note', (p, id) => store(p).get(id));
   handle('grep', (p, pattern) => store(p).grep(pattern));
   handle('recall', (p, seed) => store(p).recall(seed));
-  handle('save', (p, data) => store(p).save(data));
-  handle('update', (p, id, changes, expected) => store(p).update(id, changes, expected));
-  handle('archive', (p, id, archived, expected) => store(p).archive(id, archived, expected));
+  handle('save', async function (p, data) {
+    const res = await store(p).save(data);
+    if (this === window && !res?.conflict && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
+    return res;
+  });
+  handle('update', async function (p, id, changes, expected) {
+    const res = await store(p).update(id, changes, expected);
+    if (this === window && !res?.conflict && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
+    return res;
+  });
+  handle('promote', async function (p, id, type, expected, fields) {
+    const res = await store(p).promote(id, type, expected, fields);
+    if (this === window && !res?.conflict && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
+    return res;
+  });
+  handle('attachments', (p, id) => store(p).attachments(id));
+  handle('pick-attachment', async function (p, id) {
+    const choice = await dialog.showOpenDialog(this, { title: 'Attach files to fragment', properties: ['openFile', 'multiSelections'] });
+    if (choice.canceled || !choice.filePaths.length) return null;
+    const attached = [], errors = [];
+    let last = null;
+    for (const filePath of choice.filePaths) {
+      try {
+        last = await store(p).attach(id, filePath);
+        attached.push(last.filename);
+      } catch (err) { errors.push(`${path.basename(filePath)}: ${err.message}`); }
+    }
+    if (this === window && last?.id) await recordOwn(p, `fragments/${last.id}.md`);
+    return { attached, errors, attachments: last?.attachments ?? null, revision: last?.revision ?? null };
+  });
+  handle('attach-bytes', async function (p, id, { name = 'attachment.bin', bytes } = {}) {
+    if (!(bytes instanceof Uint8Array) || !bytes.byteLength || bytes.byteLength > 25 * 1024 * 1024) {
+      throw new Error('Attachments must be between 1 byte and 25 MB.');
+    }
+    const clean = path.basename(String(name || 'attachment.bin')).replace(/[/\\\0<>:"|?*\x00-\x1f]/g, '_').trim() || 'attachment.bin';
+    const existing = new Set((await store(p).attachments(id)).map(a => a.filename));
+    const ext = path.extname(clean), stem = clean.slice(0, clean.length - ext.length) || 'attachment';
+    let finalName = clean;
+    for (let n = 2; existing.has(finalName) && n < 1000; n++) finalName = `${stem}-${n}${ext}`;
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-attach-'));
+    const tmpFile = path.join(dir, finalName);
+    try {
+      await fs.writeFile(tmpFile, bytes, { mode: 0o600 });
+      const res = await store(p).attach(id, tmpFile);
+      if (this === window && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
+      return res;
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
+  handle('detach', async function (p, id, filename) {
+    if (!safeFile(filename)) throw new Error('Invalid attachment filename');
+    const { response } = await dialog.showMessageBox(this, {
+      message: `Remove attachment “${filename.slice(0, 80)}”?`,
+      detail: 'The attached file is deleted from this fragment’s attachments folder.',
+      buttons: ['Cancel', 'Remove'], cancelId: 0, defaultId: 0
+    });
+    if (response !== 1) return { detached: false };
+    const res = await store(p).detach(id, filename);
+    if (this === window && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
+    return res;
+  });
+  handle('open-attachment', async (p, id, filename) => {
+    const found = await resolveAttachmentFile(p, id, filename);
+    if (!found) throw new Error('Attachment not found.');
+    const err = await shell.openPath(found.file);
+    if (err) throw new Error(err);
+  });
+  handle('archive', async function (p, id, archived, expected) {
+    const res = await store(p).archive(id, archived, expected);
+    if (this === window && !res?.conflict && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
+    return res;
+  });
   // Asks first; resolves { deleted } so the workspace can offer Undo.
   handle('delete', async function (p, id, title = '') {
     const name = String(title).trim().slice(0, 80) || 'this fragment';
     const { response } = await dialog.showMessageBox(this, {
-      message: `Move “${name}” to the trash?`, detail: 'It leaves the vault’s lists and searches. Undo brings it back, as does parc trash --restore.',
+      message: `Move “${name}” to the trash?`, detail: 'It leaves the vault’s lists and searches. Undo brings it back, or restore it from Trash.',
       buttons: ['Cancel', 'Move to trash'], cancelId: 0, defaultId: 0
     });
     if (response !== 1) return { deleted: false };
     await store(p).remove(id);
+    if (this === window) await recordOwn(p, `fragments/${id}.md`);
     return { deleted: true };
   });
-  handle('untrash', (p, id) => store(p).untrash(id));
+  handle('trash-list', p => store(p).trashList());
+  handle('trash-purge', async function (p, id = null, title = '') {
+    const single = id != null;
+    const name = String(title).trim().slice(0, 80) || 'this fragment';
+    const { response } = await dialog.showMessageBox(this, {
+      type: 'warning',
+      message: single ? `Delete “${name}” permanently?` : `Empty trash in ${label(p)}?`,
+      detail: 'This cannot be undone.',
+      buttons: ['Cancel', single ? 'Delete permanently' : 'Empty trash'], cancelId: 0, defaultId: 0
+    });
+    if (response !== 1) return { purged: false };
+    const res = await store(p).trashPurge(id);
+    return { purged: true, ...res };
+  });
+  handle('untrash', async function (p, id) {
+    const res = await store(p).untrash(id);
+    if (this === window && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
+    return res;
+  });
+  handle('doctor', p => store(p).doctor());
+  handle('reindex', p => store(p).reindex());
   handle('history', (p, id) => store(p).history(id));
   handle('version', (p, id, timestamp) => store(p).version(id, timestamp));
-  handle('restore-version', (p, id, timestamp) => store(p).restoreVersion(id, timestamp));
+  handle('restore-version', async function (p, id, timestamp) {
+    const res = await store(p).restoreVersion(id, timestamp);
+    if (this === window) await recordOwn(p, `fragments/${id}.md`);
+    return res;
+  });
   handle('schemas', p => store(p).schemas());
   handle('vault-settings', p => store(p).vaultSettings());
-  handle('update-vault-settings', (p, changes) => store(p).updateVaultSettings(changes));
+  handle('update-vault-settings', async function (p, changes) {
+    const res = await store(p).updateVaultSettings(changes);
+    if (this === window) await recordOwn(p, 'config.yml');
+    return res;
+  });
   handle('schema-usage', (p, type) => store(p).schemaUsage(type));
   handle('builtin-schema', (p, type) => store(p).builtinSchema(type));
-  handle('save-schema', (p, data) => store(p).saveSchema(data));
+  handle('save-schema', async function (p, data) {
+    const res = await store(p).saveSchema(data);
+    if (this === window && res?.schema?.name) await recordOwn(p, `schemas/${res.schema.name}.yml`);
+    return res;
+  });
   // Asks first; resolves { deleted }. The server refuses a type that still has fragments.
   handle('delete-schema', async function (p, type) {
     const name = String(type).slice(0, 64);
@@ -271,7 +531,30 @@ else app.whenReady().then(() => {
       buttons: ['Cancel', 'Delete type'], cancelId: 0, defaultId: 0
     });
     if (response !== 1) return { deleted: false };
-    return store(p).deleteSchema(type);
+    const res = await store(p).deleteSchema(type);
+    if (this === window && res?.deleted) await recordOwn(p, `schemas/${type}.yml`);
+    return res;
+  });
+
+  // ── Drafts: unsaved tab text kept on disk (userData/drafts/) instead of bloating localStorage ──
+  const drafts = draftStore(path.join(app.getPath('userData'), 'drafts'));
+  handle('save-draft', (id, draft) => drafts.save(id, draft));
+  handle('load-draft', id => drafts.load(id));
+  handle('delete-draft', id => drafts.remove(id));
+  handle('prune-drafts', keepIds => drafts.prune(keepIds));
+  // Synchronous flush on beforeunload so a reload or quit never loses keystrokes still in the debounce window.
+  ipcMain.on('flush-drafts', (event, entries) => {
+    if (!trusted(event.sender) || event.senderFrame !== event.sender.mainFrame) { event.returnValue = false; return; }
+    try {
+      if (Array.isArray(entries)) {
+        for (const entry of entries.slice(0, 64)) {
+          if (!entry || typeof entry.id !== 'string') continue;
+          if (entry.draft == null) drafts.removeSync(entry.id);
+          else drafts.saveSync(entry.id, entry.draft);
+        }
+      }
+      event.returnValue = true;
+    } catch { event.returnValue = false; }
   });
   handle('links', p => store(p).links());
   handle('copy-text', text => { clipboard.writeText(String(text).slice(0, 10000)); });

@@ -2,11 +2,16 @@ const { contextBridge, ipcRenderer } = require('electron');
 const invoke = channel => (...args) => ipcRenderer.invoke(channel, ...args);
 contextBridge.exposeInMainWorld('parc', {
   vaults: invoke('vaults'), suggestedVaults: invoke('suggested-vaults'), openVault: invoke('open-vault'),
+  createVault: invoke('create-vault'), closeVault: invoke('close-vault'),
   discard: invoke('discard'), conflict: invoke('conflict'),
-  list: invoke('list'), grep: invoke('grep'), recall: invoke('recall'), note: invoke('note'), save: invoke('save'), update: invoke('update'),
-  archive: invoke('archive'), remove: invoke('delete'), untrash: invoke('untrash'),
+  list: invoke('list'), grep: invoke('grep'), recall: invoke('recall'), note: invoke('note'), save: invoke('save'), update: invoke('update'), promote: invoke('promote'),
+  attachments: invoke('attachments'), pickAttachment: invoke('pick-attachment'), attachBytes: invoke('attach-bytes'), detach: invoke('detach'), openAttachment: invoke('open-attachment'),
+  archive: invoke('archive'), remove: invoke('delete'), untrash: invoke('untrash'), trashList: invoke('trash-list'), trashPurge: invoke('trash-purge'),
+  doctor: invoke('doctor'), reindex: invoke('reindex'),
   history: invoke('history'), version: invoke('version'), restoreVersion: invoke('restore-version'),
   schemas: invoke('schemas'), links: invoke('links'),
+  saveDraft: invoke('save-draft'), loadDraft: invoke('load-draft'), deleteDraft: invoke('delete-draft'), pruneDrafts: invoke('prune-drafts'),
+  flushDrafts: entries => ipcRenderer.sendSync('flush-drafts', entries),
   vaultSettings: invoke('vault-settings'), updateVaultSettings: invoke('update-vault-settings'),
   schemaUsage: invoke('schema-usage'), builtinSchema: invoke('builtin-schema'), saveSchema: invoke('save-schema'), deleteSchema: invoke('delete-schema'), copyText: invoke('copy-text'), openCapture: invoke('open-capture'),
   settings: invoke('settings'), saveSettings: invoke('save-settings'), previewTheme: invoke('preview-theme'), pickFile: invoke('pick-file'),

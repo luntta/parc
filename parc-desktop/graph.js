@@ -1,6 +1,13 @@
-// The whole vault as a graph: a force layout computed once (no animation), drawn as SVG, then panned and
-// zoomed by moving the viewBox. Nodes and labels counter-scale, so they keep their size at any zoom.
+// The whole vault as a graph: a force layout computed off the UI thread for large vaults (no animation),
+// drawn as SVG for accessible small/medium graphs (with O(1) CSS-variable counter-scaling on pan/zoom)
+// and as a high-DPI Canvas above CANVAS_THRESHOLD nodes so 10,000-node vaults stay at 60 fps.
+import { layout, ring } from './graph-layout.mjs';
+export { layout };
+
 const NS = 'http://www.w3.org/2000/svg';
+const WORKER_THRESHOLD = 120;
+const CANVAS_THRESHOLD = 600;
+
 function svg(tag, attrs = {}) {
   const node = document.createElementNS(NS, tag);
   for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
@@ -13,63 +20,32 @@ function html(tag, className = '', text) {
   return node;
 }
 
-// Links pull to `distance`, every pair repels, and a weak pull to the origin keeps components together.
-// Starts on a sunflower spiral, so the same vault always lays out the same way. O(n²) per tick: ticks
-// shrink as the graph grows to keep a large vault under a second.
-export function layout(nodes, links, { distance = 64, charge = -150, gravity = 0.05 } = {}) {
-  const n = nodes.length;
-  nodes.forEach((d, i) => {
-    const r = 12 * Math.sqrt(i + 0.5), a = i * Math.PI * (3 - Math.sqrt(5));
-    d.x = r * Math.cos(a); d.y = r * Math.sin(a); d.vx = 0; d.vy = 0;
-  });
-  if (n < 2) return nodes;
-  const at = new Map(nodes.map(d => [d.key, d]));
-  const degree = new Map();
-  for (const l of links) for (const k of [l.source, l.target]) degree.set(k, (degree.get(k) || 0) + 1);
-  const pairs = links.map(l => [at.get(l.source), at.get(l.target)]).filter(([s, t]) => s && t);
-  const ticks = Math.max(80, Math.min(300, Math.round(3e7 / (n * n))));
-  const decay = 1 - Math.pow(0.001, 1 / ticks);
-  let alpha = 1;
-  for (let tick = 0; tick < ticks; tick++) {
-    alpha -= alpha * decay;
-    for (const [s, t] of pairs) {
-      const ds = degree.get(s.key), dt = degree.get(t.key);
-      let dx = t.x + t.vx - s.x - s.vx, dy = t.y + t.vy - s.y - s.vy;
-      const d = Math.hypot(dx, dy) || 1e-6, k = (d - distance) / d * alpha / Math.min(ds, dt);
-      dx *= k; dy *= k;
-      const bias = ds / (ds + dt);
-      t.vx -= dx * bias; t.vy -= dy * bias; s.vx += dx * (1 - bias); s.vy += dy * (1 - bias);
+// One shared layout worker, started lazily on the first large graph.
+let worker = null, workerSeq = 0;
+const workerJobs = new Map();
+function computeAsync(linkedKeys, looseKeys, links) {
+  if (typeof Worker === 'undefined') return null;
+  try {
+    if (!worker) {
+      worker = new Worker('dist/graph-worker.js');
+      worker.onmessage = ({ data }) => {
+        const job = workerJobs.get(data.id);
+        if (!job) return;
+        workerJobs.delete(data.id);
+        job.resolve(data.coords);
+      };
+      worker.onerror = err => {
+        for (const job of workerJobs.values()) job.reject(err);
+        workerJobs.clear();
+        worker = null;
+      };
     }
-    for (let i = 0; i < n; i++) {
-      const a = nodes[i];
-      for (let j = i + 1; j < n; j++) {
-        const b = nodes[j];
-        let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
-        if (d2 > 250000) continue;
-        if (d2 < 1e-9) { dx = (i - j) * 1e-3; dy = 1e-3; d2 = dx * dx + dy * dy; }
-        const w = charge * alpha / Math.max(d2, 1);
-        a.vx += dx * w; a.vy += dy * w; b.vx -= dx * w; b.vy -= dy * w;
-      }
-    }
-    for (const d of nodes) {
-      d.vx -= d.x * gravity * alpha; d.vy -= d.y * gravity * alpha;
-      d.x += (d.vx *= 0.6); d.y += (d.vy *= 0.6);
-    }
-  }
-  return nodes;
-}
-
-// Fragments without links go round the outside in rings, in list order, instead of into the simulation.
-function ring(nodes, around) {
-  let r = Math.max(60, ...around.map(d => Math.hypot(d.x, d.y))) + 70, i = 0;
-  while (i < nodes.length) {
-    const room = Math.max(8, Math.floor(2 * Math.PI * r / 26)), count = Math.min(room, nodes.length - i);
-    for (let j = 0; j < count; j++, i++) {
-      const a = -Math.PI / 2 + j / count * 2 * Math.PI;
-      nodes[i].x = Math.cos(a) * r; nodes[i].y = Math.sin(a) * r;
-    }
-    r += 30;
-  }
+    const id = ++workerSeq;
+    return new Promise((resolve, reject) => {
+      workerJobs.set(id, { resolve, reject });
+      worker.postMessage({ id, linked: linkedKeys, loose: looseKeys, links });
+    });
+  } catch { return null; }
 }
 
 /**
@@ -118,66 +94,244 @@ export function vaultGraph(rows, edges, o) {
   tools.append(fitButton);
   bar.append(tools);
 
-  const canvas = html('div', 'vg-canvas'), drawing = svg('svg', { class: 'vg', role: 'group', 'aria-label': 'Fragment graph. Tab to a fragment and press Enter to open it.' });
+  const canvasWrap = html('div', 'vg-canvas');
+  const drawing = svg('svg', { class: 'vg', role: 'group', 'aria-label': 'Fragment graph. Tab to a fragment and press Enter to open it.' });
   const edgeLayer = svg('g', { class: 'vg-edges', 'aria-hidden': 'true' }), nodeLayer = svg('g', { class: 'vg-nodes' });
   drawing.append(edgeLayer, nodeLayer);
-  canvas.append(drawing);
-  root.append(canvas);
+  const paintCanvas = html('canvas', 'vg vg-bitmap');
+  paintCanvas.hidden = true;
+  paintCanvas.setAttribute('role', 'img');
+  paintCanvas.setAttribute('aria-label', 'Fragment graph. Drag to pan, scroll to zoom, click a node to open it.');
+  const busyNote = html('p', 'vg-busy', 'Laying out graph…');
+  busyNote.hidden = true;
+  canvasWrap.append(drawing, paintCanvas, busyNote);
+  root.append(canvasWrap);
 
-  let nodes = [], view = null, width = 0, height = 0, scale = 1, fitted = 1;
+  let nodes = [], edgePairs = [], view = null, width = 0, height = 0, scale = 1, lastScale = 0, fitted = 1;
+  let useCanvas = false, focusedKey = null, buildSeq = 0, raf = 0;
   const hub = Math.max(3, [...adjacent.values()].map(s => s.size).sort((a, b) => b - a)[Math.floor(adjacent.size * 0.12)] || 0);
-  function build() {
-    nodes = linked.map(r => ({ key: o.key(r), row: r }));
-    layout(nodes, links);
-    if (showLoose) { const outer = loose.map(r => ({ key: o.key(r), row: r })); ring(outer, nodes); nodes = nodes.concat(outer); }
+
+  function mountNodes() {
+    useCanvas = nodes.length > CANVAS_THRESHOLD;
+    drawing.hidden = useCanvas;
+    paintCanvas.hidden = !useCanvas;
     const at = new Map(nodes.map(d => [d.key, d]));
-    edgeLayer.replaceChildren(...links.map(l => {
-      const a = at.get(l.source), b = at.get(l.target);
+    edgePairs = links.map(l => [at.get(l.source), at.get(l.target)]).filter(([a, b]) => a && b);
+    for (const d of nodes) {
+      d.degree = adjacent.get(d.key)?.size || 0;
+      d.r = 3.5 + Math.sqrt(d.degree) * 1.6;
+      d.name = o.label(d.row);
+      d.short = d.name.length > 48 ? `${d.name.slice(0, 47)}…` : d.name;
+      d.isSettled = !!o.settled(d.row);
+      d.isCurrent = d.key === o.current;
+      d.isHub = d.degree >= hub;
+    }
+    if (useCanvas) {
+      edgeLayer.replaceChildren();
+      nodeLayer.replaceChildren();
+      return;
+    }
+    edgeLayer.replaceChildren(...edgePairs.map(([a, b]) => {
       const line = svg('line', { x1: a.x.toFixed(1), y1: a.y.toFixed(1), x2: b.x.toFixed(1), y2: b.y.toFixed(1) });
-      line.dataset.a = l.source; line.dataset.b = l.target;
+      line.dataset.a = a.key; line.dataset.b = b.key;
       return line;
     }));
     nodeLayer.replaceChildren(...nodes.map(d => {
-      const degree = adjacent.get(d.key)?.size || 0, r = 3.5 + Math.sqrt(degree) * 1.6, name = o.label(d.row);
-      const g = svg('g', { class: 'vg-node', tabindex: '0', role: 'button', 'aria-label': `${name}. ${o.describe(d.row)}. ${degree} ${degree === 1 ? 'link' : 'links'}.` });
-      g.dataset.key = d.key; g.dataset.x = d.x.toFixed(1); g.dataset.y = d.y.toFixed(1);
-      if (o.settled(d.row)) g.classList.add('settled');
-      if (d.key === o.current) g.classList.add('current');
-      if (degree >= hub) g.classList.add('hub');
-      const label = svg('text', { x: (r + 5).toFixed(1), dy: '0.35em' });
-      label.textContent = name.length > 48 ? `${name.slice(0, 47)}…` : name;
-      g.append(svg('circle', { r: r.toFixed(1) }), label);
+      const g = svg('g', {
+        class: 'vg-node', tabindex: '0', role: 'button',
+        transform: `translate(${d.x.toFixed(1)} ${d.y.toFixed(1)})`,
+        'aria-label': `${d.name}. ${o.describe(d.row)}. ${d.degree} ${d.degree === 1 ? 'link' : 'links'}.`
+      });
+      g.dataset.key = d.key;
+      if (d.isSettled) g.classList.add('settled');
+      if (d.isCurrent) g.classList.add('current');
+      if (d.isHub) g.classList.add('hub');
+      const glyph = svg('g', { class: 'vg-glyph' });
+      const label = svg('text', { x: (d.r + 5).toFixed(1), dy: '0.35em' });
+      label.textContent = d.short;
+      glyph.append(svg('circle', { r: d.r.toFixed(1) }), label);
+      g.append(glyph);
       return g;
     }));
+    lastScale = 0;
   }
-  function apply() {
-    drawing.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
+
+  function build() {
+    const seq = ++buildSeq;
+    const base = linked.map(r => ({ key: o.key(r), row: r }));
+    const extras = showLoose ? loose.map(r => ({ key: o.key(r), row: r })) : [];
+    const job = base.length > WORKER_THRESHOLD ? computeAsync(base.map(d => d.key), extras.map(d => d.key), links) : null;
+    if (!job) {
+      layout(base, links);
+      if (extras.length) ring(extras, base);
+      nodes = base.concat(extras);
+      busyNote.hidden = true;
+      mountNodes();
+      if (width && height) fit();
+      return;
+    }
+    busyNote.hidden = false;
+    job.then(coords => {
+      if (seq !== buildSeq || !root.isConnected) return;
+      const all = base.concat(extras);
+      for (let i = 0; i < all.length; i++) { all[i].x = coords[i * 2]; all[i].y = coords[i * 2 + 1]; }
+      nodes = all;
+      busyNote.hidden = true;
+      mountNodes();
+      if (width && height) fit();
+    }, () => {
+      if (seq !== buildSeq || !root.isConnected) return;
+      layout(base, links);
+      if (extras.length) ring(extras, base);
+      nodes = base.concat(extras);
+      busyNote.hidden = true;
+      mountNodes();
+      if (width && height) fit();
+    });
+  }
+
+  // Paint the high-DPI Canvas for graphs above CANVAS_THRESHOLD nodes.
+  function drawCanvas() {
+    if (!width || !height || !view) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const pw = Math.round(width * dpr), ph = Math.round(height * dpr);
+    if (paintCanvas.width !== pw || paintCanvas.height !== ph) { paintCanvas.width = pw; paintCanvas.height = ph; }
+    const ctx = paintCanvas.getContext('2d');
+    if (!ctx) return;
+    const cs = getComputedStyle(canvasWrap);
+    const fg = cs.getPropertyValue('--aihio-color-page-fg').trim() || '#111';
+    const bg = cs.getPropertyValue('--aihio-color-surface-bg').trim() || '#fff';
+    const muted = cs.getPropertyValue('--muted').trim() || '#666';
+    const ringColor = cs.getPropertyValue('--aihio-color-focus-ring').trim() || '#2563eb';
+    const font = cs.fontFamily || 'Inter, sans-serif';
+    const inv = 1 / scale, near = focusedKey ? adjacent.get(focusedKey) : null;
+    const toX = x => (x - view.x) * inv, toY = y => (y - view.y) * inv;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    // Edges: quiet pass, then highlighted pass if a node is focused.
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = fg;
+    ctx.globalAlpha = focusedKey ? 0.08 : 0.22;
+    ctx.beginPath();
+    for (const [a, b] of edgePairs) {
+      if (focusedKey && (a.key === focusedKey || b.key === focusedKey)) continue;
+      const x1 = toX(a.x), y1 = toY(a.y), x2 = toX(b.x), y2 = toY(b.y);
+      if ((x1 < -20 && x2 < -20) || (x1 > width + 20 && x2 > width + 20) || (y1 < -20 && y2 < -20) || (y1 > height + 20 && y2 > height + 20)) continue;
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+    }
+    ctx.stroke();
+
+    if (focusedKey) {
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      for (const [a, b] of edgePairs) {
+        if (a.key !== focusedKey && b.key !== focusedKey) continue;
+        ctx.moveTo(toX(a.x), toY(a.y)); ctx.lineTo(toX(b.x), toY(b.y));
+      }
+      ctx.stroke();
+    }
+
+    // Nodes
+    const zoomNear = scale < fitted / 1.5;
+    const labels = [];
+    for (const d of nodes) {
+      const x = toX(d.x), y = toY(d.y);
+      if (x < -40 || x > width + 40 || y < -40 || y > height + 40) continue;
+      const lit = !focusedKey || d.key === focusedKey || !!near?.has(d.key);
+      ctx.globalAlpha = lit ? 1 : 0.25;
+      ctx.beginPath();
+      ctx.arc(x, y, d.r, 0, Math.PI * 2);
+      ctx.fillStyle = d.isSettled ? bg : fg;
+      ctx.fill();
+      ctx.lineWidth = d.isCurrent ? 3 : 1.5;
+      ctx.strokeStyle = d.isCurrent ? ringColor : d.isSettled ? muted : bg;
+      ctx.stroke();
+      if (d.isHub || d.isCurrent || (focusedKey && lit) || zoomNear) labels.push([d, x, y, lit]);
+    }
+
+    // Labels (capped to keep zoomed-out dense clusters readable)
+    if (labels.length) {
+      ctx.font = `12px ${font}`;
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = bg;
+      const maxLabels = zoomNear ? 180 : 60;
+      for (let i = 0; i < labels.length && i < maxLabels; i++) {
+        const [d, x, y, lit] = labels[i];
+        ctx.globalAlpha = lit ? 1 : 0.25;
+        ctx.fillStyle = d.isSettled ? muted : fg;
+        ctx.strokeText(d.short, x + d.r + 5, y);
+        ctx.fillText(d.short, x + d.r + 5, y);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function applyNow() {
+    raf = 0;
+    if (!view || !width) return;
     scale = view.w / width;
-    for (const g of nodeLayer.children) g.setAttribute('transform', `translate(${g.dataset.x} ${g.dataset.y}) scale(${scale})`);
-    // A small graph is labelled throughout; a large one labels its hubs until you zoom in past the fit.
-    root.dataset.zoom = nodes.length <= 40 || scale < fitted / 1.5 ? 'near' : 'far';
+    if (useCanvas) { drawCanvas(); return; }
+    drawing.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
+    // O(1) zoom scaling: a single CSS variable scales every .vg-glyph without looping over SVG nodes.
+    if (scale !== lastScale) {
+      lastScale = scale;
+      nodeLayer.style.setProperty('--vg-scale', String(scale));
+      root.dataset.zoom = nodes.length <= 40 || scale < fitted / 1.5 ? 'near' : 'far';
+    }
   }
+  function scheduleApply() { if (!raf) raf = requestAnimationFrame(applyNow); }
+
   function fit() {
     if (!width || !nodes.length) return;
-    const xs = nodes.map(d => d.x), ys = nodes.map(d => d.y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const d of nodes) {
+      if (d.x < minX) minX = d.x; if (d.x > maxX) maxX = d.x;
+      if (d.y < minY) minY = d.y; if (d.y > maxY) maxY = d.y;
+    }
     // Labels hang to the right of their nodes, so the right margin is wider than the left.
     const left = 32, right = 220, k = Math.min(1.6, (width - left - right) / Math.max(maxX - minX, 1), (height - 64) / Math.max(maxY - minY, 1));
     view = { w: width / k, h: height / k };
     view.x = minX - (left + (width - left - right - (maxX - minX) * k) / 2) / k; view.y = (minY + maxY) / 2 - view.h / 2;
     fitted = 1 / k;
-    apply();
+    applyNow();
   }
-  new ResizeObserver(([entry]) => {
+  const ro = new ResizeObserver(([entry]) => {
+    if (!root.isConnected) { ro.disconnect(); return; }
     const { width: w, height: h } = entry.contentRect;
     if (!w || !h) return;
-    if (view) { view.w *= w / width; view.h *= h / height; width = w; height = h; apply(); }
-    else { width = w; height = h; fit(); }
-  }).observe(canvas);
+    if (view) { view.w *= w / width; view.h *= h / height; width = w; height = h; applyNow(); }
+    else { width = w; height = h; if (nodes.length) fit(); }
+  });
+  ro.observe(canvasWrap);
+
+  // Hit-test a pointer position against Canvas nodes (nearest node within its screen radius + 4 px).
+  function hitCanvas(clientX, clientY) {
+    if (!useCanvas || !view) return null;
+    const box = paintCanvas.getBoundingClientRect();
+    const sx = clientX - box.left, sy = clientY - box.top, inv = 1 / scale;
+    let best = null, bestD2 = Infinity;
+    for (const d of nodes) {
+      const dx = (d.x - view.x) * inv - sx, dy = (d.y - view.y) * inv - sy;
+      const hitR = d.r + 4, d2 = dx * dx + dy * dy;
+      if (d2 <= hitR * hitR && d2 < bestD2) { best = d; bestD2 = d2; }
+    }
+    return best;
+  }
 
   // Highlight a node with its neighbours and the links between them.
   function focus(key) {
+    if (focusedKey === key) return;
+    focusedKey = key;
     root.toggleAttribute('data-focus', !!key);
+    if (useCanvas) {
+      paintCanvas.style.cursor = key ? 'pointer' : '';
+      scheduleApply();
+      return;
+    }
     const near = key ? adjacent.get(key) : null;
     for (const g of nodeLayer.children) g.classList.toggle('lit', !!key && (g.dataset.key === key || !!near?.has(g.dataset.key)));
     for (const l of edgeLayer.children) l.classList.toggle('lit', !!key && (l.dataset.a === key || l.dataset.b === key));
@@ -193,42 +347,53 @@ export function vaultGraph(rows, edges, o) {
 
   // Drag to pan, wheel to zoom about the pointer, click a node to open it.
   let drag = null;
-  canvas.addEventListener('pointerdown', e => {
+  canvasWrap.addEventListener('pointerdown', e => {
     if (e.button !== 0 || !view) return;
-    drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, node: e.target.closest('.vg-node'), moved: false };
-    canvas.setPointerCapture(e.pointerId);
+    const hitKey = useCanvas ? hitCanvas(e.clientX, e.clientY)?.key ?? null : e.target.closest('.vg-node')?.dataset.key ?? null;
+    drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, key: hitKey, moved: false };
+    canvasWrap.setPointerCapture(e.pointerId);
   });
-  canvas.addEventListener('pointermove', e => {
-    if (!drag) return;
+  canvasWrap.addEventListener('pointermove', e => {
+    if (!drag) {
+      if (useCanvas) focus(hitCanvas(e.clientX, e.clientY)?.key ?? null);
+      return;
+    }
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (!drag.moved && Math.hypot(dx, dy) < 4) return;
     drag.moved = true; root.dataset.panning = '';
-    view.x = drag.vx - dx * scale; view.y = drag.vy - dy * scale; apply();
+    view.x = drag.vx - dx * scale; view.y = drag.vy - dy * scale;
+    scheduleApply();
   });
   const release = e => {
     if (!drag) return;
-    const { node, moved } = drag;
+    const { key, moved } = drag;
     drag = null; delete root.dataset.panning;
-    if (e.type === 'pointerup' && node && !moved) o.open(byKey.get(node.dataset.key), e);
+    if (e.type === 'pointerup' && key && !moved) o.open(byKey.get(key), e);
   };
-  canvas.addEventListener('pointerup', release);
-  canvas.addEventListener('pointercancel', release);
-  canvas.addEventListener('wheel', e => {
+  canvasWrap.addEventListener('pointerup', release);
+  canvasWrap.addEventListener('pointercancel', release);
+  canvasWrap.addEventListener('pointerleave', () => { if (useCanvas && !drag) focus(null); });
+  canvasWrap.addEventListener('wheel', e => {
     if (!view) return;
     e.preventDefault();
-    const box = drawing.getBoundingClientRect(), px = (e.clientX - box.left) / box.width, py = (e.clientY - box.top) / box.height;
+    const box = canvasWrap.getBoundingClientRect(), px = (e.clientX - box.left) / box.width, py = (e.clientY - box.top) / box.height;
     const k = Math.min(6 * width / view.w, Math.max(0.15 * width / view.w, Math.exp(e.deltaY * (e.deltaMode ? 0.05 : 0.0015))));
     const w = view.w * k, h = view.h * k;
     view.x += (view.w - w) * px; view.y += (view.h - h) * py; view.w = w; view.h = h;
-    apply();
+    scheduleApply();
   }, { passive: false });
+
+  // Redraw Canvas when system/app theme flips.
+  const scheme = window.matchMedia?.('(prefers-color-scheme: dark)');
+  const onScheme = () => { if (!root.isConnected) scheme?.removeEventListener?.('change', onScheme); else if (useCanvas) scheduleApply(); };
+  scheme?.addEventListener?.('change', onScheme);
 
   fitButton.addEventListener('click', fit);
   looseToggle?.addEventListener('click', () => {
     showLoose = !showLoose;
     looseLabel.textContent = showLoose ? 'Hide unlinked' : `Show ${loose.length.toLocaleString()} unlinked`;
     looseToggle.setAttribute('aria-pressed', String(showLoose));
-    build(); fit();
+    build();
   });
   build();
   return root;

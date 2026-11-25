@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'nonce-parc-editor'; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self' 'nonce-parc-editor'; font-src 'self'; img-src 'self' parc-attach:; connect-src 'none'; base-uri 'none'; form-action 'none'">
   <title>parc</title>
   <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="node_modules/@luntta/aihio/dist/aihio.css"><link rel="stylesheet" href="style.css">
@@ -67,6 +67,7 @@
         <aihio-dropdown id="fragmentMenu" align="end" hidden>
           <aihio-button slot="trigger" variant="ghost" size="icon" aria-label="Fragment actions" title="Fragment actions"><i data-icon="more" class="icon"></i></aihio-button>
           <aihio-dropdown-item value="history"><i data-icon="history" class="icon"></i><span>History</span></aihio-dropdown-item>
+          <aihio-dropdown-item value="attach"><i data-icon="paperclip" class="icon"></i><span>Attach file…</span></aihio-dropdown-item>
           <aihio-dropdown-item value="copy"><i data-icon="copy" class="icon"></i><span>Copy link</span></aihio-dropdown-item>
           <aihio-dropdown-item value="archive"><i data-icon="archive" class="icon"></i><span id="archiveLabel">Archive</span></aihio-dropdown-item>
           <aihio-dropdown-separator></aihio-dropdown-separator>
@@ -94,6 +95,10 @@
           <label class="sr" for="title">Fragment title</label>
           <textarea id="title" class="doc-title" rows="1" placeholder="Untitled" autocomplete="off"></textarea>
           <div id="draft" class="draft"></div>
+          <section id="docAttachments" class="doc-attachments" aria-labelledby="docAttachmentsTitle" hidden>
+            <h2 id="docAttachmentsTitle" class="section-label">Attachments<small id="docAttachmentsNote"></small></h2>
+            <div id="docAttachmentsBody"></div>
+          </section>
           <section id="docGraph" class="doc-graph" aria-labelledby="docGraphTitle" hidden>
             <h2 id="docGraphTitle" class="section-label">Graph<small id="docGraphNote"></small></h2>
             <div id="docGraphBody"></div>
