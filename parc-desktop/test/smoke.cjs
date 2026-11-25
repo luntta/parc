@@ -97,7 +97,7 @@ async function check() {
   await js('document.querySelector("[data-view=capture]").click()');
   await until(`document.querySelector("[data-current] .doc-title")?.value === "" && ${idle}`);
   await js('document.querySelector("[data-current] .type-menu aihio-dropdown-item[value=todo]").click()');
-  await until('document.querySelector(".crumb .here").textContent === "New todo"');
+  await until('document.querySelector(".pane[data-active] .tab[aria-selected=true] .tab-label").textContent === "New todo"');
   await js('const t = document.querySelector("[data-current] .doc-title"); t.value = "Call the ferry office"; t.dispatchEvent(new Event("input"))');
   await js(saveKey);
   await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
@@ -438,7 +438,17 @@ async function check() {
   await tabsAre([['Call the ferry office', '~Ferry desk'], ['Old observation']]);
   assert.equal(await js('document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[1]'), true);
   assert.equal(await js('document.querySelector("[data-current] .doc-title").value'), 'Old observation');
-  assert.equal(await js('document.querySelector("#crumb .vault").textContent'), 'Research');
+  // With more than one vault open, the meta row says which one a fragment is in.
+  assert.equal(await js('document.querySelector("[data-current] .meta-vault").textContent'), 'Research');
+  // The tabs are the panel's top edge: nothing above them, and the shown fragment's actions end the current group's strip.
+  assert.equal(await js('document.querySelector("main").firstElementChild.id'), 'groups');
+  assert.equal(await js('document.querySelector("#docActions").closest(".tabstrip") === document.querySelector(".pane[data-active] .tabstrip")'), true);
+  // Ctrl+\ hides the sidebar; Show sidebar then starts the first group's strip, and brings it back.
+  await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "\\\\", ctrlKey: true, bubbles: true }))');
+  await until('document.body.hasAttribute("data-collapsed") && !document.querySelector("#sidebarShow").hidden');
+  assert.equal(await js('document.querySelector("#sidebarShow").closest(".tabstrip") === document.querySelectorAll(".tabstrip")[0]'), true);
+  await js('document.querySelector("#sidebarShow > button").click()');
+  await until('!document.body.hasAttribute("data-collapsed") && document.querySelector("#sidebarShow").hidden');
   // Ctrl+Alt+← moves the tab into the group on the left; the group it leaves empty goes.
   await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", ctrlKey: true, altKey: true, bubbles: true }))');
   await tabsAre([['Call the ferry office', '~Ferry desk', 'Old observation']]);

@@ -16,6 +16,7 @@
           <i data-icon="chevrons" class="icon chevrons"></i>
         </aihio-button>
       </aihio-dropdown>
+      <aihio-button id="sidebarHide" class="side-icon" variant="ghost" size="icon" aria-label="Hide sidebar" aria-controls="sidebar" aria-keyshortcuts="Control+Backslash" title="Hide sidebar (Ctrl+\)"><i data-icon="sidebar" class="icon"></i></aihio-button>
       <aihio-button id="newCapture" class="compose" data-view="capture" variant="ghost" size="icon" aria-label="New capture" title="New capture (+)" aria-keyshortcuts="+ Control+N"><i data-icon="compose" class="icon"></i></aihio-button>
     </div>
 
@@ -51,38 +52,35 @@
     <div id="resizer" class="resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-controls="sidebar" tabindex="0"></div>
   </aside>
 
+  <!-- The work area is a panel lying on the window, beside the sidebar. Tabs are its top edge: the first group's strip
+       starts with Show sidebar while the sidebar is hidden, and the current group's strip ends with the shown
+       fragment's actions (tabs.js moves both into place). -->
   <main id="main">
-    <header class="bar">
-      <div class="bar-start">
-        <aihio-button id="sidebarToggle" variant="ghost" size="icon" aria-label="Hide sidebar" aria-keyshortcuts="Control+Backslash" title="Hide sidebar (Ctrl+\)"><i data-icon="sidebar" class="icon"></i></aihio-button>
-        <p id="crumb" class="crumb"></p>
-      </div>
-      <aihio-cluster gap="sm" align="center" class="actions">
-        <span id="revision" class="save-state"></span>
-        <span id="recTime" class="rec-time" hidden>0:00</span>
-        <aihio-button id="cancel" variant="ghost" size="sm" hidden>Discard</aihio-button>
-        <span id="languageSlot" class="language-slot"></span>
-        <aihio-button id="record" variant="outline" size="sm"><i data-icon="mic" class="icon" id="recordIcon"></i><span id="recordLabel">Dictate</span></aihio-button>
-        <label id="destinationLabel" class="destination" hidden><span>Save to</span><select id="destination"></select></label>
-        <aihio-dropdown id="fragmentMenu" align="end" hidden>
-          <aihio-button slot="trigger" variant="ghost" size="icon" aria-label="Fragment actions" title="Fragment actions"><i data-icon="more" class="icon"></i></aihio-button>
-          <aihio-dropdown-item value="history"><i data-icon="history" class="icon"></i><span>History</span></aihio-dropdown-item>
-          <aihio-dropdown-item value="attach"><i data-icon="paperclip" class="icon"></i><span>Attach file…</span></aihio-dropdown-item>
-          <aihio-dropdown-item value="copy"><i data-icon="copy" class="icon"></i><span>Copy link</span></aihio-dropdown-item>
-          <aihio-dropdown-item value="archive"><i data-icon="archive" class="icon"></i><span id="archiveLabel">Archive</span></aihio-dropdown-item>
-          <aihio-dropdown-separator></aihio-dropdown-separator>
-          <aihio-dropdown-item value="trash"><i data-icon="trash" class="icon"></i><span>Move to trash</span></aihio-dropdown-item>
-        </aihio-dropdown>
-        <aihio-button id="save" size="sm" disabled>Save<kbd id="saveKey" aria-hidden="true"></kbd></aihio-button>
-      </aihio-cluster>
-    </header>
-
     <div id="groups" class="panes"></div>
 
     <footer class="statusbar">
       <p id="status" role="status"></p>
-      <p id="stats" class="stats"></p>
+      <div class="status-end"><span id="revision" class="save-state"></span><p id="stats" class="stats"></p></div>
     </footer>
+
+    <aihio-button id="sidebarShow" class="strip-icon" variant="ghost" size="icon" aria-label="Show sidebar" aria-controls="sidebar" aria-keyshortcuts="Control+Backslash" title="Show sidebar (Ctrl+\)"><i data-icon="sidebar" class="icon"></i></aihio-button>
+    <aihio-cluster id="docActions" gap="tight" align="center" class="actions">
+      <span id="recTime" class="rec-time" hidden>0:00</span>
+      <aihio-button id="cancel" variant="ghost" size="sm" hidden>Discard</aihio-button>
+      <span id="languageSlot" class="language-slot"></span>
+      <aihio-button id="record" variant="outline" size="sm"><i data-icon="mic" class="icon" id="recordIcon"></i><span id="recordLabel">Dictate</span></aihio-button>
+      <label id="destinationLabel" class="destination" hidden><span>Save to</span><select id="destination"></select></label>
+      <aihio-dropdown id="fragmentMenu" align="end" hidden>
+        <aihio-button slot="trigger" variant="ghost" size="icon" aria-label="Fragment actions" title="Fragment actions"><i data-icon="more" class="icon"></i></aihio-button>
+        <aihio-dropdown-item value="history"><i data-icon="history" class="icon"></i><span>History</span></aihio-dropdown-item>
+        <aihio-dropdown-item value="attach"><i data-icon="paperclip" class="icon"></i><span>Attach file…</span></aihio-dropdown-item>
+        <aihio-dropdown-item value="copy"><i data-icon="copy" class="icon"></i><span>Copy link</span></aihio-dropdown-item>
+        <aihio-dropdown-item value="archive"><i data-icon="archive" class="icon"></i><span id="archiveLabel">Archive</span></aihio-dropdown-item>
+        <aihio-dropdown-separator></aihio-dropdown-separator>
+        <aihio-dropdown-item value="trash"><i data-icon="trash" class="icon"></i><span>Move to trash</span></aihio-dropdown-item>
+      </aihio-dropdown>
+      <aihio-button id="save" size="sm" disabled>Save<kbd id="saveKey" aria-hidden="true"></kbd></aihio-button>
+    </aihio-cluster>
   </main>
   <datalist id="tagOptions"></datalist>
 

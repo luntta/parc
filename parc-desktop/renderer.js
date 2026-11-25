@@ -286,7 +286,9 @@ const ws = workspace($('groups'), {
   drop: (r, { group, index }) => openRow(r, { group, index, focus: true }),
   menu: tabMenu,
   empty: emptyGroup,
-  busy: blocking
+  busy: blocking,
+  lead: $('sidebarShow'),
+  tools: $('docActions')
 });
 // The current group's shown tab changed. Whatever is on screen in any group is brought up to date: a view whose
 // fragments changed while hidden redraws, and a fragment's Related panel asks again if its text or vault moved on.
@@ -602,8 +604,8 @@ function paint() {
   const rev = $('revision');
   rev.textContent = phase === 'saving' ? 'Saving…' : d?.dirty ? 'Unsaved' : d?.opened ? 'Saved' : '';
   rev.dataset.state = phase === 'saving' ? 'saving' : d?.dirty ? 'dirty' : 'saved';
-  rev.hidden = !rev.textContent || ['recording', 'transcribing', 'starting', 'stopping'].includes(phase); // the recording state speaks for the draft
-  crumb();
+  // Beside the word count. "Saved" is left to the last edit's time there; the recording state speaks for the draft.
+  rev.hidden = rev.dataset.state === 'saved' || ['recording', 'transcribing', 'starting', 'stopping'].includes(phase);
   for (const b of $('sidebar').querySelectorAll('[data-view]')) {
     b.toggleAttribute('disabled', busy);
     if (b.dataset.view === mode && !d?.opened) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
@@ -613,11 +615,6 @@ function paint() {
   document.title = here ? `${d?.dirty ? '• ' : ''}${here} — parc` : 'parc';
   if (tab) ws.update(tab);
   stats();
-}
-function crumb() {
-  const d = cur(), where = d?.opened ? d.opened.vault : scope;
-  const here = d ? d.opened ? typeLabel(d.opened.type) : `New ${d.fresh?.type || 'note'}` : tab ? viewLabel(tab) : 'Empty group';
-  $('crumb').replaceChildren(el('span', 'vault', name(where)), el('span', 'sep', '/'), el('span', 'here', here));
 }
 
 // ── Vault switcher ──
@@ -981,15 +978,17 @@ function applySide() {
   document.body.toggleAttribute('data-collapsed', side.collapsed);
   if (side.width) document.documentElement.style.setProperty('--side-width', `${side.width}px`);
   else document.documentElement.style.removeProperty('--side-width');
-  const label = side.collapsed ? 'Show sidebar' : 'Hide sidebar';
-  $('sidebarToggle').setAttribute('aria-label', label); $('sidebarToggle').title = `${label} (${mod}+\\)`;
-  $('sidebarToggle').setAttribute('aria-expanded', String(!side.collapsed));
+  // Hide sits in the sidebar's head; Show takes its place at the start of the tabs while the sidebar is away.
+  $('sidebarShow').hidden = !side.collapsed;
+  for (const b of [$('sidebarHide'), $('sidebarShow')]) b.setAttribute('aria-expanded', String(!side.collapsed));
   $('resizer').setAttribute('aria-valuenow', String(Math.round(side.width || $('sidebar').getBoundingClientRect().width)));
 }
 function toggleSidebar() {
   side.collapsed = !side.collapsed;
-  if (side.collapsed && $('sidebar').contains(document.activeElement)) $('sidebarToggle').focus();
+  const from = document.activeElement;
   applySide(); remember.set(SIDE, side);
+  if (side.collapsed && $('sidebar').contains(from)) $('sidebarShow').focus();
+  else if (!side.collapsed && from?.closest?.('#sidebarShow')) $('sidebarHide').focus();
 }
 function resizeTo(width) {
   side.width = Math.round(Math.max(200, Math.min(520, window.innerWidth * 0.5, width)));
@@ -1220,6 +1219,13 @@ function meta(d) {
   box.append(tagEditor(c));
   if (!c.isNew) {
     const short = shortId(d.opened.id, linkable(d)), id = el('span', 'fid', short); id.title = `Link to this fragment with [[${short}]]`;
+    if (vaults.length > 1) {
+      const where = el('span', 'meta-vault'), dot = el('span', 'vault-dot');
+      dot.style.setProperty('--vault-hue', hue(d.opened.vault));
+      where.append(dot, el('span', '', name(d.opened.vault)));
+      where.title = `In the vault ${name(d.opened.vault)}`;
+      box.append(where);
+    }
     box.append(id);
   }
 }
@@ -2464,7 +2470,8 @@ $('listView').addEventListener('aihio-select', e => {
   const [what, value] = e.detail.value.split(':');
   if (['group', 'sort', 'dir'].includes(what)) setListView({ [what]: value });
 });
-$('sidebarToggle').addEventListener('click', toggleSidebar);
+$('sidebarHide').addEventListener('click', toggleSidebar);
+$('sidebarShow').addEventListener('click', toggleSidebar);
 $('goTo').onclick = () => goTo.open();
 $('openSettings').onclick = () => openSettings().catch(status);
 $('quickCapture').onclick = () => api.openCapture().catch(status);

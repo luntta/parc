@@ -2,9 +2,9 @@
    that are not (layout widths, the editor's type scale) are named here once. */
 :root {
   --side-width: clamp(15rem, 22vw, 17.5rem);
-  --bar-height: 3rem;
   --status-height: 1.75rem;
-  --tabs-height: 2.25rem;
+  --tabs-height: 2.625rem;
+  --desk-gap: .5rem;            /* the desk showing around the work panel */
   --measure: 42rem;
   --page-pad: 2.5rem;           /* a page's side padding; narrower in narrow windows */
   --gutter: .5rem;              /* sidebar inset; every sidebar item pads the same again */
@@ -19,6 +19,16 @@
   --hover: color-mix(in oklch, var(--aihio-color-page-fg) 5%, transparent);
   --selected: color-mix(in oklch, var(--aihio-color-page-fg) 8%, transparent);
   --ink-mark: color-mix(in oklch, var(--aihio-color-page-fg) 8%, transparent);
+  /* Two layers: the desk (the window, with the sidebar on it) and the work panel lying on the desk. The panel is
+     the lighter of the two in both themes, as raised things are. Inside it the page and surface colours follow
+     the panel, so everything drawn on a page keeps its contrast. */
+  --desk: var(--aihio-color-surface-bg);
+  --panel: var(--aihio-color-page-bg);
+  --panel-raised: var(--aihio-color-surface-bg);
+  --panel-edge: color-mix(in oklch, var(--aihio-color-page-fg) 9%, transparent);
+  --panel-ring: transparent;
+  --panel-shadow: 0 1px 2px oklch(0 0 0 / .04), 0 3px 14px -6px oklch(0 0 0 / .08);
+  --hairline: color-mix(in oklch, var(--aihio-color-page-fg) 7%, transparent);
   /* Desktop density: Aihio's component tokens, one step tighter than its web defaults. */
   --aihio-button-height-sm: 2rem;
   --aihio-button-padding-x-sm: .625rem;
@@ -30,13 +40,32 @@
   --aihio-font-family-body: 'Inter', var(--aihio-font-family-sans);
   --aihio-font-family-code: 'JetBrains Mono', var(--aihio-font-family-mono);
 }
+/* Dark: a deeper desk, and a panel edged by a highlight inside and a shadow line outside. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --desk: color-mix(in oklch, var(--aihio-color-surface-bg) 84%, var(--aihio-color-zinc-1000));
+    --panel: var(--aihio-color-surface-bg);
+    --panel-raised: var(--aihio-color-zinc-900);
+    --panel-edge: color-mix(in oklch, var(--aihio-color-page-fg) 5.5%, transparent);
+    --panel-ring: oklch(0 0 0 / .32);
+    --panel-shadow: 0 10px 30px -14px oklch(0 0 0 / .7);
+  }
+}
+:root[data-theme="dark"] {
+  --desk: color-mix(in oklch, var(--aihio-color-surface-bg) 84%, var(--aihio-color-zinc-1000));
+  --panel: var(--aihio-color-surface-bg);
+  --panel-raised: var(--aihio-color-zinc-900);
+  --panel-edge: color-mix(in oklch, var(--aihio-color-page-fg) 5.5%, transparent);
+  --panel-ring: oklch(0 0 0 / .32);
+  --panel-shadow: 0 10px 30px -14px oklch(0 0 0 / .7);
+}
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   margin: 0; height: 100dvh; overflow: hidden;
   display: grid; grid-template-columns: min(var(--side-width), 45vw) minmax(0, 1fr);
-  background: var(--aihio-color-page-bg); color: var(--aihio-color-page-fg);
+  background: var(--desk); color: var(--aihio-color-page-fg);
   font-size: var(--aihio-font-size-body-sm);
 }
 /* Ctrl+\ hides the sidebar; its width is the user's (dragged), within the window. */
@@ -66,9 +95,8 @@ kbd {
 #sidebar {
   position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0;
   padding: var(--gutter) var(--gutter) 0;
-  background: var(--aihio-color-surface-bg);
-  border-inline-end: 1px solid var(--rule);
   font-size: var(--side-font);
+  --aihio-color-surface-bg: var(--desk); /* what knocks out of the sidebar (sticky headers, status marks) is the desk */
 }
 /* Vault switcher, then New capture as a compose button at its end. */
 .side-head { display: flex; align-items: center; gap: .125rem; }
@@ -77,10 +105,13 @@ kbd {
   justify-content: flex-start; gap: .5rem; width: 100%; height: 2.25rem; padding: 0 .375rem; /* the mark centres on the glyph column */
   font-weight: var(--aihio-font-weight-heading); font-size: var(--aihio-font-size-body-sm); text-align: start;
 }
-.compose { flex: none; }
-.compose > button { width: 2.25rem; height: 2.25rem; padding: 0; color: var(--muted); }
-.compose > button:hover:not(:disabled), .compose[aria-current] > button { background: var(--hover); color: var(--aihio-color-page-fg); }
+.compose, .side-icon { flex: none; }
+.compose > button, .side-icon > button { width: 2.25rem; height: 2.25rem; padding: 0; color: var(--muted); }
+.compose > button:hover:not(:disabled), .compose[aria-current] > button, .side-icon > button:hover { background: var(--hover); color: var(--aihio-color-page-fg); }
 .compose .icon { width: 1.0625rem; height: 1.0625rem; }
+/* Hide sidebar shows itself when the sidebar is pointed at or the keyboard reaches it (Ctrl+\ always works). */
+.side-icon { opacity: 0; transition: opacity var(--aihio-duration-feedback-fast) ease; }
+#sidebar:hover .side-icon, .side-icon:focus-within { opacity: 1; }
 .switcher > button:hover, .switcher[aria-expanded="true"] > button, .switcher > button[aria-expanded="true"] { background: var(--hover); color: inherit; }
 .switcher[disabled] > button { opacity: 1; } /* only ever disabled while loading or dictating; dimmed with the nav below */
 .switcher-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -186,6 +217,7 @@ nav button[aria-current] .icon { color: var(--aihio-color-page-fg); }
 }
 #recent::-webkit-scrollbar { width: var(--gutter); }
 #recent::-webkit-scrollbar-thumb { border-width: 2px 3px 2px 1px; }
+#sidebar:not(:hover) #recent::-webkit-scrollbar-thumb { background-color: transparent; } /* shows while the sidebar is pointed at */
 #recent .group + .group { margin-top: .5rem; }
 /* A group's bar: the header (a type's opens its view, a tag's folds) and its fold mark. It sticks, opaque, over the rows. */
 .group-bar {
@@ -268,24 +300,25 @@ nav button[aria-current] .icon { color: var(--aihio-color-page-fg); }
 :is(.state, .toggle-mark)[data-tone="closed"]::before { border-style: dotted; }
 
 /* ───────────────────────── Main ───────────────────────── */
-main { display: grid; grid-template-rows: var(--bar-height) minmax(0, 1fr) var(--status-height); min-width: 0; min-height: 0; }
-.bar {
-  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-  padding: 0 .75rem 0 .5rem; border-bottom: 1px solid var(--rule); min-width: 0;
+/* The work panel: rounded, edged and lifted off the desk, with the desk showing around it. Its top edge is the tabs. */
+main {
+  display: grid; grid-template-rows: minmax(0, 1fr) var(--status-height); min-width: 0; min-height: 0;
+  margin: var(--desk-gap) var(--desk-gap) var(--desk-gap) 0;
+  border: 1px solid var(--panel-edge); border-radius: var(--aihio-radius-xl);
+  background: var(--panel); box-shadow: 0 0 0 1px var(--panel-ring), var(--panel-shadow);
+  overflow: hidden;
+  --aihio-color-page-bg: var(--panel);
+  --aihio-color-surface-bg: var(--panel-raised);
 }
-.bar-start { display: flex; align-items: center; gap: .375rem; min-width: 0; }
-.bar-start aihio-button > button, #fragmentMenu > aihio-button > button { width: 2rem; height: 2rem; color: var(--muted); }
-.bar-start aihio-button > button:hover, #fragmentMenu > aihio-button > button:hover { color: var(--aihio-color-page-fg); }
+body[data-collapsed] main { margin-inline-start: var(--desk-gap); }
+.strip-icon > button, #fragmentMenu > aihio-button > button { width: 2rem; height: 2rem; color: var(--muted); }
+.strip-icon > button:hover, #fragmentMenu > aihio-button > button:hover { color: var(--aihio-color-page-fg); }
 #fragmentMenu aihio-dropdown-item { min-width: 12rem; gap: .625rem; }
 #fragmentMenu aihio-dropdown-item .icon { color: var(--muted); }
-.crumb { display: flex; align-items: center; gap: .5rem; min-width: 0; color: var(--muted); white-space: nowrap; }
-.crumb span { overflow: hidden; text-overflow: ellipsis; }
-.crumb .sep { color: var(--rule); flex: none; }
-.crumb .here { color: var(--aihio-color-page-fg); font-weight: var(--aihio-font-weight-control); }
 .actions { flex: none; flex-wrap: nowrap; }
 .actions .icon { width: .875rem; height: .875rem; }
 #record[loading] .icon { display: none; } /* the spinner replaces the glyph */
-.save-state { display: inline-flex; align-items: center; gap: .4rem; margin-inline-end: .25rem; color: var(--muted); font-size: var(--aihio-font-size-badge); white-space: nowrap; }
+.save-state { display: inline-flex; align-items: center; gap: .4rem; color: var(--muted); white-space: nowrap; }
 .save-state[data-state="dirty"]::before { content: ''; width: .375rem; height: .375rem; border-radius: 50%; background: var(--aihio-color-page-fg); }
 .save-state[data-state="dirty"] { color: var(--aihio-color-page-fg); }
 #save kbd { margin-inline-start: .125rem; height: 1.125rem; min-width: 0; border: 0; padding: 0 .25rem; background: color-mix(in oklch, var(--aihio-color-primary-action-fg) 16%, transparent); color: inherit; opacity: .85; }
@@ -319,26 +352,30 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
    line along its top; a preview's name is in italics until it is kept; an unsaved tab's close mark is a dot. */
 .panes { display: flex; min-width: 0; min-height: 0; overflow: hidden; }
 .panes[data-resizing] { cursor: col-resize; user-select: none; }
-.pane { position: relative; display: grid; grid-template-rows: var(--tabs-height) minmax(0, 1fr); min-width: 10rem; min-height: 0; flex: 1 1 0px; }
+.pane { position: relative; display: grid; grid-template-rows: var(--tabs-height) minmax(0, 1fr); min-width: 10rem; min-height: 0; flex: 1 1 0px; container: pane / inline-size; }
 .pane-body { position: relative; display: grid; min-width: 0; min-height: 0; }
 .pane-body > .scroll { grid-area: 1 / 1; }
-.sash { position: relative; z-index: 2; flex: none; width: 1px; background: var(--rule); cursor: col-resize; }
+.sash { position: relative; z-index: 2; flex: none; width: 1px; background: var(--hairline); cursor: col-resize; }
 .sash::before { content: ''; position: absolute; inset: 0 -3px; }
 .sash:hover, .panes[data-resizing] .sash { background: color-mix(in oklch, var(--aihio-color-page-fg) 30%, transparent); }
 
-.tabstrip { display: flex; min-width: 0; background: var(--aihio-color-surface-bg); box-shadow: inset 0 -1px 0 var(--rule); }
-.tabs { display: flex; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tabstrip { display: flex; align-items: center; gap: .25rem; min-width: 0; padding-inline: .375rem; box-shadow: inset 0 -1px 0 var(--hairline); }
+.strip-lead, .strip-tools { display: flex; align-items: center; flex: none; }
+.strip-lead:not(:has(> :not([hidden]))) { display: none; }
+.tabs { display: flex; align-items: center; gap: 2px; flex: 1; align-self: stretch; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .tabs::-webkit-scrollbar { display: none; }
+/* A tab is a soft pill. The shown tab is filled; in a group that isn't current it is filled less and reads quieter. */
 .tab {
   position: relative; display: flex; align-items: center; gap: .375rem; flex: 0 1 auto; min-width: 6.5rem; max-width: 14rem;
-  padding: 0 .25rem 0 .625rem; border-inline-end: 1px solid var(--rule);
+  height: 1.875rem; padding: 0 .25rem 0 .625rem; border-radius: var(--aihio-radius-interactive);
   color: var(--muted); font-size: var(--side-font); white-space: nowrap; user-select: none;
   transition: color var(--aihio-duration-feedback-fast) ease, background-color var(--aihio-duration-feedback-fast) ease;
 }
-.tab:hover { color: var(--aihio-color-page-fg); }
-.tab[aria-selected="true"] { background: var(--aihio-color-page-bg); color: var(--aihio-color-page-fg); }
-.pane[data-active] .tab[aria-selected="true"]::before { content: ''; position: absolute; inset: 0 0 auto; height: 2px; background: var(--aihio-color-page-fg); }
-.tab:focus-visible { outline-offset: -2px; }
+.tab:hover { background: var(--hover); color: var(--aihio-color-page-fg); }
+.tab[aria-selected="true"] { background: var(--selected); color: var(--aihio-color-page-fg); }
+.pane:not([data-active]) .tab[aria-selected="true"] { background: var(--hover); color: color-mix(in oklch, var(--aihio-color-page-fg) 70%, var(--panel)); }
+.tab[aria-selected="true"] .tab-glyph .icon { color: currentColor; }
+.tab:focus-visible { outline-offset: -1px; }
 .tab-glyph { display: inline-flex; flex: none; }
 .tab-glyph .icon { width: .875rem; height: .875rem; color: var(--muted); }
 .tab-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -355,10 +392,10 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 .tab[data-drop-before]::after, .tabs[data-drop-end] > .tab:last-child::after {
   content: ''; position: absolute; inset-block: .25rem; width: 2px; border-radius: 1px; background: var(--aihio-color-focus-ring);
 }
-.tab[data-drop-before]::after { inset-inline-start: -1px; }
-.tabs[data-drop-end] > .tab:last-child::after { inset-inline-end: -1px; }
-.tabs[data-drop-end]:empty { background: var(--hover); }
-.tab-action { display: grid; place-items: center; flex: none; width: 2.25rem; padding: 0; border: 0; background: transparent; color: var(--muted); }
+.tab[data-drop-before]::after { inset-inline-start: -2px; }
+.tabs[data-drop-end] > .tab:last-child::after { inset-inline-end: -2px; }
+.tabs[data-drop-end]:empty { background: var(--hover); border-radius: var(--aihio-radius-interactive); }
+.tab-action { display: grid; place-items: center; flex: none; width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: var(--aihio-radius-interactive); background: transparent; color: var(--muted); }
 .tab-action:hover { background: var(--hover); color: var(--aihio-color-page-fg); }
 .tab-action .icon { width: .9375rem; height: .9375rem; }
 /* A fragment the list shows is open in a tab that isn't the current one. */
@@ -401,9 +438,10 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 
 .statusbar {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-  padding: 0 1.25rem; border-top: 1px solid var(--rule);
+  padding: 0 .875rem 0 1rem; box-shadow: inset 0 1px 0 var(--hairline);
   color: var(--muted); font-size: var(--aihio-font-size-badge); white-space: nowrap; min-width: 0;
 }
+.status-end { display: flex; align-items: center; gap: 1rem; flex: none; }
 #status { display: flex; align-items: center; gap: .375rem; min-width: 0; }
 .status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-action { flex: none; }
@@ -485,6 +523,8 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
   background: var(--aihio-color-page-bg); color: var(--aihio-color-page-fg); font-size: var(--aihio-font-size-badge); outline: 0;
 }
 .tag-input:focus { border-color: var(--aihio-color-focus-ring); }
+.doc-meta .meta-vault { display: inline-flex; align-items: center; gap: .375rem; margin-inline-start: auto; color: var(--muted); white-space: nowrap; }
+.doc-meta .meta-vault + .fid { margin-inline-start: .625rem; }
 .doc-meta .fid { margin-inline-start: auto; font: .6875rem var(--aihio-font-family-code); color: var(--faint); user-select: all; cursor: text; }
 
 .doc-title {
@@ -544,7 +584,7 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
   justify-content: center; align-items: start;
 }
 .related {
-  position: sticky; top: 0; max-height: calc(100dvh - var(--bar-height) - var(--tabs-height) - var(--status-height));
+  position: sticky; top: 0; max-height: calc(100dvh - 2 * var(--desk-gap) - 2px - var(--tabs-height) - var(--status-height));
   overflow-y: auto; scrollbar-gutter: stable; padding: 3.5rem 1rem 2rem .5rem;
 }
 .related .section-label { margin: 0 0 .5rem; color: var(--muted); }
@@ -795,7 +835,7 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 @media (prefers-reduced-motion: reduce) { .vg-node, .vg-node text, .vg-edges line { transition: none; } }
 
 /* Agent: a chat down the page, its composer held at the bottom of the view while the conversation scrolls. */
-.agent { display: flex; flex-direction: column; gap: 1.5rem; min-height: calc(100dvh - var(--bar-height) - var(--tabs-height) - var(--status-height) - 14rem); }
+.agent { display: flex; flex-direction: column; gap: 1.5rem; min-height: calc(100dvh - 2 * var(--desk-gap) - 2px - var(--tabs-height) - var(--status-height) - 14rem); }
 .agent-signin { display: flex; flex-direction: column; gap: .625rem; max-width: 36rem; padding: 1.5rem 1.625rem; border: 1px solid var(--rule); border-radius: var(--aihio-radius-surface); line-height: 1.6; text-wrap: pretty; }
 .agent-signin-title { font-size: var(--aihio-font-size-body); font-weight: var(--aihio-font-weight-heading); letter-spacing: var(--aihio-letter-spacing-heading); }
 .agent-privacy { color: var(--muted); font-size: .8125rem; }
@@ -1156,11 +1196,14 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 }
 @media (max-width: 46rem) {
   :root { --side-width: 13.5rem; }
-  .bar { padding-inline-start: 1rem; }
-  .crumb .vault, .crumb .sep, .save-state { display: none; }
-  #recordLabel { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } /* still names the button */
   :root { --page-pad: 1.25rem; }
   .page { padding-block: 2rem 4rem; }
+}
+
+/* A narrow group keeps its actions to their glyphs. */
+@container pane (width < 36rem) {
+  #recordLabel { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } /* still names the button */
+  #save kbd, .destination > span { display: none; }
 }
 
 /* ───────────────────────── Go to… (Ctrl+K) ───────────────────────── */
@@ -1352,7 +1395,7 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 .vs-foot-start { display: flex; gap: .25rem; }
 
 /* ───────────────────────── Quick capture window ───────────────────────── */
-body.quick { display: block; }
+body.quick { display: block; background: var(--aihio-color-page-bg); }
 #quick { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100dvh; padding: .75rem 1rem .75rem; gap: .5rem; }
 .quick-head { display: flex; gap: .75rem; }
 .quick-pick { display: inline-flex; align-items: center; gap: .375rem; color: var(--muted); font-size: var(--aihio-font-size-badge); }

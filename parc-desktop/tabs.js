@@ -30,6 +30,8 @@ function el(tag, className = '', text) {
  *   menu(tab) → [{ label, run, keys?, disabled? } | null]: the app's entries in a tab's context menu.
  *   empty(group) → Node: what an empty group shows.
  *   busy() → boolean: tabs don't switch from the pointer or keyboard while true.
+ *   lead: an element kept at the start of the first group's strip.
+ *   tools: an element kept at the end of the current group's strip (the app's actions for the tab it shows).
  */
 export function workspace(host, hooks) {
   const groups = [];
@@ -42,13 +44,14 @@ export function workspace(host, hooks) {
     const g = { id: ++seq, tabs: [], shown: null, mru: [], size };
     g.node = el('section', 'pane');
     g.strip = el('div', 'tabstrip'); g.list = el('div', 'tabs'); g.body = el('div', 'pane-body');
+    g.lead = el('div', 'strip-lead'); g.tools = el('div', 'strip-tools');
     g.empty = el('div', 'pane-empty'); g.overlay = el('div', 'drop-overlay');
     g.list.setAttribute('role', 'tablist');
     const split = el('button', 'tab-action'); split.type = 'button';
     split.setAttribute('aria-label', 'Split right'); split.title = `Split right: a new group beside this one (${mod}+Alt+→ moves the tab there)`;
     split.append(icon('split'));
     split.onclick = () => { if (!busy()) { const n = splitGroup(g, 'right'); if (n) focusGroup(groups.indexOf(n)); } };
-    g.strip.append(g.list, split);
+    g.strip.append(g.lead, g.list, g.tools, split);
     g.body.append(g.empty, g.overlay);
     g.node.append(g.strip, g.body);
     wireGroup(g);
@@ -207,6 +210,10 @@ export function workspace(host, hooks) {
       g.empty.hidden = g.tabs.length > 0;
       if (!g.tabs.length && !g.empty.childElementCount) g.empty.append(hooks.empty(g));
     });
+    // Moved only when their place changes: moving reconnects them, and closes a menu that is open.
+    if (hooks.lead && hooks.lead.parentNode !== groups[0].lead) groups[0].lead.append(hooks.lead);
+    const home = (current ?? groups[0]).tools;
+    if (hooks.tools && hooks.tools.parentNode !== home) home.append(hooks.tools);
     sizes();
   }
   function attach(t, g, at) {
