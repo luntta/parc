@@ -10,6 +10,15 @@ app.commandLine.appendSwitch('use-fake-device-for-media-stream');
 app.commandLine.appendSwitch('password-store', 'basic'); // the ChatGPT sign-in stays out of the desktop's keyring
 process.env.PARC_WHISPER_MODEL = path.join(dir, 'model');
 process.env.PARC_WHISPER_BIN = path.join(dir, 'stub');
+// Isolate Omarchy state so tests exercise live Omarchy theming deterministically without touching ~/.local/state/omarchy.
+const omarchyState = path.join(dir, 'omarchy-state');
+fs.mkdirSync(path.join(omarchyState, 'current', 'theme'), { recursive: true });
+fs.mkdirSync(path.join(omarchyState, 'toggles', 'hypr'), { recursive: true });
+fs.writeFileSync(path.join(omarchyState, 'current', 'theme.name'), 'Tokyo Night\n');
+fs.writeFileSync(path.join(omarchyState, 'current', 'theme', 'colors.toml'),
+  'mode = "dark"\naccent = "#7aa2f7"\nselection = "#292e42"\nmuted = "#414868"\nbackground = "#1a1b26"\ndark_background = "#13141c"\nlighter_background = "#24283b"\nforeground = "#a9b1d6"\ndark_foreground = "#565f89"\nred = "#f7768e"\nyellow = "#e0af68"\ngreen = "#9ece6a"\n');
+process.env.PARC_OMARCHY_STATE = omarchyState;
+delete process.env.HYPRLAND_INSTANCE_SIGNATURE;
 fs.writeFileSync(process.env.PARC_WHISPER_MODEL, 'test');
 // The stub recognizer records its arguments, then writes a transcript where whisper-cli would.
 const whisperArgs = path.join(dir, 'whisper-args');
@@ -690,7 +699,29 @@ async function check() {
   await until(`document.querySelector("#vaultName").textContent === "Prototype" && document.querySelector("#status").textContent.includes("files on disk were not changed") && ${idle}`);
   assert.equal(fs.existsSync(path.join(second, 'config.yml')), true, 'removing a vault leaves its files on disk');
 
-  console.log('PASS: Pulse as home (with daily review), dictation, live Markdown, [[ link picker, search, typed capture (templates, string & list fields, toggle, promote), attachments (drop, strip, inline parc-attach:// preview, detach), external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash view with undo/restore, vault health and reindex, remove vault, live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs and the layout and drafts across a reload, and the Agent (ChatGPT + GitHub Copilot)');
+  // Omarchy System theme: switch back to System, verify Tokyo Night tokens apply, then swap
+  // themes and toggle Glassy + Rounded corners live on disk and verify the window follows immediately.
+  await js('document.querySelector("#openSettings").click()');
+  await until('document.querySelector("#settings").hasAttribute("open")');
+  assert.match(await js('document.querySelector("#themeSub").textContent'), /Omarchy theme \(Tokyo Night, transparent\)/);
+  await js('document.querySelector("#themeChoice input[value=system]").click()');
+  await until('document.documentElement.dataset.omarchy === "Tokyo Night" && document.documentElement.dataset.omarchyOpacity === "transparent" && document.documentElement.style.getPropertyValue("--aihio-color-primary-action-bg") === "#7aa2f7"');
+  await js('document.querySelector("#settingsSave").click()');
+  await until('!document.querySelector("#settings").hasAttribute("open")');
+  const nextOmarchy = path.join(omarchyState, 'current', 'next-theme');
+  fs.mkdirSync(nextOmarchy, { recursive: true });
+  fs.writeFileSync(path.join(nextOmarchy, 'colors.toml'),
+    'mode = "light"\naccent = "#1e66f5"\nselection = "#ccd0da"\nmuted = "#acb0be"\nbackground = "#eff1f5"\ndark_background = "#e3e4e8"\nlighter_background = "#dce0e8"\nforeground = "#4c4f69"\ndark_foreground = "#9ca0b0"\nred = "#d20f39"\nyellow = "#df8e1d"\ngreen = "#40a02b"\n');
+  fs.rmSync(path.join(omarchyState, 'current', 'theme'), { recursive: true, force: true });
+  fs.renameSync(nextOmarchy, path.join(omarchyState, 'current', 'theme'));
+  fs.writeFileSync(path.join(omarchyState, 'current', 'theme.name'), 'Catppuccin Latte\n');
+  fs.writeFileSync(path.join(omarchyState, 'toggles', 'hypr', 'window-glassy.lua'), '-- glassy\n');
+  fs.writeFileSync(path.join(omarchyState, 'toggles', 'hypr', 'corners-rounded.lua'), '-- rounded\n');
+  await until('document.documentElement.dataset.omarchy === "Catppuccin Latte" && document.documentElement.dataset.omarchyOpacity === "glassy" && document.documentElement.style.getPropertyValue("--aihio-radius-base") === "6px"');
+  assert.equal(await js('matchMedia("(prefers-color-scheme: dark)").matches'), false);
+  assert.match(await js('document.documentElement.style.getPropertyValue("--desk")'), /^rgba\(227, 228, 232, 0\.65\)$/);
+
+  console.log('PASS: Pulse as home (with daily review), dictation, live Markdown, [[ link picker, search, typed capture (templates, string & list fields, toggle, promote), attachments (drop, strip, inline parc-attach:// preview, detach), external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash view with undo/restore, vault health and reindex, remove vault, Omarchy live System theme (colors, mode, rounding, glass), live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs and the layout and drafts across a reload, and the Agent (ChatGPT + GitHub Copilot)');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

@@ -1,8 +1,10 @@
 // The quick capture window: pick a vault and type, write, save, and it closes. Text in progress is kept
 // locally, so closing the window by accident loses nothing; Esc asks before dropping it.
 import '@luntta/aihio';
+import { initSystemTheme } from './theme.js';
 
 const $ = id => document.getElementById(id), api = window.parc;
+initSystemTheme(api);
 const DRAFT = 'parc.quickDraft', SCOPE = 'parc.scope';
 const remember = {
   get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },

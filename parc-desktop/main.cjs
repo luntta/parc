@@ -11,6 +11,7 @@ const agent = require('./agent.cjs');
 const copilot = require('./copilot.cjs');
 const models = require('./models.cjs');
 const { LANGUAGES } = require('./languages.cjs');
+const { omarchyTheme } = require('./omarchy.cjs');
 
 // Narrow scheme for raster image previews inside opened vaults' attachments/ directories (never arbitrary files).
 protocol.registerSchemesAsPrivileged([
@@ -26,8 +27,13 @@ const QUICK = '--capture'; // `electron . --capture` opens the quick capture win
 const webPreferences = { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true };
 const canvas = () => nativeTheme.shouldUseDarkColors ? '#000000' : '#ffffff';
 const THEMES = ['system', 'light', 'dark'];
-// Wayland compositors hand out global shortcuts through the desktop portal.
-if (process.platform === 'linux') app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
+// Wayland compositors hand out global shortcuts through the desktop portal, and native Wayland enables real window transparency.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
+  if (process.env.WAYLAND_DISPLAY && !app.commandLine.hasSwitch('ozone-platform') && !app.commandLine.hasSwitch('ozone-platform-hint')) {
+    app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+  }
+}
 // Chromium picks the keyring by the desktop's name, and on one it doesn't know (Hyprland, sway, i3…) keeps secrets
 // under a fixed key even when a Secret Service (gnome-keyring, KeePassXC) is running. Ask for libsecret there; with no
 // Secret Service it still falls back. A --password-store given on the command line wins.
@@ -37,14 +43,18 @@ if (process.platform === 'linux' && !app.commandLine.hasSwitch('password-store')
 }
 
 let window, captureWindow;
+let transparentWindows = false, activeCanvas = null, refreshDesktopTheme = () => {};
+const windowBackground = () => transparentWindows ? '#00000000' : (activeCanvas || canvas());
 function guard(win) {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
 }
 function openWindow() {
-  // Shown on first paint, on the theme's canvas colour, so a dark desktop never flashes white.
+  // Shown on first paint, on the theme's canvas colour (or frameless + transparent on Wayland/Omarchy so
+  // Chromium's NativeWindowViews allocates an ARGB Wayland surface for Transparent/Glassy modes).
   window = new BrowserWindow({ width: 1200, height: 800, minWidth: 640, minHeight: 480,
-    title: 'parc Capture', autoHideMenuBar: true, show: false, backgroundColor: canvas(), webPreferences });
+    title: 'parc Capture', autoHideMenuBar: true, show: false,
+    frame: !transparentWindows, transparent: transparentWindows, backgroundColor: windowBackground(), webPreferences });
   guard(window);
   // Ctrl+W (⌘W) closes a tab, not the window: the menu's shortcut stands aside and the page handles the key.
   const contents = window.webContents;
@@ -56,6 +66,7 @@ function openWindow() {
     const choice = dialog.showMessageBoxSync(window, { message: 'Leave this workspace?', detail: 'A recording, transcription or save is still in progress and will be lost.', buttons: ['Stay', 'Leave'], defaultId: 0, cancelId: 0 });
     if (choice === 1) event.preventDefault();
   });
+  window.on('focus', () => refreshDesktopTheme());
   window.once('ready-to-show', () => window?.show());
   window.on('closed', () => { window = undefined; });
   window.loadURL(page);
@@ -64,8 +75,10 @@ function openWindow() {
 function openCapture() {
   if (captureWindow) { captureWindow.show(); captureWindow.focus(); return; }
   captureWindow = new BrowserWindow({ width: 620, height: 440, minWidth: 420, minHeight: 300, title: 'Quick capture',
-    alwaysOnTop: true, autoHideMenuBar: true, show: false, backgroundColor: canvas(), webPreferences });
+    alwaysOnTop: true, autoHideMenuBar: true, show: false,
+    frame: !transparentWindows, transparent: transparentWindows, backgroundColor: windowBackground(), webPreferences });
   guard(captureWindow);
+  captureWindow.on('focus', () => refreshDesktopTheme());
   captureWindow.once('ready-to-show', () => { captureWindow?.show(); captureWindow?.focus(); });
   captureWindow.on('closed', () => { captureWindow = undefined; });
   captureWindow.loadURL(capturePage);
@@ -82,9 +95,15 @@ else app.whenReady().then(() => {
   let init, globalVault = null;
   const modelDir = path.join(app.getPath('userData'), 'models');
   let settings = { whisperModel: '', whisperBin: '', quickCaptureShortcut: '', speechLanguages: [], speechLanguage: '', theme: 'system' }, shortcut = { active: false };
-  // Read before the first window, so a saved theme is the one it paints in.
+  // Read before the first window, so a saved theme (and Omarchy palette) is the one it paints in.
   try { settings = clean(JSON.parse(readFileSync(settingsFile, 'utf8'))); }
   catch { /* none yet, or unreadable: defaults */ }
+  let activeTheme = settings.theme;
+  const omarchy = omarchyTheme({ onChange: () => applyTheme(activeTheme) });
+  omarchy.start();
+  transparentWindows = process.platform === 'linux' && !!process.env.WAYLAND_DISPLAY
+    && omarchy.available() && process.env.PARC_NO_TRANSPARENT !== '1';
+  refreshDesktopTheme = () => omarchy.refreshDesktop().catch(() => {});
   applyTheme();
   async function initialize() {
     await stores.get(vault).init();
@@ -182,9 +201,36 @@ else app.whenReady().then(() => {
     }
     return next;
   }
-  // System follows the desktop; Light and Dark override it for every window, prefers-color-scheme included.
-  function applyTheme(theme = settings.theme) { nativeTheme.themeSource = theme; }
-  nativeTheme.on('updated', () => { for (const w of BrowserWindow.getAllWindows()) w.setBackgroundColor(canvas()); });
+  // System follows Omarchy when present (or the desktop's dark/light setting otherwise).
+  // Light and Dark override it for every window, prefers-color-scheme included.
+  function effectiveOmarchy(theme = activeTheme) {
+    return theme === 'system' ? omarchy.current() : null;
+  }
+  function omarchyPayload(om) {
+    return om ? { name: om.name, mode: om.mode, opacity: om.opacity, glass: om.glass, rounding: om.rounding, tokens: om.tokens } : null;
+  }
+  function pushSystemTheme(theme = activeTheme) {
+    const payload = omarchyPayload(effectiveOmarchy(theme));
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('system-theme', payload);
+    }
+  }
+  function applyTheme(theme = settings.theme) {
+    activeTheme = theme;
+    const om = effectiveOmarchy(theme);
+    activeCanvas = om ? om.canvas : null;
+    nativeTheme.themeSource = om ? om.mode : theme;
+    if (!transparentWindows) {
+      const bg = windowBackground();
+      for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setBackgroundColor(bg);
+    }
+    pushSystemTheme(theme);
+  }
+  nativeTheme.on('updated', () => {
+    if (transparentWindows) return;
+    const bg = windowBackground();
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setBackgroundColor(bg);
+  });
   // On Wayland, Electron asks the desktop portal for the shortcut and reports success whether or not the
   // portal agrees. Hyprland's refuses an app it can't match to an installed .desktop file, so all we know is
   // that we asked.
@@ -200,7 +246,11 @@ else app.whenReady().then(() => {
   }
   // Bind this in the desktop's own shortcut settings where apps can't register one (many Wayland compositors).
   const captureCommand = [process.execPath, ...(app.isPackaged ? [] : [app.getAppPath()]), QUICK].map(a => /\s/.test(a) ? `"${a}"` : a).join(' ');
-  const settingsView = () => ({ ...settings, shortcut, captureCommand });
+  const omarchySummary = () => {
+    const om = omarchy.current();
+    return om ? { name: om.name, mode: om.mode, opacity: om.opacity, glass: om.glass, rounding: om.rounding } : null;
+  };
+  const settingsView = () => ({ ...settings, shortcut, captureCommand, omarchy: omarchySummary() });
 
   // Saves from the CLI, the TUI, another window or a git pull land in fragments/, schemas/ or config.yml; tell the
   // workspace which vault changed so it can refresh its list and notice when an open fragment moved on under it.
@@ -288,6 +338,7 @@ else app.whenReady().then(() => {
   }
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
+    omarchy.close();
     for (const w of watchers.values()) w.close();
     for (const s of stores.values()) s.close();
     for (const s of toolServers.values()) s.close();
@@ -574,6 +625,7 @@ else app.whenReady().then(() => {
   });
   // Settings shows a theme as soon as it is picked. Called with nothing, it puts the saved one back (closed without Save).
   handle('preview-theme', theme => applyTheme(theme === undefined ? settings.theme : clean({ theme }).theme));
+  handle('system-theme', () => omarchyPayload(effectiveOmarchy()));
   // The dictation language picked next to Dictate: one setting, saved at once.
   handle('set-speech-language', async code => {
     await ready();

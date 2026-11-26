@@ -85,7 +85,13 @@ kbd {
   background: var(--aihio-color-page-bg); color: var(--muted);
   font: 500 .6875rem/1 var(--aihio-font-family-body); letter-spacing: 0; font-variant-numeric: tabular-nums;
 }
-::selection { background: color-mix(in oklch, var(--aihio-color-page-fg) 16%, transparent); }
+::selection { background: var(--omarchy-selection, color-mix(in oklch, var(--aihio-color-page-fg) 16%, transparent)); }
+html[data-omarchy] .cm-editor .cm-selectionBackground,
+html[data-omarchy] .cm-editor.cm-focused .cm-selectionBackground { background: var(--omarchy-selection) !important; }
+html:is([data-omarchy-opacity="glassy"], [data-omarchy-opacity="transparent"]) { background: transparent; }
+html:is([data-omarchy-opacity="glassy"], [data-omarchy-opacity="transparent"]) .group-bar { backdrop-filter: blur(12px); }
+html:is([data-omarchy-opacity="glassy"], [data-omarchy-opacity="transparent"]) .agent-compose { box-shadow: none; }
+html:is([data-omarchy-opacity="glassy"], [data-omarchy-opacity="transparent"]) body.quick { background: var(--quick-bg, var(--aihio-color-page-bg)); }
 ::-webkit-scrollbar { width: 10px; height: 10px; background: transparent; }
 ::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 10px; background: color-mix(in oklch, var(--aihio-color-page-fg) 16%, transparent) padding-box; }
 ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in oklch, var(--aihio-color-page-fg) 30%, transparent); }

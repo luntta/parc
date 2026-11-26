@@ -14,9 +14,11 @@ import { workspace, FRAGMENT } from './tabs.js';
 import { agentChat } from './agent.js';
 import { sidebarList } from './sidebar.js';
 import { renderTrashView, renderDoctorView, pulseDailySections } from './views.js';
+import { initSystemTheme } from './theme.js';
 
 const $ = id => document.getElementById(id), api = window.parc;
 hydrateIcons();
+initSystemTheme(api);
 const isMac = /Mac/.test(navigator.platform), mod = isMac ? '⌘' : 'Ctrl';
 $('saveKey').textContent = isMac ? '⌘S' : 'Ctrl S';
 $('save').title = `Save fragment (${mod}+S)`;
@@ -2134,6 +2136,9 @@ let pending = null, models = null, settingsView = null;
 function renderSettings(view = settingsView) {
   settingsView = view;
   const custom = pending.whisperModel && !models?.models.some(m => m.path === pending.whisperModel);
+  $('themeSub').textContent = view.omarchy
+    ? `System follows your Omarchy theme (${view.omarchy.name}${view.omarchy.opacity && view.omarchy.opacity !== 'opaque' ? `, ${view.omarchy.opacity}` : ''}).`
+    : 'System follows your desktop’s light or dark setting.';
   $('modelPath').textContent = custom ? pending.whisperModel : 'None'; $('modelPath').title = custom ? pending.whisperModel : '';
   $('binPath').textContent = pending.whisperBin || 'whisper-cli from PATH'; $('binPath').title = pending.whisperBin;
   $('clearBin').hidden = !pending.whisperBin;

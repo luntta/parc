@@ -14,7 +14,13 @@ contextBridge.exposeInMainWorld('parc', {
   flushDrafts: entries => ipcRenderer.sendSync('flush-drafts', entries),
   vaultSettings: invoke('vault-settings'), updateVaultSettings: invoke('update-vault-settings'),
   schemaUsage: invoke('schema-usage'), builtinSchema: invoke('builtin-schema'), saveSchema: invoke('save-schema'), deleteSchema: invoke('delete-schema'), copyText: invoke('copy-text'), openCapture: invoke('open-capture'),
-  settings: invoke('settings'), saveSettings: invoke('save-settings'), previewTheme: invoke('preview-theme'), pickFile: invoke('pick-file'),
+  settings: invoke('settings'), saveSettings: invoke('save-settings'), previewTheme: invoke('preview-theme'), systemTheme: invoke('system-theme'), pickFile: invoke('pick-file'),
+  // Active Omarchy system theme payload ({ name, mode, glass, rounding, tokens }) or null.
+  onSystemTheme(callback) {
+    const listener = (_event, theme) => callback(theme);
+    ipcRenderer.on('system-theme', listener);
+    return () => ipcRenderer.off('system-theme', listener);
+  },
   speechStatus: invoke('speech-status'), speechReady: invoke('speech-ready'), transcribe: invoke('transcribe'),
   setSpeechLanguage: invoke('set-speech-language'), speechModels: invoke('speech-models'),
   downloadModel: invoke('download-model'), cancelDownload: invoke('cancel-download'), deleteModel: invoke('delete-model'),
