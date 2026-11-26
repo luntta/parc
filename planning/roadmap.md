@@ -111,6 +111,46 @@ Where daily writing happens — turning `parc-desktop` into a fast, low-friction
   - Desktop installer shipping `parc-capture.desktop` (so the Wayland portal knows the app and global shortcuts work natively) and bundled release `parc` + `parc-server` binaries.
   - Bundle `whisper-cli` in the packaged app (dictation step 4; waits on the installer).
 
+### 6. Inbox: files you throw in
+
+Drop PDFs, Word files and the like into a vault, read them in parc, comment on them, link or file them, and let the Agent use them as sources. Shape agreed 2026-11-26.
+
+- **A file becomes a fragment when it lands.** A new built-in type, `source`: the file is its attachment, its body is your notes on it. The Inbox is the view of `source` fragments with an open status, as boards and the risk matrix are views of their types. Links, tags, backlinks, history, search, git and the Agent's tools work on it unchanged.
+  - Statuses: `inbox` (open), `reading` (active), `processed` (done). No closed status: a file you don't want is discarded.
+  - The title is the document's own title when its metadata has one, else the filename.
+- **Discarding is one key** in the Inbox, with Undo and no dialog (a dialog only once you've written notes on it). It goes to the trash with its file, so Restore works.
+  - Emptying the trash must then remove `attachments/<id>/` and `history/<id>/` too. Today `trash.purge` removes only the `.md`, so a discarded PDF would stay on disk.
+  - A file committed to git before it was discarded stays in git's history. Nothing in parc commits, so a discard before your next commit leaves no trace.
+- **One inbox per vault, with a folder**: `<vault>/inbox/`, git-ignored, made by `parc init` (and on first use in older vaults). Bookmark it in the file manager; GTK bookmarks also show in browsers' Save dialogs, so downloads can go straight in.
+  - It is a mail slot. A file that has settled there (size and mtime unchanged for a second) moves into a new `source` fragment's attachments, so the folder empties itself. Partial downloads (`.part`, `.crdownload`), dotfiles, symlinks and folders are left alone.
+  - The desktop app watches the folder while open and sweeps it at launch; `parc inbox` sweeps it from the CLI. The move stays on one filesystem, so it is a rename.
+  - The location is fixed, never read from `config.yml`: a cloned vault that named `~/Documents` would have parc swallow it.
+  - Settings shows the path with **Copy** and **Open in file manager**.
+- **Triage**, per item: keep it as a source; **Attach to…** an existing fragment (the file moves there and the source goes); **Link to…**; discard.
+- **Attachment text, for every attachment** in the vault, not just the inbox. Useful on its own, so it comes first:
+  - Extracted in `parc-core`, so the CLI, server, MCP and desktop see the same text. PDF, docx (a zip of XML), plain text, Markdown and HTML, with in-process Rust parsers and limits on size, pages and zip expansion. No outside programs, so a vault cannot choose one.
+  - Indexed in its own full-text table, page by page, so a match knows its page. A search filter for attachment text.
+  - Kept as the vault's `attachments.text` setting says: `sidecar` (the default) writes it beside the file, as `attachments/<id>/.text/<filename>.txt` for a PDF (pages split by form feeds) or `.md` for docx and HTML (headings, lists and tables kept, which the viewer shows), so it travels over git and another machine needn't extract again; `index` keeps it only in `index.db`.
+  - A sidecar records the file's hash and the extractor's version; a stale one is ignored and redone. Sidecars are written when a file is attached, or by a reindex after switching to `sidecar`, never by the index sync on open. Attachment listings leave `.text/` out.
+- **Reading and comments**:
+  - A source opens in a tab as its document, with a rail beside it for **Notes** (the source's body, in the usual editor) and **Related**.
+  - **PDF**: pdf.js (`pdfjs-dist`, Apache-2.0) with its viewer parts (lazy pages, text layer, find), not Chromium's built-in viewer, which gives no selection, current page or highlights to the page around it. The bytes come over IPC, so `parc-attach:` stays images only. In the sandboxed renderer, under a CSP without eval, with `isEvalSupported: false` and no PDF scripting; a link in a PDF goes through the narrow open-external path. `pageColors` can recolour text pages to the theme, with a toggle back to paper.
+  - Your comments show as highlights on the page; a click on one goes to it in Notes, and a click on a quote in Notes goes to the page. The last page read is kept per computer, not in the vault, and the Inbox shows it ("p. 34 of 120").
+  - **docx and HTML**: shown as the Markdown that core extracts, not as HTML, so nothing in the file runs or loads from the network, and quotes match the indexed text exactly. **Open original** hands the file to the system viewer, as **Open** does today.
+  - The CLI and TUI read the extracted text.
+  - Select text and press a key: the source's body gets a quote with its page (`> p. 12 · "…"`) and you write the comment under it. A click on the quote opens the page; the quoted words find the place again if the pages move.
+  - A docx has no pages until a word processor lays it out, so its quotes name the nearest heading instead, and its "pages" for recall are sections between headings.
+  - **Promote a comment** to its own todo, idea or decision, linked back to the source.
+- **Related follows the page**: `recall` on the page on screen and on your comments, not the whole document, so the Related panel shows older notes about what you're reading. Local, no model.
+- **Agent**:
+  - A read-only `read_attachment` MCP tool that reads a range of pages, so a question sends only the pages it needs. With attachment text indexed, `search` and `recall` already find documents, and answers cite `[[id]] p. 12`.
+  - **Ask about this document** from the viewer.
+  - **Analyze**: the Agent proposes links (and why), tags, todos found in the text, and a summary; you tick what you want and the app writes it through `Writer`. Its tools stay read-only, because a document can carry text aimed at the model.
+  - A document goes to the model only when you ask, never when it arrives.
+- **Later**: OCR for scanned PDFs; "already in your archive as [[X]]" by file hash; a warning for large files, with a note on git-lfs.
+
+Order: attachment text → the `source` type, folder and Inbox view → viewer and comments → Agent.
+
 ## Later
 
 - **Sync and phone capture**, together: a `parc sync` command and a way to handle conflicting copies.
