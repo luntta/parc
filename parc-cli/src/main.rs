@@ -267,6 +267,10 @@ enum Commands {
         json: bool,
     },
     /// Find fragments related to a fragment or to draft text, however old
+    ///
+    /// Matches by shared words, tags and links and, when the meaning model is
+    /// installed (the desktop app's Settings downloads it), by meaning, which
+    /// also finds a note written in other words or another language.
     Recall {
         /// Fragment ID or prefix (with --text: the fragment the draft edits)
         id: Option<String>,

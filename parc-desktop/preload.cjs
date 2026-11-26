@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('parc', {
   speechStatus: invoke('speech-status'), speechReady: invoke('speech-ready'), transcribe: invoke('transcribe'),
   setSpeechLanguage: invoke('set-speech-language'), speechModels: invoke('speech-models'),
   downloadModel: invoke('download-model'), cancelDownload: invoke('cancel-download'), deleteModel: invoke('delete-model'),
+  meaningModel: invoke('meaning-model'), downloadMeaningModel: invoke('download-meaning-model'),
+  cancelMeaningDownload: invoke('cancel-meaning-download'), deleteMeaningModel: invoke('delete-meaning-model'),
   agentStatus: invoke('agent-status'), agentSignIn: invoke('agent-sign-in'), agentCancelSignIn: invoke('agent-cancel-sign-in'), agentSignOut: invoke('agent-sign-out'),
   agentModels: invoke('agent-models'), agentSetModel: invoke('agent-set-model'),
   agentAsk: invoke('agent-ask'), agentStop: invoke('agent-stop'), agentForget: invoke('agent-forget'), agentReset: invoke('agent-reset'),
@@ -53,6 +55,12 @@ contextBridge.exposeInMainWorld('parc', {
     const listener = (_event, progress) => callback(progress);
     ipcRenderer.on('model-progress', listener);
     return () => ipcRenderer.off('model-progress', listener);
+  },
+  // { size, received } while the meaning model downloads, then { done: true }.
+  onMeaningProgress(callback) {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('meaning-progress', listener);
+    return () => ipcRenderer.off('meaning-progress', listener);
   },
   // The vault path whose fragments changed on disk, from any app.
   onVaultChanged(callback) {

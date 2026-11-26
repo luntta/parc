@@ -4,14 +4,16 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use parc_core::recall::{self, RecallQuery, Seed};
-use parc_core::{fragment, index};
+use parc_core::{embed, fragment, index};
 
 use crate::jsonrpc::RpcError;
 use crate::router::{extract_params, map_parc_error};
 
 /// `recall.context`: the fragments related to a saved fragment (`id`) or to
 /// unsaved text (`text`, with `tags` and, for edits to a saved fragment, its
-/// `id`). Cheap enough to call while the user types.
+/// `id`). Cheap enough to call while the user types. Uses the meaning model
+/// when it is installed (a model that fails to load is reported by
+/// `meaning.status`; recall goes on without it).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextParams {
@@ -55,6 +57,7 @@ pub fn context(vault: &Path, params: Value) -> Result<Value, RpcError> {
         limit: p.limit.unwrap_or(recall::DEFAULT_LIMIT),
     };
     let conn = index::open_index(vault).map_err(map_parc_error)?;
-    let result = recall::context(&conn, &query).map_err(map_parc_error)?;
+    let model = embed::shared().ok().flatten();
+    let result = recall::context(&conn, &query, model.as_deref()).map_err(map_parc_error)?;
     serde_json::to_value(result).map_err(|e| RpcError::internal_error(&e.to_string()))
 }

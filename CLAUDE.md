@@ -19,10 +19,11 @@ Rules for `parc-core`:
 - Takes `VaultPath` as input, never assumes a location
 - A vault's `config.yml` travels with the vault (git is the transport), so treat it as untrusted: it must not choose a program parc runs. `editor:` is honoured only from the global vault (`config::get_editor`)
 - Every fragment write goes through `ops::Writer` (validate → pre-hooks → write + history → index → post-hooks). Frontends never call `create_fragment`/`write_fragment` + index themselves, or hooks drift between CLI, TUI and server
+- The meaning model (`embed`) is read only from the per-user models folder (`embed::model_dir`: `$PARC_MODELS_DIR` or the platform data folder), never from a path a vault names. Its vectors live in `index.db` outside `SCHEMA_SQL` (keyed by file revision, so an index rebuild keeps them) and are filled by `embed::fill`, never by the sync in `open_index`. Tests whose results must not depend on an installed model set `PARC_MODELS_DIR` to a missing folder, or call `embed::set_enabled(false)`
 
 ## Key Dependencies
 
-Rust. Key crates: `clap` (derive), `ratatui`/`crossterm` (TUI), `serde`/`serde_yaml_ng`/`serde_json`, `rusqlite` (bundled, FTS5), `ulid`, `comrak`, `termimad`, `chrono`, `thiserror`/`anyhow`, `similar` (diffing), `regex`, `toml` (plugin manifests), `wasmtime` (optional, feature-gated `wasm-plugins`), `tokio` (CLI + server), `assert_cmd`/`tempfile` (testing).
+Rust. Key crates: `clap` (derive), `ratatui`/`crossterm` (TUI), `serde`/`serde_yaml_ng`/`serde_json`, `rusqlite` (bundled, FTS5), `ulid`, `comrak`, `termimad`, `chrono`, `thiserror`/`anyhow`, `similar` (diffing), `regex`, `toml` (plugin manifests), `wasmtime` (optional, feature-gated `wasm-plugins`), `tokio` (CLI + server), `tokenizers`/`gemm`/`memmap2`/`rayon` (the meaning model, run in plain Rust), `assert_cmd`/`tempfile` (testing).
 
 ## Core Concepts
 
@@ -87,7 +88,7 @@ Parsed in `parc-core` into `SearchQuery` AST, compiled to FTS5 MATCH + SQL WHERE
 2. Library first — core has no I/O assumptions
 3. One engine, many types — new type = new YAML schema file
 4. Progressive complexity — `parc n "thought"` to full DSL + plugins
-5. Offline and local — no network, no accounts. The desktop app's exceptions are opt-in: speech model downloads, and the Agent (ChatGPT or GitHub Copilot sign-in), which sends only what a question needs, only when asked
+5. Offline and local — no network, no accounts. The desktop app's exceptions are opt-in: speech and meaning model downloads (pinned, hash-checked), and the Agent (ChatGPT or GitHub Copilot sign-in), which sends only what a question needs, only when asked
 6. Unix-friendly — pipe-able, `--json`, meaningful exit codes, `$EDITOR`
 7. Vault-scoped — global for personal, local for project
 8. Tags everywhere — frontmatter + inline `#hashtags`, merged and searchable

@@ -291,6 +291,8 @@ function archive(vault, options) {
       if (text != null) { params.text = text; params.tags = validTags(tags ?? []); }
       return request('recall.context', params);
     },
+    // The meaning model recall uses: its pinned files, where they go, and how much of this vault it has read.
+    meaningStatus: () => request('meaning.status', {}),
     get: id => request('fragment.get', { id: validId(id) }),
     async archive(id, archived, expected) {
       if (typeof archived !== 'boolean') throw new Error('Invalid archive flag');

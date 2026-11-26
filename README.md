@@ -182,6 +182,7 @@ Type aliases work everywhere — `parc n` is `parc new note`, `parc t` is `parc 
 parc search <query> [--sort order] [--limit N]
 parc recall <id>                       # Related fragments, however old
 parc recall --text "draft text"        # Related to text not saved yet (- for stdin)
+                                       # With the meaning model: also in other words or languages
 ```
 
 ### Links

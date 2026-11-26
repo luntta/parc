@@ -1,6 +1,6 @@
 # Roadmap: what's next
 
-Updated 2026-11-25. From a ranked list of what would make parc a world-class app.
+Updated 2026-11-26. From a ranked list of what would make parc a world-class app.
 
 ## Done
 
@@ -33,6 +33,17 @@ Updated 2026-11-25. From a ranked list of what would make parc a world-class app
   - **Which vaults:** the open fragment's vault, or every vault in view for a new capture.
   - **Code:** `parc-desktop/related.js`; the backend's `recall` validates what it sends to `recall.context`.
   - **Tests:** a backend test, and smoke-test checks for both empty states around a dictation, reasons and marks, places kept while typing, focus left in the editor, reading in place and Link.
+- **Recall, step 3: the meaning model** (2026-11-26):
+  - **Model:** `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (Apache-2.0, 480 MB), pinned to one revision with SHA-256s, run in plain Rust in `parc_core::embed`: the HF `tokenizers` crate, then BERT with `gemm` for the matrix products. No ONNX, no native library, no outside program. Its vectors match PyTorch's to six decimals. The weights file is memory-mapped and its 384 MB word table read in place, so vault servers share one copy.
+  - **Chosen by measurement** over `multilingual-e5-small` and `granite-embedding-107m-multilingual`, each calibrated the same way. On the benchmark: 7 of 11 sources found against 3 (E5) and 5 (Granite). On 14 notes of this repo's vault paraphrased (4 in Finnish), the original came first 8 times and in the top 3 12 times (MRR 0.73; E5 0.67, Granite 0.68). From Finnish to English it was far ahead: E5 ranked those 9th, 22nd, 7th and 8th.
+  - **Long notes** are read in overlapping 128-token windows, the length the model was trained on (at most 16 per note); two notes are as close as their closest windows.
+  - **Evidence:** a similarity of 0.47 counts on its own (just above the 99th percentile of unrelated pairs in the benchmark). Below 0.2 the model reads two notes as unrelated, and shared words alone no longer count; that fixes "client pitch, not a football pitch". Both bars, and the spread they come from, are in `scorecard-meaning.txt`.
+  - **Vectors** live in `index.db` (`meaning_*` tables, outside the index's own schema), keyed by file revision so an index rebuild keeps them. `embed::fill` computes missing ones, never the sync on open. Long-running servers (JSON-RPC and MCP) fill in the background at low priority, with a lease so two servers on one vault don't both do it. `parc recall` fills before answering.
+  - **Where:** one folder per computer, `$PARC_MODELS_DIR` or `~/.local/share/parc/models`, never a path a vault names. **Settings → Recall** in the desktop app downloads it (resumable, hash-checked, only huggingface.co) and shows how much it has read. The Related panel says *Similar*. `parc recall`, `recall.context` and the MCP `recall` tool use it when it is there and say when it isn't. New RPC: `meaning.status`.
+  - **Speed** with the model, in a long-running server: 8 ms for a short draft and 24 ms for 70 words in a 100-note vault; 36 and 50 ms with 10,000 notes (lexical alone: 15). Loading the model takes under 0.1 s; filling 10,000 notes took 26 s on 32 threads.
+  - **Memory:** about 115 MB per server with the model loaded. parc has its own tokenizer for these models (`embed::Tokenizer`, checked token for token against the `tokenizers` crate by `tests/tokenizer.rs`), because the crate's took 280 MB, and a server runs per vault.
+  - **Lexical, measured on the benchmark:** tag matches now tie (and weigh by rarity) instead of ranking newest first, and links tie, so other signals order them; ties go to the older note. Prefix matching for inflected words was tried and dropped: no case gained a source, and three gained chance matches (*leaves* ~ *leave*, *starts* ~ *starter*). The meaning model handles inflection.
+  - **Scorecards:** lexical 2 of 11 found, 3 of 4 abstained; with meaning 7 of 11, 4 of 4, and 5 other fragments within the limits. Still missed: the ferry insight (similarity 0.29), Finnish→English potluck (0.32), and both early-run notes (0.39, 0.34).
 - **Tabs and split view** in the desktop app (2026-11-24):
   - Fragments and views open in tabs, in up to four groups side by side, each with its own strip. A click opens the group's **preview** tab (italic), which the next click replaces; editing, a double-click or moving it keeps it. A fragment is open in one tab at most: opening it again shows that tab.
   - **Beside:** Ctrl+click, or Ctrl+Enter in the list and Go to…, opens in the next group. Tabs drag along a strip, onto another group, or onto a page's left or right third to split; fragments drag in from the list. Keys as in a code editor: Ctrl+W, Ctrl+Tab, Ctrl+1–4, Ctrl+Alt+←/→, Ctrl+Shift+T, and a tab context menu. Ctrl+W no longer reaches the default menu's Close Window.
@@ -69,12 +80,17 @@ Each step can be reviewed on its own:
 
 1. ~~Benchmark~~ (done, above).
 2. ~~`recall.context`~~ (done, above).
-3. A local embedding model, downloaded in the app like the whisper models. It has to be **multilingual**: the benchmark has Finnish↔English cases, because dictation is in both. It joins `recall` as one more ranking, and gets its own scorecard next to the lexical one.
+3. ~~A local multilingual embedding model~~ (done, above). Follow-ups:
+   - CI never runs the meaning scorecard (no model there); cache the 480 MB download in CI, or run it before each release.
+   - Keep vectors in memory in a long-running server: at 10,000 notes, reading them from SQLite is most of the 20 ms meaning adds.
+   - Batch several notes per forward pass when filling, so weights are read once per batch rather than once per note (filling is memory-bound).
+   - The benchmark has 12 cases and decided both thresholds; add cases (more paraphrases, longer notes, Finnish↔English) before tuning further.
+   - Deleting the model takes effect when parc restarts; the servers keep it loaded until then.
 4. ~~The Related panel~~ (done, above). Still to do:
    - the quick capture window (`Super+N`) has no panel yet (covered under step 3 below)
    - ~~a long-running `parc-server` child~~ (done in Step 1 above)
 
-Cheap lexical improvements to measure with the benchmark before step 3: prefix matching for long words (Finnish inflection) and ranking tag matches by something other than newest first (the tagged case misses at rank 4).
+Cheap lexical improvements were measured (see step 3 above): tied tag and link ranks kept, prefix matching dropped.
 
 ### 2. ~~Agent~~ (done)
 

@@ -42,7 +42,7 @@ Writes run the vault's hooks, so only point an agent at vaults you trust.
 | Tool | Does |
 |------|------|
 | `search` | Full-text search plus the [search DSL]({{ '/search-dsl/' | url }}) (`type:todo status:open #backend due:this-week`). An empty query lists recent fragments. |
-| `recall` | The fragments related to a saved fragment (`id`) or to text being written (`text`), however old, each with why it matched, its revision and short verbatim excerpts with line numbers. No results means nothing is clearly related. |
+| `recall` | The fragments related to a saved fragment (`id`) or to text being written (`text`), however old, each with why it matched, its revision and short verbatim excerpts with line numbers. With the [meaning model]({{ '/cli/search/' | url }}#the-meaning-model) installed, it also finds notes that say the same thing in other words or another language, and says when the model isn't there. No results means nothing is clearly related. |
 | `get_fragment` | One fragment in full: its Markdown file, its revision, and what links to it. |
 | `list_types` | Each type's fields, allowed values and defaults. |
 | `list_tags` | Tags in use, most used first. |

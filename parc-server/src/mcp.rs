@@ -41,11 +41,17 @@ Prefix a value with ! to negate it (status:!done). An empty query lists the most
 pub struct McpServer {
     vault: PathBuf,
     read_only: bool,
+    /// Keeps meaning vectors up to date for `recall`, when serving stdio.
+    meaning: Option<crate::meaning::Filler>,
 }
 
 impl McpServer {
     pub fn new(vault: PathBuf, read_only: bool) -> Self {
-        Self { vault, read_only }
+        Self {
+            vault,
+            read_only,
+            meaning: None,
+        }
     }
 
     /// Handle one JSON-RPC message and return the reply to send, if any:
@@ -75,6 +81,9 @@ impl McpServer {
             "tools/call" => self.call(&params),
             _ => Err(RpcError::method_not_found(method)),
         };
+        if let Some(filler) = &self.meaning {
+            filler.nudge();
+        }
         Some(reply(id, result))
     }
 
@@ -196,10 +205,11 @@ fn recall_tool() -> Value {
         "recall",
         "Recall related fragments",
         "Find fragments related to a saved fragment or to text being written, however long ago they were written. \
-Each comes with why it matched (shared words, tags, links), its revision and short verbatim excerpts with line numbers. \
+Each comes with why it matched (shared words, tags, links, similar meaning), its revision and short verbatim excerpts with line numbers. \
 Pass `id` for a saved fragment, or `text` for a draft (with `id` too when the draft edits that fragment). \
 No results means nothing is clearly related: say so rather than guess. \
-Matching is by shared words, tags and links, so a note that says the same thing in other words can be missed.",
+When the meaning model is installed on this computer, a note that says the same thing in other words, or in another language, is found too; \
+the result says when it isn't, and then such a note can be missed.",
         object(
             json!({
                 "id": { "type": "string", "description": "Fragment ID or unique prefix." },
@@ -482,18 +492,32 @@ fn recall(vault: &Path, args: &Map<String, Value>) -> ToolResult {
     }
     let ctx = methods::recall::context(vault, params).map_err(rpc_message)?;
     let sources = ctx["sources"].as_array().cloned().unwrap_or_default();
+    let meaning = &ctx["meaning"];
+    let note = if meaning.is_null() {
+        "\n(The meaning model isn't installed, so matching was by words, tags and links only.)"
+            .to_string()
+    } else {
+        match meaning["pending"].as_u64().unwrap_or(0) {
+            0 => String::new(),
+            pending => format!(
+                "\n(The meaning model hasn't read {pending} fragment{} yet; \
+                 those were matched by words, tags and links only.)",
+                if pending == 1 { "" } else { "s" }
+            ),
+        }
+    };
     if sources.is_empty() {
         let searched = ctx["seed"]["words"].as_array().map_or(0, Vec::len);
         return Ok(
             if searched == 0 && ctx["seed"]["tags"].as_array().is_none_or(Vec::is_empty) {
                 "Nothing to go on yet: the text has no words to search for.".to_string()
             } else {
-                "Nothing in the vault is clearly related.".to_string()
+                format!("Nothing in the vault is clearly related.{note}")
             },
         );
     }
     let mut text = format!(
-        "{} related fragment{}{}:\n",
+        "{} related fragment{}{}:{note}\n",
         sources.len(),
         if sources.len() == 1 { "" } else { "s" },
         if ctx["truncated"] == true {
@@ -548,6 +572,10 @@ fn recall(vault: &Path, args: &Map<String, Value>) -> ToolResult {
         let words = list("shared_words");
         if !words.is_empty() {
             why.push(format!("words {}", words.join(", ")));
+        }
+        if reasons["similar"] == true {
+            let s = reasons["similarity"].as_f64().unwrap_or(0.0);
+            why.push(format!("similar meaning ({s:.2})"));
         }
         text.push_str(&format!("\n    why: {}", why.join("; ")));
         for e in s["excerpts"].as_array().into_iter().flatten() {
@@ -770,7 +798,8 @@ fn link_fragments(vault: &Path, args: &Map<String, Value>) -> ToolResult {
 /// Serve MCP over stdin/stdout: one JSON-RPC message per line. Logs belong on
 /// stderr; stdout carries only protocol messages.
 pub fn run_stdio(vault: PathBuf, read_only: bool) -> anyhow::Result<()> {
-    let server = McpServer::new(vault, read_only);
+    let mut server = McpServer::new(vault.clone(), read_only);
+    server.meaning = Some(crate::meaning::Filler::spawn(vault));
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     serve(&server, &mut stdin.lock(), &mut stdout.lock())
@@ -842,6 +871,8 @@ mod tests {
     use super::*;
 
     fn server(read_only: bool) -> (tempfile::TempDir, McpServer) {
+        // Whether the meaning model is installed here must not change results.
+        parc_core::embed::set_enabled(false);
         let tmp = tempfile::TempDir::new().unwrap();
         let vault = tmp.path().join(".parc");
         parc_core::vault::init_vault(&vault).unwrap();
@@ -1058,7 +1089,11 @@ mod tests {
 
         let (text, is_error) = call(&server, "recall", json!({ "text": "kitchen timer broken" }));
         assert!(!is_error);
-        assert_eq!(text, "Nothing in the vault is clearly related.");
+        assert_eq!(
+            text,
+            "Nothing in the vault is clearly related.\n\
+             (The meaning model isn't installed, so matching was by words, tags and links only.)"
+        );
         let (text, is_error) = call(&server, "recall", json!({}));
         assert!(is_error, "{text}");
     }

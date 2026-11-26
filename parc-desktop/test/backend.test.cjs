@@ -7,6 +7,8 @@ const crypto = require('node:crypto');
 const { archive, speechConfig, speechLanguage, checkWav, transcribe } = require('../backend.cjs');
 const { draftStore } = require('../drafts.cjs');
 const models = require('../models.cjs');
+// The parc-server children never see a meaning model this computer may have downloaded.
+process.env.PARC_MODELS_DIR = '/nonexistent/parc-test-models';
 const wav = import('../wav.mjs');
 const graphLayout = import('../graph-layout.mjs');
 
@@ -311,6 +313,34 @@ test('a server that ignores the resume request restarts the download', async t =
   await assert.rejects(models.download(model, { dir, fetch: fakeFetch(bytes, { failAt: 2048 }).fetch }));
   await models.download(model, { dir, fetch: fakeFetch(bytes, { honorRange: false }).fetch });
   assert.deepEqual(await fs.readFile(path.join(dir, model.file)), bytes);
+});
+
+test('a file with its own pinned URL (the meaning model) downloads from it', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-desktop-test-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const bytes = crypto.randomBytes(3000), url = 'https://huggingface.co/org/model/resolve/0123abc/tokenizer.json';
+  const file = { ...fakeModel(bytes), file: 'tokenizer.json', url }, fetched = fakeFetch(bytes);
+  await models.download(file, { dir, fetch: fetched.fetch });
+  assert.equal(fetched.calls[0].url, url);
+  assert.deepEqual(await fs.readFile(path.join(dir, 'tokenizer.json')), bytes);
+});
+
+test('meaning.status names the pinned model files and where they go, without loading the model', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-desktop-test-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const store = archive(path.join(dir, '.parc'));
+  await store.init();
+  const status = await store.meaningStatus();
+  assert.equal(status.installed, false);
+  assert.equal(status.loaded, false);
+  assert.deepEqual(status.coverage, { embedded: 0, total: 0 });
+  assert.ok(status.model.files.length >= 3);
+  for (const f of status.model.files) {
+    assert.ok(f.url.startsWith('https://huggingface.co/') && f.url.includes(status.model.revision), f.url);
+    assert.match(f.sha256, /^[a-f0-9]{64}$/);
+  }
+  assert.equal(status.model.size, status.model.files.reduce((n, f) => n + f.size, 0));
+  store.close?.();
 });
 
 test('a download that does not match its hash is deleted', async t => {

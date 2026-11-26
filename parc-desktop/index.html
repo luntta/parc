@@ -171,6 +171,16 @@
         </div>
         <p class="setting-hint">Audio is transcribed on this computer by whisper.cpp and never uploaded. Install whisper.cpp for whisper-cli.</p>
       </section>
+      <section aria-labelledby="recallHeading">
+        <h3 id="recallHeading">Recall</h3>
+        <p id="meaningState" class="setting-state"></p>
+        <div class="setting setting-stack">
+          <div class="setting-text"><strong id="meaningLabel">Meaning model</strong><span class="setting-sub">Lets Related find notes that say the same thing in other words, or in another language. Downloaded from Hugging Face only when you press Download.</span></div>
+          <ul id="meaningList" class="model-list" aria-labelledby="meaningLabel"></ul>
+          <p id="meaningMessage" class="setting-sub" role="status"></p>
+        </div>
+        <p class="setting-hint">Notes are read on this computer and never uploaded. The parc command and every vault use the same download.</p>
+      </section>
       <section aria-labelledby="vaultHeading">
         <h3 id="vaultHeading">Types and statuses</h3>
         <div class="setting">

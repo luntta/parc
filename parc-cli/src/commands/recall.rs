@@ -1,15 +1,17 @@
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 
 use anyhow::{bail, Result};
 use parc_core::config::load_config;
 use parc_core::recall::{self, RecallQuery, Seed};
-use parc_core::{fragment, index};
+use parc_core::{embed, fragment, index};
 
 use crate::render::sanitize_terminal_text;
 
 /// `parc recall`: the fragments related to a saved one (`id`) or to draft
-/// text (`--text`, `-` for stdin), however old.
+/// text (`--text`, `-` for stdin), however old. With the meaning model
+/// installed, vectors still missing are computed first, so the first run on a
+/// large vault takes a while.
 pub fn run(
     vault: &Path,
     id: Option<String>,
@@ -42,6 +44,16 @@ pub fn run(
         Seed::Draft { id, .. } => Some(id.is_some()),
     };
     let conn = index::open_index(vault)?;
+    let model = match embed::shared() {
+        Ok(model) => model,
+        Err(e) => {
+            eprintln!("warning: {e}; recalling by words, tags and links only");
+            None
+        }
+    };
+    if let Some(model) = &model {
+        read_for_meaning(&conn, model)?;
+    }
     let ctx = recall::context(
         &conn,
         &RecallQuery {
@@ -49,6 +61,7 @@ pub fn run(
             as_of: None,
             limit,
         },
+        model.as_deref(),
     )?;
 
     if json {
@@ -99,6 +112,9 @@ pub fn run(
         if !s.reasons.shared_words.is_empty() {
             why.push(format!("words {}", s.reasons.shared_words.join(", ")));
         }
+        if s.reasons.similar {
+            why.push("similar meaning".to_string());
+        }
         println!("{indent}{}", sanitize_terminal_text(&why.join("; ")));
         for e in &s.excerpts {
             println!("{indent}{}: {}", e.line, sanitize_terminal_text(&e.text));
@@ -107,6 +123,25 @@ pub fn run(
     if ctx.truncated {
         println!();
         println!("More were found; raise --limit to see them.");
+    }
+    Ok(())
+}
+
+/// Compute the vectors the index lacks, on every core, saying how far along
+/// it is when stderr is a terminal.
+fn read_for_meaning(conn: &rusqlite::Connection, model: &embed::Model) -> Result<()> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let tty = io::stderr().is_terminal();
+    let mut shown = false;
+    embed::fill(conn, model, None, threads, &mut |done, total| {
+        if tty {
+            eprint!("\rReading notes for meaning: {done} of {total}");
+            let _ = io::stderr().flush();
+            shown = true;
+        }
+    })?;
+    if shown {
+        eprintln!();
     }
     Ok(())
 }

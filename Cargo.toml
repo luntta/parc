@@ -6,3 +6,13 @@ resolver = "2"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# The meaning model (parc_core::embed) runs its matrix products in tests too;
+# unoptimised, they are a hundred times slower. Kept by hand: `cargo remove`
+# drops profile entries for packages that aren't direct dependencies.
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3
+[profile.dev.package.pulp]
+opt-level = 3

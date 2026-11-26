@@ -2149,7 +2149,7 @@ function renderSettings(view = settingsView) {
   $('shortcutState').textContent = view.shortcut?.error || (view.shortcut?.asked ? asked : view.shortcut?.active ? `${view.quickCaptureShortcut} opens quick capture.` : 'Leave empty for none.');
   $('shortcutState').dataset.tone = view.shortcut?.error ? 'error' : view.shortcut?.asked ? 'warn' : '';
   $('captureCommand').textContent = view.captureCommand;
-  renderLanguages(); renderModels();
+  renderLanguages(); renderModels(); renderMeaning();
 }
 function renderLanguages() {
   const box = $('languageList'), chosen = pending.speechLanguages;
@@ -2246,6 +2246,75 @@ async function deleteModel(m) {
     await checkSpeech(); await refreshModels();
   } catch (err) { modelMessage(err); }
 }
+// ── The meaning model (recall): one model, downloaded for every vault and the parc command ──
+let meaning = null, meaningPoll = null;
+function meaningMessage(message) { $('meaningMessage').textContent = message ? cleanError(message) : ''; }
+const count = n => n.toLocaleString();
+function renderMeaning() {
+  const state = $('meaningState'), list = $('meaningList');
+  list.replaceChildren();
+  if (!meaning) { state.textContent = 'Recall isn’t available right now.'; state.dataset.tone = 'warn'; return; }
+  const { embedded, total } = meaning.coverage;
+  if (meaning.error) { state.textContent = `The meaning model didn’t load: ${meaning.error}`; state.dataset.tone = 'error'; }
+  else if (!meaning.installed) { state.textContent = 'Related finds notes by shared words, tags and links.'; state.dataset.tone = ''; }
+  else if (embedded < total) { state.textContent = `Reading your notes for meaning: ${count(embedded)} of ${count(total)}.`; state.dataset.tone = ''; }
+  else { state.textContent = 'Related finds notes by meaning too, across languages.'; state.dataset.tone = 'ok'; }
+  const li = el('li', 'model'), text = el('div', 'model-text'), actions = el('div', 'model-actions');
+  li.dataset.id = 'meaning';
+  text.append(el('strong', '', meaning.label), el('span', 'model-note', `${meaning.license}. ${megabytes(meaning.size)}.`));
+  if (meaning.downloading) {
+    const bar = el('progress'); bar.max = meaning.size; bar.value = meaning.downloading.received;
+    bar.setAttribute('aria-label', `Downloading ${meaning.label}`);
+    actions.append(bar, el('span', 'model-percent', `${Math.floor(100 * meaning.downloading.received / meaning.size)}%`),
+      smallButton('Cancel', 'ghost', () => api.cancelMeaningDownload().catch(meaningMessage)));
+  } else if (meaning.installed) {
+    const remove = smallButton(icon('trash'), 'ghost', () => deleteMeaning());
+    remove.setAttribute('size', 'icon'); remove.setAttribute('aria-label', `Delete ${meaning.label}`); remove.title = remove.getAttribute('aria-label');
+    actions.append(el('span', 'model-in-use', 'In use'), remove);
+  } else actions.append(smallButton('Download', 'outline', () => downloadMeaning()));
+  li.append(text, actions);
+  list.append(li);
+  // While notes are being read, show it move.
+  const reading = meaning.installed && !meaning.error && embedded < total;
+  if (reading && !meaningPoll) meaningPoll = setInterval(() => refreshMeaning().catch(() => {}), 2000);
+  if (!reading && meaningPoll) { clearInterval(meaningPoll); meaningPoll = null; }
+}
+async function refreshMeaning() {
+  if (!$('settings').hasAttribute('open')) { clearInterval(meaningPoll); meaningPoll = null; return; }
+  meaning = await api.meaningModel();
+  renderMeaning();
+}
+async function downloadMeaning() {
+  meaningMessage(`Downloading ${meaning.label}…`);
+  const done = api.downloadMeaningModel();
+  refreshMeaning().catch(() => {});
+  try {
+    const result = await done;
+    if (result.cancelled) meaningMessage('Download cancelled. Download again to resume where it stopped.');
+    else {
+      meaningMessage(`${meaning.label} downloaded. Your notes are read in the background.`);
+      if (!$('settings').hasAttribute('open')) status('Meaning model downloaded. Related now finds notes by meaning too.');
+    }
+  } catch (err) { meaningMessage(err); }
+  await refreshMeaning().catch(() => {});
+}
+async function deleteMeaning() {
+  try {
+    const result = await api.deleteMeaningModel();
+    if (!result.deleted) return;
+    meaningMessage(`${meaning.label} deleted. Recall stops using it when parc restarts.`);
+    await refreshMeaning();
+  } catch (err) { meaningMessage(err); }
+}
+api.onMeaningProgress(p => {
+  if (!meaning) return;
+  if (p.done) { meaning.downloading = null; return; }
+  meaning.downloading = { received: p.received, size: p.size };
+  const row = $('meaningList').querySelector('[data-id="meaning"]'), bar = row?.querySelector('progress');
+  if (!bar) return renderMeaning();
+  bar.value = p.received;
+  row.querySelector('.model-percent').textContent = `${Math.floor(100 * p.received / p.size)}%`;
+});
 // Moves the open dialog's progress bar in place, so the Cancel button keeps focus.
 api.onModelProgress(p => {
   const m = models?.models.find(x => x.id === p.id);
@@ -2262,8 +2331,9 @@ async function openSettings() {
   pending = { whisperModel: view.whisperModel, whisperBin: view.whisperBin, speechLanguages: [...(view.speechLanguages || [])], theme: view.theme };
   for (const radio of $('themeChoice').querySelectorAll('input')) radio.checked = radio.value === view.theme;
   $('shortcutInput').value = view.quickCaptureShortcut;
-  modelMessage('');
-  [models] = await Promise.all([api.speechModels(pending.speechLanguages).catch(() => null), checkSpeech()]);
+  modelMessage(''); meaningMessage('');
+  [models, meaning] = await Promise.all([api.speechModels(pending.speechLanguages).catch(() => null),
+    api.meaningModel().catch(() => null), checkSpeech()]);
   renderSettings(view);
   $('settings').open();
 }

@@ -1,8 +1,9 @@
 Recall scorecard: lexical baseline (parc_core::recall)
 Fixtures: tests/fixtures/recall/*.json. Accept changes: PARC_RECALL_BLESS=1 cargo test -p parc-core --test recall_bench
 
-Sources found within each case's limit: 1 of 11
+Sources found within each case's limit: 2 of 11
 Abstained where nothing is related:     3 of 4
+Unexpected fragments within the limits: 4
 
 == abstain: coffee filters (Finnish)  [abstained]
 
@@ -42,11 +43,11 @@ Abstained where nothing is related:     3 of 4
    wanted   paraphrase/sourdough_old: rank 1
    returned 1. paraphrase/sourdough_old     words: acetone, smell, smells, starter
 
-== tagged: slugs in the garden, 3 years  [found 0 of 1 in the top 3]
-   wanted   paraphrase/garden_old: rank 4, outside the top 3
+== tagged: slugs in the garden, 3 years  [found 1 of 1 in the top 3]
+   wanted   paraphrase/garden_old: rank 3
    returned 1. background/compost           tags: garden; words: week
-            2. background/seed_order        tags: garden
-            3. background/rhubarb           tags: garden
+            2. background/raised_bed        tags: garden
+            3. paraphrase/garden_old        tags: garden
 
 == transcript: floppy tomato starts, 3 years  [found 0 of 1 in the top 3]
    wanted   transcript/seedlings_old: not returned; shares with the seed: tomato

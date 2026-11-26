@@ -1,5 +1,6 @@
 pub mod jsonrpc;
 pub mod mcp;
+pub mod meaning;
 pub mod methods;
 pub mod router;
 pub mod transport;
@@ -17,7 +18,7 @@ pub enum TransportMode {
 
 /// Run the parc JSON-RPC server with the given vault and transport.
 pub async fn run(vault_path: PathBuf, transport: TransportMode) -> anyhow::Result<()> {
-    let router = Arc::new(Router::new(vault_path));
+    let router = Arc::new(Router::with_meaning(vault_path));
 
     match transport {
         TransportMode::Stdio => transport::run_stdio(router).await,

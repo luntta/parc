@@ -329,6 +329,10 @@ async function check() {
   await js('document.querySelector("#openSettings").click()');
   await until('document.querySelectorAll("#modelList li").length === 5');
   assert.equal(await js('document.querySelector("#themeChoice input:checked")?.value'), 'system');
+  // Recall's meaning model is offered for download, named by parc-server, until it is there.
+  await until('document.querySelector("#meaningList li [variant=outline]")?.textContent === "Download"');
+  assert.equal(await js('document.querySelector("#meaningState").textContent'), 'Related finds notes by shared words, tags and links.');
+  assert.match(await js('document.querySelector("#meaningList .model-note").textContent'), /^Apache-2\.0\. \d+ MB\.$/);
   // The command to bind in a desktop's own shortcut settings copies with one click.
   assert.match(await js('document.querySelector("#captureCommand").textContent'), / --capture$/);
   await js('document.querySelector("#copyCaptureCommand").click()');

@@ -37,11 +37,13 @@ async function installed(model, dir) {
 }
 
 /**
- * Download `model` into `dir`, resuming a previous partial download when the server allows it.
+ * Download `model` ({ file, size, sha256 }, and `url` when it isn't a whisper.cpp model) into `dir`, resuming a previous
+ * partial download when the server allows it.
  * fetch: (url, init) => Response, e.g. Electron's net.fetch. onProgress(received, size). Resolves to the file's path.
  * An abort leaves the partial file for the next attempt; a file whose hash doesn't match is deleted.
  */
 async function download(model, { dir, fetch, signal, onProgress = () => {} }) {
+  const url = model.url || SOURCE + model.file;
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const target = path.join(dir, model.file), part = `${target}.part`;
   let hash = crypto.createHash('sha256'), offset = 0;
@@ -51,7 +53,7 @@ async function download(model, { dir, fetch, signal, onProgress = () => {} }) {
     offset = partial.size;
   } else if (partial) await fs.rm(part, { force: true });
 
-  const response = await fetch(SOURCE + model.file, { signal, headers: offset ? { Range: `bytes=${offset}-` } : {} });
+  const response = await fetch(url, { signal, headers: offset ? { Range: `bytes=${offset}-` } : {} });
   if (offset && response.status !== 206) { hash = crypto.createHash('sha256'); offset = 0; } // no resume: start over
   if (!response.ok) throw new Error(`The download failed (HTTP ${response.status}). Try again later.`);
 

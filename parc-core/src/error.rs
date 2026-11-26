@@ -40,4 +40,7 @@ pub enum ParcError {
 
     #[error("plugin error: {0}")]
     PluginError(String),
+
+    #[error("meaning model: {0}")]
+    ModelError(String),
 }

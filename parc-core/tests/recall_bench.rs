@@ -6,6 +6,13 @@
 //!
 //!     PARC_RECALL_BLESS=1 cargo test -p parc-core --test recall_bench
 //!
+//! There are two scorecards. `scorecard-lexical.txt` is recall without the
+//! meaning model (words, tags and links), checked on every run.
+//! `scorecard-meaning.txt` adds the model ([`embed::MODEL`]) and is checked
+//! when the model is installed in [`embed::model_dir`]; otherwise that test
+//! says it was skipped. `PARC_RECALL_MODEL=<catalog id>` scores another
+//! model of [`embed::CATALOG`] into `scorecard-meaning-<id>.txt`.
+//!
 //! Two totals, never blended: sources found within each case's limit, and
 //! cases where nothing is related and nothing was returned.
 //!
@@ -19,6 +26,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use parc_core::embed::{self, Model};
 use parc_core::hook::ScriptRunner;
 use parc_core::ops::Writer;
 use parc_core::recall::{self, Candidate, RecallQuery, Seed};
@@ -34,8 +42,37 @@ fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/recall")
 }
 
-fn scorecard_path() -> PathBuf {
-    fixtures_dir().join("scorecard-lexical.txt")
+fn scorecard_path(meaning: Option<&Model>) -> PathBuf {
+    let name = match meaning {
+        None => "scorecard-lexical.txt".to_string(),
+        Some(m) if std::ptr::eq(m.spec(), embed::MODEL) || m.spec().id == embed::MODEL.id => {
+            "scorecard-meaning.txt".to_string()
+        }
+        Some(m) => format!("scorecard-meaning-{}.txt", m.spec().id),
+    };
+    fixtures_dir().join(name)
+}
+
+/// The model to score with: [`embed::MODEL`], or the catalog entry
+/// `PARC_RECALL_MODEL` names. `None` (with a note) when it isn't installed.
+fn installed_model() -> Option<Model> {
+    let spec = match std::env::var("PARC_RECALL_MODEL") {
+        Ok(id) => embed::CATALOG
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap_or_else(|| panic!("PARC_RECALL_MODEL: no model {id:?} in the catalog")),
+        Err(_) => embed::MODEL,
+    };
+    let dir = embed::model_dir(spec).expect("no data folder for models");
+    if !embed::is_installed(spec, &dir) {
+        eprintln!(
+            "skipped: the meaning model {} is not installed in {}",
+            spec.id,
+            dir.display()
+        );
+        return None;
+    }
+    Some(Model::load(spec, &dir).unwrap())
 }
 
 // ── Fixture files ──────────────────────────────────────────────────────
@@ -88,6 +125,8 @@ struct Loaded {
     /// The title and body as one text, and the tags: the fragment as a draft.
     text: String,
     tags: Vec<String>,
+    /// Its vectors, when scoring with a model.
+    vector: Option<Vec<Vec<f32>>>,
 }
 
 struct Case {
@@ -98,7 +137,8 @@ struct Case {
     limit: usize,
 }
 
-struct Bench {
+struct Bench<'m> {
+    meaning: Option<&'m Model>,
     _tmp: tempfile::TempDir,
     vault: PathBuf,
     by_key: BTreeMap<String, Loaded>,
@@ -108,7 +148,13 @@ struct Bench {
     labels: Vec<String>,
 }
 
-fn load() -> Bench {
+fn load() -> Bench<'static> {
+    load_with(None)
+}
+
+/// The benchmark vault, with every fragment's vector computed when scoring
+/// with a model.
+fn load_with(meaning: Option<&Model>) -> Bench<'_> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(fixtures_dir())
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -170,11 +216,13 @@ fn load() -> Bench {
         let id = fixture_id(key, f.created_at);
         let mut words = recall::content_words(&format!("{}\n{}", f.title, f.body));
         words.extend(f.tags.iter().map(|t| t.to_lowercase()));
+        let text = format!("{}\n{}", f.title, f.body);
         let loaded = Loaded {
             id,
             created_at: f.created_at,
             words,
-            text: format!("{}\n{}", f.title, f.body),
+            vector: meaning.map(|m| m.embed(&embed::passage(&text)).unwrap()),
+            text,
             tags: f.tags.clone(),
         };
         assert!(
@@ -213,11 +261,18 @@ fn load() -> Bench {
             .unwrap_or_else(|e| panic!("{key}: {e}"));
     }
 
+    if let Some(model) = meaning {
+        let conn = parc_core::index::open_index(&vault).unwrap();
+        let report = embed::fill(&conn, model, None, 4, &mut |_, _| {}).unwrap();
+        assert_eq!(report.remaining, 0);
+    }
+
     let key_of = by_key
         .iter()
         .map(|(key, l)| (l.id.clone(), key.clone()))
         .collect();
     Bench {
+        meaning,
         _tmp: tmp,
         vault,
         by_key,
@@ -243,7 +298,7 @@ fn fixture_id(key: &str, created_at: DateTime<Utc>) -> String {
     ulid::Ulid::from_parts(ms, random).to_string()
 }
 
-impl Bench {
+impl Bench<'_> {
     fn recall(&self, seed_key: &str, as_of: bool) -> Vec<Candidate> {
         self.recall_seed(
             seed_key,
@@ -272,6 +327,7 @@ impl Bench {
                 as_of: as_of.then_some(self.by_key[seed_key].created_at),
                 limit: DEPTH,
             },
+            self.meaning,
         )
         .unwrap()
     }
@@ -290,10 +346,76 @@ impl Bench {
             .filter(|w| theirs.contains(w))
             .map(String::as_str)
             .collect();
-        match shared.as_slice() {
+        let words = match shared.as_slice() {
             [] => "shares no words with the seed".to_string(),
             words => format!("shares with the seed: {}", words.join(", ")),
+        };
+        match self.closeness(a, b) {
+            Some(s) => format!("{words}; meaning {s:.3}"),
+            None => words,
         }
+    }
+
+    /// How close two fixture fragments are in meaning, with a model.
+    fn closeness(&self, a: &str, b: &str) -> Option<f32> {
+        let (a, b) = (
+            self.by_key[a].vector.as_ref()?,
+            self.by_key[b].vector.as_ref()?,
+        );
+        Some(embed::similarity(a, b))
+    }
+
+    /// Where `key` ranks by meaning alone among the fragments written before
+    /// the case's seed.
+    fn meaning_rank(&self, case: &Case, key: &str) -> Option<usize> {
+        let own = self.closeness(&case.seed, key)?;
+        let seed = &self.by_key[&case.seed];
+        let closer = self
+            .by_key
+            .iter()
+            .filter(|(k, l)| *k != &case.seed && *k != key && l.created_at <= seed.created_at)
+            .filter(|(k, _)| self.closeness(&case.seed, k).is_some_and(|s| s > own))
+            .count();
+        Some(closer + 1)
+    }
+
+    /// How close in meaning each case's seed is to the fragments written
+    /// before it: the expected ones, and all the others. What the model's
+    /// thresholds are calibrated on.
+    fn closeness_spread(&self) -> Option<(Vec<f32>, Vec<f32>)> {
+        let (mut related, mut unrelated) = (Vec::new(), Vec::new());
+        for case in &self.cases {
+            let seed = &self.by_key[&case.seed];
+            for (key, l) in &self.by_key {
+                if *key == case.seed || l.created_at > seed.created_at {
+                    continue;
+                }
+                let s = self.closeness(&case.seed, key)?;
+                if case.expected.contains(key) {
+                    related.push(s);
+                } else {
+                    unrelated.push(s);
+                }
+            }
+        }
+        related.sort_by(f32::total_cmp);
+        unrelated.sort_by(f32::total_cmp);
+        Some((related, unrelated))
+    }
+
+    /// The fragment written before `seed` that is closest to it in meaning,
+    /// among those the case doesn't expect: how close chance comes.
+    fn closest_unexpected(&self, case: &Case) -> Option<(String, f32)> {
+        let seed = &self.by_key[&case.seed];
+        self.by_key
+            .iter()
+            .filter(|(key, l)| {
+                *key != &case.seed
+                    && l.created_at <= seed.created_at
+                    && !case.expected.contains(key)
+            })
+            .filter_map(|(key, _)| Some((key.clone(), self.closeness(&case.seed, key)?)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
     }
 }
 
@@ -304,6 +426,8 @@ fn scorecard(bench: &Bench) -> String {
     let mut wanted = 0;
     let mut abstained = 0;
     let mut abstain_cases = 0;
+    // Fragments a case doesn't expect, returned within its limit.
+    let mut others = 0;
     let mut blocks = String::new();
 
     for case in &bench.cases {
@@ -341,10 +465,23 @@ fn scorecard(bench: &Bench) -> String {
                     Some(r) => format!("rank {r}, outside the top {}", case.limit),
                     None => format!("not returned; {}", bench.shared(&case.seed, key)),
                 };
+                let at = match (rank, bench.closeness(&case.seed, key)) {
+                    (Some(_), Some(s)) => format!("{at}; meaning {s:.3}"),
+                    _ => at,
+                };
+                let at = match bench.meaning_rank(case, key) {
+                    Some(r) => format!("{at} (#{r} by meaning)"),
+                    None => at,
+                };
                 lines.push(format!("   wanted   {key}: {at}"));
             }
             wanted += case.expected.len();
             found += hits;
+            others += results
+                .iter()
+                .take(case.limit)
+                .filter(|c| !case.expected.contains(&bench.key(&c.id).to_string()))
+                .count();
             format!(
                 "found {hits} of {} in the top {}",
                 case.expected.len(),
@@ -362,8 +499,11 @@ fn scorecard(bench: &Bench) -> String {
                 "   {label} {}. {:<28} {}",
                 i + 1,
                 bench.key(&c.id),
-                describe(&c.reasons)
+                describe(c)
             ));
+        }
+        if let Some((key, s)) = bench.closest_unexpected(case) {
+            lines.push(format!("   closest unexpected: {key}, meaning {s:.3}"));
         }
         writeln!(blocks, "\n== {}  [{verdict}]", case.name).unwrap();
         for line in lines {
@@ -372,10 +512,19 @@ fn scorecard(bench: &Bench) -> String {
     }
 
     let mut out = String::new();
-    writeln!(
-        out,
-        "Recall scorecard: lexical baseline (parc_core::recall)"
-    )
+    match bench.meaning {
+        None => writeln!(
+            out,
+            "Recall scorecard: lexical baseline (parc_core::recall)"
+        ),
+        Some(m) => writeln!(
+            out,
+            "Recall scorecard: with meaning, {} (similar from {}, unrelated below {})",
+            m.spec().key(),
+            m.spec().similar,
+            m.spec().unrelated
+        ),
+    }
     .unwrap();
     writeln!(
         out,
@@ -393,10 +542,36 @@ fn scorecard(bench: &Bench) -> String {
         "Abstained where nothing is related:     {abstained} of {abstain_cases}"
     )
     .unwrap();
+    writeln!(out, "Unexpected fragments within the limits: {others}").unwrap();
+    if let Some((related, unrelated)) = bench.closeness_spread() {
+        let at = |v: &[f32], p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        writeln!(
+            out,
+            "\nMeaning, seed to an earlier fragment it isn't about ({} pairs): median {:.3}, \
+             75th percentile {:.3}, 90th {:.3}, 99th {:.3}, highest {:.3}",
+            unrelated.len(),
+            at(&unrelated, 0.5),
+            at(&unrelated, 0.75),
+            at(&unrelated, 0.9),
+            at(&unrelated, 0.99),
+            unrelated[unrelated.len() - 1],
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "Meaning, seed to an expected source ({} pairs): lowest {:.3}, median {:.3}, highest {:.3}",
+            related.len(),
+            related[0],
+            at(&related, 0.5),
+            related[related.len() - 1],
+        )
+        .unwrap();
+    }
     out + &blocks
 }
 
-fn describe(r: &recall::Reasons) -> String {
+fn describe(c: &Candidate) -> String {
+    let r = &c.reasons;
     let mut parts = Vec::new();
     if r.linked {
         parts.push("linked".to_string());
@@ -407,6 +582,14 @@ fn describe(r: &recall::Reasons) -> String {
     if !r.shared_words.is_empty() {
         parts.push(format!("words: {}", r.shared_words.join(", ")));
     }
+    match r.similarity {
+        Some(s) if r.similar => parts.push(format!("similar {s:.3}")),
+        Some(s) => parts.push(format!("meaning {s:.3}")),
+        None => {}
+    }
+    if std::env::var_os("PARC_RECALL_SCORES").is_some() {
+        parts.push(format!("score {:.5}", c.score));
+    }
     parts.join("; ")
 }
 
@@ -414,9 +597,31 @@ fn describe(r: &recall::Reasons) -> String {
 
 #[test]
 fn lexical_scorecard_matches_the_committed_one() {
-    let bench = load();
-    let now = scorecard(&bench);
-    let path = scorecard_path();
+    check_scorecard(&load());
+}
+
+#[test]
+fn meaning_scorecard_matches_the_committed_one() {
+    let Some(model) = installed_model() else {
+        return;
+    };
+    let bench = load_with(Some(&model));
+    check_scorecard(&bench);
+    // A capture recalled while typed and once saved gives one answer with
+    // the model too.
+    for case in &bench.cases {
+        assert_eq!(
+            bench.recall_as_draft(&case.seed),
+            bench.recall(&case.seed, true),
+            "{}",
+            case.name
+        );
+    }
+}
+
+fn check_scorecard(bench: &Bench) {
+    let now = scorecard(bench);
+    let path = scorecard_path(bench.meaning);
     if std::env::var_os(BLESS_VAR).is_some() {
         std::fs::write(&path, &now).unwrap();
         return;

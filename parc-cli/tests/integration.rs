@@ -3,10 +3,17 @@ use predicates::prelude::*;
 use std::path::Path;
 use tempfile::TempDir;
 
+/// The `parc` binary, never with the meaning model: whether one is installed
+/// on this computer must not change what the tests see.
 fn parc() -> Command {
     #[allow(deprecated)]
-    Command::cargo_bin("parc").unwrap()
+    let mut cmd = Command::cargo_bin("parc").unwrap();
+    cmd.env("PARC_MODELS_DIR", NO_MODELS);
+    cmd
 }
+
+/// A models folder that doesn't exist.
+const NO_MODELS: &str = "/nonexistent/parc-test-models";
 
 fn init_vault(dir: &TempDir) -> String {
     let vault_path = dir.path().join(".parc");

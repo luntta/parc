@@ -214,7 +214,7 @@ Find the lines of fragment bodies that contain some text, like `grep`. The deskt
 
 ### recall.context
 
-The fragments related to a saved fragment, or to text that isn't saved yet, however old they are: what a "related notes" panel shows while you write or dictate. Cheap enough to call on every pause in typing (about 20 ms per call on a 10,000-fragment vault, counting process start).
+The fragments related to a saved fragment, or to text that isn't saved yet, however old they are: what a "related notes" panel shows while you write or dictate. Cheap enough to call on every pause in typing: on a 10,000-fragment vault, about 20 ms per call counting process start, or 35 to 55 ms in a long-running server with the meaning model (most of it reading the draft for meaning).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -223,18 +223,26 @@ The fragments related to a saved fragment, or to text that isn't saved yet, howe
 | `tags` | string[] | no | The draft's tags; only with `text` |
 | `limit` | number | no | Most sources to return (default 5, at most 20) |
 
-A source qualifies by a link with the seed (either way), a shared tag, or at least two shared words; common English and Finnish words don't count. The whole vault is searched, archived fragments included. An empty `sources` means nothing is clearly related.
+A source qualifies by a link with the seed (either way), a shared tag, at least two shared words (common English and Finnish words don't count) or, when the [meaning model]({{ '/cli/search/' | url }}#the-meaning-model) is installed, a meaning close enough; shared words don't count on their own when the model reads the two as unrelated. The whole vault is searched, archived fragments included. An empty `sources` means nothing is clearly related.
 
-**Result:** `{ "seed": { "id", "words", "tags" }, "sources": [...], "truncated": <bool> }`. `seed.words` are the words searched for. Each source, best first, is `{ "id", "type", "title", "status", "archived", "created_at", "updated_at", "revision", "score", "reasons", "excerpts" }`:
+**Result:** `{ "seed": { "id", "words", "tags" }, "sources": [...], "truncated": <bool>, "meaning": {...} | null }`. `seed.words` are the words searched for. Each source, best first, is `{ "id", "type", "title", "status", "archived", "created_at", "updated_at", "revision", "score", "reasons", "excerpts" }`:
 - `revision` is the file's revision as `fragment.get` reports it, so a quote can be checked against the fragment later.
-- `reasons` is `{ "shared_words", "shared_tags", "linked" }`.
+- `reasons` is `{ "shared_words", "shared_tags", "linked", "similar", "similarity" }`. `similar` is true when the meaning alone is close enough to count; `similarity` (cosine, at most 1) is there whenever the model has read both.
 - `excerpts` are up to two body lines, verbatim: those with the most shared words, or the first line with text when none has any. Each is `{ "line", "column", "text", "ranges" }`, numbered as in `fragment.grep`; `column` is where `text` starts, past 1 when a long line was cut to the part around its first match, and `ranges` marks the shared words in `text`.
 
-`truncated` is true when more fragments qualified than `limit` allowed.
+`truncated` is true when more fragments qualified than `limit` allowed. `meaning` is `null` without the model, else `{ "model", "compared", "pending" }`: the fragments compared by meaning, and those the model hasn't read yet (found by words, tags and links only). A long-running server reads them in the background.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"recall.context","params":{"text":"Nobody asked in front of the room. Anonymous question slips?"}}
 ```
+
+### meaning.status
+
+The meaning model recall can use, without loading it: what to download and where, whether it is there, and how much of this vault it has read.
+
+**Params:** `{}`
+
+**Result:** `{ "model": { "id", "key", "label", "repo", "revision", "license", "size", "files": [{ "name", "size", "sha256", "url" }] }, "dir", "installed", "loaded", "error", "coverage": { "embedded", "total" } }`. `url`s are pinned to `revision`. `dir` is where the files go (`null` when there is no home folder). `error` is why the model failed to load in this server, if it did.
 
 ### fragment.link
 

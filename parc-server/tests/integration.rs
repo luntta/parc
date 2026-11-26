@@ -23,6 +23,8 @@ impl ServerHarness {
 
         let bin = env!("CARGO_BIN_EXE_parc-server");
         let mut child = Command::new(bin)
+            // Whether the meaning model is installed here must not change results.
+            .env("PARC_MODELS_DIR", "/nonexistent/parc-test-models")
             .arg("--vault")
             .arg(&vault_path)
             .stdin(Stdio::piped())
@@ -626,6 +628,8 @@ fn test_socket_is_owner_only() {
 
     let bin = env!("CARGO_BIN_EXE_parc-server");
     let mut child = Command::new(bin)
+        // Whether the meaning model is installed here must not change results.
+        .env("PARC_MODELS_DIR", "/nonexistent/parc-test-models")
         .arg("--vault")
         .arg(&vault)
         .arg("--socket-path")
@@ -959,6 +963,8 @@ fn test_mcp_mode_over_stdio() {
     let bin = env!("CARGO_BIN_EXE_parc-server");
 
     let mut child = Command::new(bin)
+        // Whether the meaning model is installed here must not change results.
+        .env("PARC_MODELS_DIR", "/nonexistent/parc-test-models")
         .args(["--mcp", "--read-only", "--vault"])
         .arg(&vault_path)
         .stdin(Stdio::piped())
@@ -993,6 +999,8 @@ fn test_mcp_mode_over_stdio() {
 
     // --read-only only makes sense for MCP.
     let status = Command::new(bin)
+        // Whether the meaning model is installed here must not change results.
+        .env("PARC_MODELS_DIR", "/nonexistent/parc-test-models")
         .args(["--read-only", "--vault"])
         .arg(&vault_path)
         .stdin(Stdio::null())

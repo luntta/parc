@@ -1,0 +1,75 @@
+Recall scorecard: with meaning, paraphrase-multilingual-minilm-l12-v2@e8f8c211226b (similar from 0.47, unrelated below 0.2)
+Fixtures: tests/fixtures/recall/*.json. Accept changes: PARC_RECALL_BLESS=1 cargo test -p parc-core --test recall_bench
+
+Sources found within each case's limit: 7 of 11
+Abstained where nothing is related:     4 of 4
+Unexpected fragments within the limits: 5
+
+Meaning, seed to an earlier fragment it isn't about (771 pairs): median 0.127, 75th percentile 0.217, 90th 0.293, 99th 0.428, highest 0.635
+Meaning, seed to an expected source (11 pairs): lowest 0.289, median 0.479, highest 0.648
+
+== abstain: coffee filters (Finnish)  [abstained]
+   closest unexpected: background/batch_cooking, meaning 0.342
+
+== abstain: flights to Lisbon  [abstained]
+   closest unexpected: background/tallinn, meaning 0.359
+
+== abstain: client pitch, not a football pitch  [abstained]
+   closest unexpected: paraphrase/standup_old, meaning 0.420
+
+== disagree: early jogging, 1.5 and 3 years  [found 0 of 2 in the top 3]
+   wanted   disagree/runs_2022: not returned; shares with the seed: work; meaning 0.391 (#1 by meaning)
+   wanted   disagree/runs_2024: not returned; shares with the seed: work; meaning 0.338 (#3 by meaning)
+   closest unexpected: ferry/capture, meaning 0.367
+
+== ferry: private questions, 2 years  [found 0 of 1 in the top 1]
+   wanted   ferry/old_observation: not returned; shares no words with the seed; meaning 0.289 (#9 by meaning)
+   returned 1. ferry/recent_distractor      words: orientation, room, volunteer; similar 0.635
+            2. background/spring_fair       words: people, volunteer; meaning 0.309
+   closest unexpected: ferry/recent_distractor, meaning 0.635
+
+== ferry: kitchen timer  [abstained]
+   closest unexpected: paraphrase/standup_old, meaning 0.379
+
+== Finnish to English: who brings what, 3 years  [found 0 of 1 in the top 3]
+   wanted   languages/potluck_en: not returned; shares no words with the seed; meaning 0.324 (#5 by meaning)
+   closest unexpected: paraphrase/garden_old, meaning 0.439
+
+== English to Finnish: skipping gears, 2 years  [found 1 of 1 in the top 3]
+   wanted   languages/bike_fi: rank 1; meaning 0.557 (#1 by meaning)
+   returned 1. languages/bike_fi            similar 0.557
+   closest unexpected: languages/knee_fi_seed, meaning 0.458
+
+== Finnish inflection: knee pain, 1 year  [found 1 of 1 in the top 3]
+   wanted   languages/knee_fi_old: rank 1; meaning 0.539 (#1 by meaning)
+   returned 1. languages/knee_fi_old        similar 0.539
+   closest unexpected: disagree/runs_2024, meaning 0.393
+
+== paraphrase: long stand-up, 1 year  [found 1 of 1 in the top 3]
+   wanted   paraphrase/standup_old: rank 1; meaning 0.510 (#1 by meaning)
+   returned 1. paraphrase/standup_old       words: minutes; similar 0.510
+   closest unexpected: background/on_call, meaning 0.461
+
+== paraphrase: laptop drains shut, 3 years  [found 1 of 1 in the top 3]
+   wanted   paraphrase/laptop_old: rank 1; meaning 0.479 (#1 by meaning)
+   returned 1. paraphrase/laptop_old        words: closed; similar 0.479
+   closest unexpected: disagree/runs_2022, meaning 0.463
+
+== control: sourdough acetone, 2 years  [found 1 of 1 in the top 1]
+   wanted   paraphrase/sourdough_old: rank 1; meaning 0.643 (#1 by meaning)
+   returned 1. paraphrase/sourdough_old     words: acetone, smell, smells, starter; similar 0.643
+   closest unexpected: background/compost, meaning 0.426
+
+== tagged: slugs in the garden, 3 years  [found 1 of 1 in the top 3]
+   wanted   paraphrase/garden_old: rank 3; meaning 0.342 (#4 by meaning)
+   returned 1. background/compost           tags: garden; words: week; meaning 0.326
+            2. background/raised_bed        tags: garden; meaning 0.397
+            3. paraphrase/garden_old        tags: garden; meaning 0.342
+   closest unexpected: background/raised_bed, meaning 0.397
+
+== transcript: floppy tomato starts, 3 years  [found 1 of 1 in the top 3]
+   wanted   transcript/seedlings_old: rank 3; meaning 0.648 (#1 by meaning)
+   returned 1. background/seed_order        words: tomato; similar 0.575
+            2. background/rhubarb           words: time, year; meaning 0.410
+            3. transcript/seedlings_old     words: tomato; similar 0.648
+   closest unexpected: background/seed_order, meaning 0.575

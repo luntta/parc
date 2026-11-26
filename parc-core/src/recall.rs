@@ -2,12 +2,16 @@
 //! saved yet, however old they are.
 //!
 //! Each signal ranks its own candidates: words shared through the full-text
-//! index, shared tags, and links in either direction. The rankings are merged
-//! by reciprocal rank, which needs no common scale, so a later signal (such as
-//! embeddings) joins as one more ranking.
+//! index, shared tags, links in either direction and, when the model is
+//! installed, closeness of meaning ([`crate::embed`]). The rankings are merged
+//! by reciprocal rank, which needs no common scale. A signal ranks only what
+//! it can tell apart: candidates it scores alike (every linked fragment, or
+//! fragments sharing the same tags) share a rank, and the other signals order
+//! them.
 //!
-//! A candidate is returned only with enough evidence: a link, a shared tag, or
-//! [`MIN_SHARED_WORDS`] shared words. Returning nothing is an answer.
+//! A candidate is returned only with enough evidence: a link, a shared tag,
+//! [`MIN_SHARED_WORDS`] shared words, or a meaning at least as close as the
+//! model's threshold. Returning nothing is an answer.
 //!
 //! The whole vault is searched, archived fragments included: old material is
 //! what recall is for, and archiving takes a fragment out of lists, not out of
@@ -22,6 +26,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use serde::Serialize;
 
+use crate::embed::{self, Model};
 use crate::error::ParcError;
 
 /// Fewest shared words that count as evidence on their own. One word in
@@ -92,11 +97,44 @@ pub struct Reasons {
     pub shared_tags: Vec<String>,
     /// A link between the seed and the candidate, in either direction.
     pub linked: bool,
+    /// How close the two are in meaning (cosine similarity of their vectors,
+    /// at most 1), when the model has read both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<f32>,
+    /// The meaning is close enough to count on its own: the two say the
+    /// same thing, perhaps in other words or another language.
+    pub similar: bool,
+}
+
+/// Similarities that decide evidence, from the meaning model.
+#[derive(Debug, Clone, Copy)]
+struct Bars {
+    /// From here on, meaning alone is evidence.
+    similar: f32,
+    /// Below this, shared words alone are not: the model reads the two as
+    /// unrelated, so the words are chance ("a pitch to a client", "the pitch
+    /// at the school").
+    unrelated: f32,
+}
+
+impl Bars {
+    /// No model: meaning never counts, and never vetoes.
+    const NONE: Bars = Bars {
+        similar: f32::INFINITY,
+        unrelated: f32::NEG_INFINITY,
+    };
 }
 
 impl Reasons {
-    fn is_evidence(&self) -> bool {
-        self.linked || !self.shared_tags.is_empty() || self.shared_words.len() >= MIN_SHARED_WORDS
+    /// Whether these reasons are enough to return the candidate. A link or a
+    /// shared tag always is: someone made it.
+    fn is_evidence(&self, bars: Bars) -> bool {
+        let words = self.shared_words.len() >= MIN_SHARED_WORDS
+            && self.similarity.is_none_or(|s| s >= bars.unrelated);
+        self.linked
+            || !self.shared_tags.is_empty()
+            || words
+            || self.similarity.is_some_and(|s| s >= bars.similar)
     }
 }
 
@@ -108,6 +146,20 @@ pub struct RecallContext {
     pub sources: Vec<Source>,
     /// True when more fragments qualified than the limit allowed.
     pub truncated: bool,
+    /// The meaning model, when one was used, and how much of the vault it
+    /// has read so far.
+    pub meaning: Option<MeaningInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MeaningInfo {
+    /// [`embed::ModelSpec::key`].
+    pub model: String,
+    /// Fragments compared with the seed by meaning.
+    pub compared: usize,
+    /// Fragments the model hasn't read yet (no up-to-date vector), so found
+    /// by words, tags and links only.
+    pub pending: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,6 +209,8 @@ pub struct Excerpt {
 struct Probe {
     /// A fragment never returned (the seed itself, or the one being edited).
     exclude: Option<String>,
+    /// The seed's text as the meaning model reads it.
+    passage: String,
     words: Vec<String>,
     tags: Vec<String>,
     /// Fragments the seed links to (full IDs).
@@ -166,18 +220,28 @@ struct Probe {
 }
 
 /// Rank the fragments related to the seed, best first. Never returns the seed
-/// itself (or, for a draft, the fragment it is a draft of).
-pub fn recall(conn: &Connection, query: &RecallQuery) -> Result<Vec<Candidate>, ParcError> {
+/// itself (or, for a draft, the fragment it is a draft of). With a `meaning`
+/// model, closeness of meaning is one more signal, over the fragments whose
+/// vectors [`embed::fill`] has computed.
+pub fn recall(
+    conn: &Connection,
+    query: &RecallQuery,
+    meaning: Option<&Model>,
+) -> Result<Vec<Candidate>, ParcError> {
     let probe = probe(conn, &query.seed)?;
-    rank(conn, &probe, query.as_of, query.limit)
+    Ok(rank(conn, &probe, query.as_of, query.limit, meaning)?.0)
 }
 
 /// [`recall`] with each source's facts and verbatim excerpts. `limit` is
 /// capped at [`MAX_LIMIT`].
-pub fn context(conn: &Connection, query: &RecallQuery) -> Result<RecallContext, ParcError> {
+pub fn context(
+    conn: &Connection,
+    query: &RecallQuery,
+    meaning: Option<&Model>,
+) -> Result<RecallContext, ParcError> {
     let probe = probe(conn, &query.seed)?;
     let limit = query.limit.min(MAX_LIMIT);
-    let mut found = rank(conn, &probe, query.as_of, limit + 1)?;
+    let (mut found, meaning) = rank(conn, &probe, query.as_of, limit + 1, meaning)?;
     let truncated = found.len() > limit;
     found.truncate(limit);
 
@@ -217,6 +281,7 @@ pub fn context(conn: &Connection, query: &RecallQuery) -> Result<RecallContext, 
         },
         sources,
         truncated,
+        meaning,
     })
 }
 
@@ -230,9 +295,11 @@ fn probe(conn: &Connection, seed: &Seed) -> Result<Probe, ParcError> {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(|e| not_found(e, id))?;
+            let text = format!("{title}\n{body}");
             Ok(Probe {
                 exclude: Some(id.clone()),
-                words: query_words(&format!("{title}\n{body}")),
+                passage: embed::passage(&text),
+                words: query_words(&text),
                 tags: column(
                     conn,
                     "SELECT tag FROM fragment_tags WHERE fragment_id = ?1 ORDER BY tag",
@@ -267,6 +334,7 @@ fn probe(conn: &Connection, seed: &Seed) -> Result<Probe, ParcError> {
             }
             Ok(Probe {
                 exclude: id.clone(),
+                passage: embed::passage(text),
                 words: query_words(text),
                 tags: crate::tag::merge_tags(tags, &inline),
                 links_to,
@@ -328,22 +396,29 @@ fn rank(
     probe: &Probe,
     as_of: Option<DateTime<Utc>>,
     limit: usize,
-) -> Result<Vec<Candidate>, ParcError> {
+    meaning: Option<&Model>,
+) -> Result<(Vec<Candidate>, Option<MeaningInfo>), ParcError> {
     let filter = Eligible {
         exclude: probe.exclude.as_deref(),
         as_of: as_of.map(|t| t.to_rfc3339()),
     };
 
     let mut candidates: HashMap<String, Candidate> = HashMap::new();
-    let mut fuse = |ranking: Vec<(String, Reasons)>| {
-        for (rank, (id, reasons)) in ranking.into_iter().enumerate() {
-            let c = candidates.entry(id.clone()).or_insert_with(|| Candidate {
-                id,
+    let mut fuse = |mut ranking: Vec<Ranked>| {
+        ranking.sort_by(|a, b| b.strength.total_cmp(&a.strength));
+        // Competition ranking: equals share the best rank of their group.
+        let mut rank = 0;
+        for (i, r) in ranking.iter().enumerate() {
+            if i == 0 || r.strength < ranking[i - 1].strength {
+                rank = i + 1;
+            }
+            let c = candidates.entry(r.id.clone()).or_insert_with(|| Candidate {
+                id: r.id.clone(),
                 score: 0.0,
                 reasons: Reasons::default(),
             });
-            c.score += 1.0 / (RRF_K + rank as f64 + 1.0);
-            merge(&mut c.reasons, reasons);
+            c.score += 1.0 / (RRF_K + rank as f64);
+            merge(&mut c.reasons, r.reasons.clone());
         }
     };
     fuse(by_words(conn, &filter, &probe.words)?);
@@ -354,14 +429,58 @@ fn rank(
         &probe.links_to,
         probe.linked_from.as_deref(),
     )?);
+    let mut bars = Bars::NONE;
+    let mut closeness = HashMap::new();
+    let mut info = None;
+    if let Some(model) = meaning {
+        if !probe.passage.is_empty() {
+            let (ranking, all) = by_meaning(conn, &filter, model, &probe.passage)?;
+            fuse(ranking);
+            closeness = all;
+            bars = Bars {
+                similar: model.spec().similar,
+                unrelated: model.spec().unrelated,
+            };
+        }
+        let eligible: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM fragments f WHERE {ELIGIBLE}"),
+            rusqlite::params![filter.exclude, filter.as_of],
+            |r| r.get(0),
+        )?;
+        info = Some(MeaningInfo {
+            model: model.spec().key(),
+            compared: closeness.len(),
+            pending: (eligible as usize).saturating_sub(closeness.len()),
+        });
+    }
 
     let mut found: Vec<Candidate> = candidates
         .into_values()
-        .filter(|c| c.reasons.is_evidence())
+        .map(|mut c| {
+            // Candidates the meaning ranking left out still have a closeness,
+            // which can veto their shared words.
+            c.reasons.similarity = c.reasons.similarity.or(closeness.get(&c.id).copied());
+            c
+        })
+        .filter(|c| c.reasons.is_evidence(bars))
+        .map(|mut c| {
+            c.reasons.similar = c.reasons.similarity.is_some_and(|s| s >= bars.similar);
+            c
+        })
         .collect();
+    // Equal scores: the older first (IDs sort by creation time). Recall is
+    // for what would otherwise be forgotten.
     found.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
     found.truncate(limit);
-    Ok(found)
+    Ok((found, info))
+}
+
+/// A signal's candidate: higher `strength` ranks higher, equal strengths
+/// share a rank.
+struct Ranked {
+    id: String,
+    reasons: Reasons,
+    strength: f64,
 }
 
 fn merge(into: &mut Reasons, from: Reasons) {
@@ -372,6 +491,7 @@ fn merge(into: &mut Reasons, from: Reasons) {
         into.shared_tags = from.shared_tags;
     }
     into.linked |= from.linked;
+    into.similarity = into.similarity.or(from.similarity);
 }
 
 /// Which fragments may be returned: not `exclude`, and created at or before
@@ -392,7 +512,7 @@ fn by_words(
     conn: &Connection,
     filter: &Eligible,
     words: &[String],
-) -> Result<Vec<(String, Reasons)>, ParcError> {
+) -> Result<Vec<Ranked>, ParcError> {
     if words.is_empty() {
         return Ok(Vec::new());
     }
@@ -403,7 +523,8 @@ fn by_words(
         .collect::<Vec<_>>()
         .join(" OR ");
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT f.id, fragments_fts.title, fragments_fts.body, fragments_fts.tags
+        "SELECT f.id, fragments_fts.title, fragments_fts.body, fragments_fts.tags,
+                bm25(fragments_fts)
          FROM fragments_fts JOIN fragments f ON f.seq = fragments_fts.rowid
          WHERE fragments_fts MATCH ?3 AND {ELIGIBLE}
          ORDER BY bm25(fragments_fts) LIMIT {POOL}"
@@ -419,12 +540,13 @@ fn by_words(
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?
                 ),
+                row.get::<_, f64>(4)?,
             ))
         },
     )?;
     let mut ranked = Vec::new();
     for row in rows {
-        let (id, text) = row?;
+        let (id, text, bm25) = row?;
         let shared: BTreeSet<String> = content_words(&text)
             .into_iter()
             .filter(|w| seed_words.contains(w.as_str()))
@@ -433,64 +555,86 @@ fn by_words(
             shared_words: shared.into_iter().collect(),
             ..Reasons::default()
         };
-        ranked.push((id, reasons));
+        // SQLite's bm25() is lower for better matches.
+        ranked.push(Ranked {
+            id,
+            reasons,
+            strength: -bm25,
+        });
     }
     Ok(ranked)
 }
 
-/// Fragments sharing the seed's tags, most shared tags first, then newest.
+/// Fragments sharing the seed's tags. A rare tag says more than a common
+/// one, so each shared tag weighs `ln(N / n)`, `n` of the `N` fragments
+/// having it; fragments sharing the same tags tie.
 fn by_tags(
     conn: &Connection,
     filter: &Eligible,
     tags: &[String],
-) -> Result<Vec<(String, Reasons)>, ParcError> {
+) -> Result<Vec<Ranked>, ParcError> {
     if tags.is_empty() {
         return Ok(Vec::new());
     }
+    let tags_json = serde_json::to_string(tags)?;
+    let total: f64 = conn.query_row("SELECT COUNT(*) FROM fragments", [], |r| r.get(0))?;
+    let mut stmt = conn.prepare_cached(
+        "SELECT tag, COUNT(*) FROM fragment_tags
+         WHERE tag IN (SELECT value FROM json_each(?1)) GROUP BY tag",
+    )?;
+    let weight: HashMap<String, f64> = stmt
+        .query_map([&tags_json], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+        })?
+        .map(|r| r.map(|(tag, n)| (tag, (total / n).ln().max(0.0) + f64::EPSILON)))
+        .collect::<Result<_, _>>()?;
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT f.id, t.tag FROM fragment_tags t JOIN fragments f ON f.id = t.fragment_id
          WHERE t.tag IN (SELECT value FROM json_each(?3)) AND {ELIGIBLE}
-         ORDER BY f.created_at DESC, f.id, t.tag"
+         ORDER BY f.id, t.tag"
     ))?;
-    let tags_json = serde_json::to_string(tags)?;
-    let mut order: Vec<String> = Vec::new();
     let mut shared: HashMap<String, Vec<String>> = HashMap::new();
     for row in stmt.query_map(
         rusqlite::params![filter.exclude, filter.as_of, tags_json],
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
     )? {
         let (id, tag) = row?;
-        let list = shared.entry(id.clone()).or_default();
-        if list.is_empty() {
-            order.push(id);
-        }
-        list.push(tag);
+        shared.entry(id).or_default().push(tag);
     }
-    // Stable: equal counts keep the newest-first order of the query.
-    order.sort_by_key(|id| std::cmp::Reverse(shared[id].len()));
-    order.truncate(POOL);
-    Ok(order
+    let mut ranked: Vec<Ranked> = shared
         .into_iter()
-        .map(|id| {
-            let shared_tags = shared.remove(&id).unwrap_or_default();
-            (
-                id,
-                Reasons {
-                    shared_tags,
-                    ..Reasons::default()
-                },
-            )
+        .map(|(id, shared_tags)| Ranked {
+            strength: shared_tags
+                .iter()
+                .map(|t| weight.get(t).copied().unwrap_or(0.0))
+                .sum(),
+            id,
+            reasons: Reasons {
+                shared_tags,
+                ..Reasons::default()
+            },
         })
-        .collect())
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.strength
+            .total_cmp(&a.strength)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    // Keep whole ties: cutting one in two would rank by ID.
+    if let Some(edge) = ranked.get(POOL).map(|r| r.strength) {
+        ranked.retain(|r| r.strength > edge);
+    }
+    Ok(ranked)
 }
 
-/// Fragments the seed links to or that link to it, newest first.
+/// Fragments the seed links to or that link to it, all tied: a link is a
+/// link.
 fn by_links(
     conn: &Connection,
     filter: &Eligible,
     links_to: &[String],
     linked_from: Option<&str>,
-) -> Result<Vec<(String, Reasons)>, ParcError> {
+) -> Result<Vec<Ranked>, ParcError> {
     if links_to.is_empty() && linked_from.is_none() {
         return Ok(Vec::new());
     }
@@ -514,16 +658,49 @@ fn by_links(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ids
         .into_iter()
-        .map(|id| {
-            (
-                id,
-                Reasons {
-                    linked: true,
-                    ..Reasons::default()
-                },
-            )
+        .map(|id| Ranked {
+            id,
+            reasons: Reasons {
+                linked: true,
+                ..Reasons::default()
+            },
+            strength: 1.0,
         })
         .collect())
+}
+
+/// Fragments closest in meaning to the seed's passage, the closest
+/// [`POOL`] as a ranking, and every one's similarity. Only fragments with an
+/// up-to-date vector take part.
+fn by_meaning(
+    conn: &Connection,
+    filter: &Eligible,
+    model: &Model,
+    passage: &str,
+) -> Result<(Vec<Ranked>, HashMap<String, f32>), ParcError> {
+    let seed = model.embed_cached(passage)?;
+    let mut scored = embed::closeness(
+        conn,
+        model,
+        &seed,
+        ELIGIBLE,
+        rusqlite::params![filter.exclude, filter.as_of],
+    )?;
+    let all: HashMap<String, f32> = scored.iter().cloned().collect();
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    scored.truncate(POOL);
+    let ranking = scored
+        .into_iter()
+        .map(|(id, s)| Ranked {
+            id,
+            reasons: Reasons {
+                similarity: Some(s),
+                ..Reasons::default()
+            },
+            strength: f64::from(s),
+        })
+        .collect();
+    Ok((ranking, all))
 }
 
 /// Up to [`MAX_EXCERPTS`] lines of `body` with the most of `words`, in body
@@ -1048,7 +1225,7 @@ mod tests {
             as_of: None,
             limit: 10,
         };
-        let mut found: Vec<_> = recall(&conn, &query)
+        let mut found: Vec<_> = recall(&conn, &query, None)
             .unwrap()
             .into_iter()
             .map(|c| (c.id, c.reasons))
@@ -1094,10 +1271,32 @@ mod tests {
             shared_words: vec!["room".into()],
             ..Reasons::default()
         };
-        assert!(!r.is_evidence());
+        assert!(!r.is_evidence(Bars::NONE));
         r.shared_words.push("volunteer".into());
-        assert!(r.is_evidence());
-        assert!(linked().is_evidence());
+        assert!(r.is_evidence(Bars::NONE));
+        assert!(linked().is_evidence(Bars::NONE));
+    }
+
+    #[test]
+    fn meaning_is_evidence_and_can_veto_shared_words() {
+        let bars = Bars {
+            similar: 0.5,
+            unrelated: 0.2,
+        };
+        let close = |s, words: &[&str]| Reasons {
+            similarity: Some(s),
+            shared_words: words.iter().map(|w| w.to_string()).collect(),
+            ..Reasons::default()
+        };
+        assert!(close(0.5, &[]).is_evidence(bars));
+        assert!(!close(0.49, &[]).is_evidence(bars));
+        assert!(close(0.2, &["pitch", "thursday"]).is_evidence(bars));
+        assert!(!close(0.19, &["pitch", "thursday"]).is_evidence(bars));
+        let tagged = Reasons {
+            shared_tags: vec!["work".into()],
+            ..close(0.0, &[])
+        };
+        assert!(tagged.is_evidence(bars), "a tag is never vetoed");
     }
 
     #[test]
@@ -1131,7 +1330,7 @@ mod tests {
                 limit: 5,
             };
             assert!(matches!(
-                recall(&conn, &query),
+                recall(&conn, &query, None),
                 Err(ParcError::FragmentNotFound(_))
             ));
         }
@@ -1209,6 +1408,7 @@ mod tests {
                 as_of: None,
                 limit: 5,
             },
+            None,
         )
         .unwrap();
         assert!(!ctx.truncated);
@@ -1255,6 +1455,7 @@ mod tests {
                     as_of: None,
                     limit,
                 },
+                None,
             )
             .unwrap()
         };

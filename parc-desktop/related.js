@@ -29,6 +29,8 @@ export function reasons(r) {
   if (r.linked) out.push('Linked');
   if (r.shared_tags?.length) out.push(`Tagged ${r.shared_tags.map(t => `#${t}`).join(' ')}`);
   if (r.shared_words?.length) out.push(`Shares ${r.shared_words.join(', ')}`);
+  // The meaning model found the two say the same thing, perhaps in other words or another language.
+  if (r.similar) out.push('Similar');
   return out.join(' · ');
 }
 

@@ -107,7 +107,7 @@ parc recall [<id>] [--text <text> | --text -]
             [--json]
 ```
 
-Finds the fragments related to a saved fragment, or to text that isn't saved yet, however old they are. Each comes with why it matched (shared words, tags, a link) and up to two lines of its body, verbatim, with their line numbers.
+Finds the fragments related to a saved fragment, or to text that isn't saved yet, however old they are. Each comes with why it matched (shared words, tags, a link, similar meaning) and up to two lines of its body, verbatim, with their line numbers.
 
 ```bash
 # Related to a saved fragment
@@ -121,4 +121,12 @@ pbpaste | parc recall --text -
 parc recall 01JQ7V3X --text "$(cat draft.md)"
 ```
 
-A fragment qualifies by a link with the seed, a shared tag, or at least two shared words; common English and Finnish words don't count. Archived fragments are included. "Nothing in the vault is clearly related" is an answer, not an error. `--json` prints the same result as the server's [`recall.context`]({{ '/json-rpc/' | url }}#recallcontext).
+A fragment qualifies by a link with the seed, a shared tag, at least two shared words (common English and Finnish words don't count) or, with the meaning model, a meaning close enough. Archived fragments are included. "Nothing in the vault is clearly related" is an answer, not an error. `--json` prints the same result as the server's [`recall.context`]({{ '/json-rpc/' | url }}#recallcontext).
+
+### The meaning model
+
+With the meaning model installed, recall also finds a note that says the same thing in other words, or in another language: a note about skipping bike gears finds the Finnish one about a jumping chain. The model, [paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2) (Apache-2.0, 480 MB), runs inside parc on your computer; nothing is sent anywhere. When the model reads two notes as unrelated, the words they happen to share stop counting on their own: a pitch to a client is not a football pitch.
+
+The desktop app's **Settings → Recall** downloads it, pinned to one revision and checked against its SHA-256. It goes to a folder of your own, never one a vault names: `$PARC_MODELS_DIR`, or `~/.local/share/parc/models` (`$XDG_DATA_HOME/parc/models`; `~/Library/Application Support/parc/models` on macOS). Every vault and the `parc` command use the same download. Without the desktop app, put `config.json`, `tokenizer.json` and `model.safetensors` from that revision (`e8f8c211`) in `paraphrase-multilingual-minilm-l12-v2/` under that folder.
+
+The model reads each note once and its vectors are kept in the vault's `index.db`. `parc recall` reads any notes it hasn't yet before answering, so the first run on a large vault takes a while (about 30 seconds per 10,000 notes on a fast computer); the desktop app reads them in the background.

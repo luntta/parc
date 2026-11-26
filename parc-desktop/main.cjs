@@ -700,6 +700,71 @@ else app.whenReady().then(() => {
     if (settings.whisperModel === file) { settings = clean({ whisperModel: '' }); await persist(); }
     return { deleted: true, path: file };
   });
+  // ── The meaning model recall uses. parc-server names its files (pinned URL, size, SHA-256) and the folder it reads
+  // them from, so the CLI and every vault's server find what is downloaded here. Only an explicit Download reaches
+  // the network, only huggingface.co, and a file is kept only if its hash matches. ──
+  let meaningDownload = null;
+  const HUGGING_FACE = 'https://huggingface.co/';
+  async function meaningView() {
+    const known = (await Promise.all([...stores.values()].map(s => s.meaningStatus().catch(() => null)))).filter(Boolean);
+    if (!known.length) throw new Error('Recall isn’t available: parc-server didn’t answer.');
+    const [{ model, dir, installed, loaded, error }] = known;
+    const coverage = known.reduce((sum, s) => ({ embedded: sum.embedded + s.coverage.embedded, total: sum.total + s.coverage.total }),
+      { embedded: 0, total: 0 });
+    return {
+      label: model.label, size: model.size, license: model.license, repo: model.repo, dir, installed, loaded, error, coverage,
+      downloading: meaningDownload ? { received: meaningDownload.received, size: model.size } : null
+    };
+  }
+  handle('meaning-model', async () => { await ready(); return meaningView(); });
+  handle('download-meaning-model', async () => {
+    await ready();
+    if (meaningDownload) throw new Error('The meaning model is already downloading.');
+    const [status] = (await Promise.all([...stores.values()].map(s => s.meaningStatus().catch(() => null)))).filter(Boolean);
+    if (!status?.dir) throw new Error('This computer has no folder for models (no home folder).');
+    const files = status.model.files;
+    if (!files.every(f => typeof f.url === 'string' && f.url.startsWith(HUGGING_FACE) && /^[a-f0-9]{64}$/.test(f.sha256)
+      && /^[\w.-]+$/.test(f.name) && Number.isSafeInteger(f.size) && f.size > 0)) throw new Error('Unexpected model files.');
+    const controller = new AbortController(), total = status.model.size;
+    meaningDownload = { controller, received: 0 };
+    const notify = data => window?.webContents.send('meaning-progress', { size: total, ...data });
+    let last = 0, before = 0;
+    try {
+      for (const f of files) {
+        await models.download({ file: f.name, size: f.size, sha256: f.sha256, url: f.url }, {
+          dir: status.dir, signal: controller.signal, fetch: (url, init) => net.fetch(url, init),
+          onProgress: received => {
+            meaningDownload.received = before + received;
+            if (Date.now() - last > 200) { last = Date.now(); notify({ received: meaningDownload.received }); }
+          }
+        });
+        before += f.size;
+      }
+      // Any request wakes a vault's server to read its notes with the new model.
+      return { installed: true, view: await meaningView() };
+    } catch (err) {
+      if (controller.signal.aborted) return { cancelled: true };
+      throw err;
+    } finally {
+      meaningDownload = null;
+      notify({ done: true });
+    }
+  });
+  handle('cancel-meaning-download', () => { meaningDownload?.controller.abort(); });
+  handle('delete-meaning-model', async function () {
+    await ready();
+    if (meaningDownload) throw new Error('Cancel the download first.');
+    const [status] = (await Promise.all([...stores.values()].map(s => s.meaningStatus().catch(() => null)))).filter(Boolean);
+    if (!status?.dir) return { deleted: false };
+    const { response } = await dialog.showMessageBox(this, {
+      message: `Delete the “${status.model.label}” meaning model?`,
+      detail: `This frees ${Math.round(status.model.size / 1e6)} MB. Recall goes back to shared words, tags and links once parc restarts. You can download it again later.`,
+      buttons: ['Cancel', 'Delete'], cancelId: 0, defaultId: 0
+    });
+    if (response !== 1) return { deleted: false };
+    for (const f of status.model.files) await models.remove({ file: f.name }, status.dir);
+    return { deleted: true };
+  });
   handle('pick-file', async function (kind) {
     const model = kind === 'model';
     const choice = await dialog.showOpenDialog(this, {
