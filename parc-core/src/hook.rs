@@ -38,7 +38,9 @@ pub struct HookScript {
 /// Returns generic hooks first, then type-specific hooks.
 /// Hook files are named: `<event>` (generic) or `<event>.<type>` (type-specific).
 pub fn discover_hooks(vault: &Path, event: HookEvent, fragment_type: &str) -> Vec<HookScript> {
-    let hooks_dir = vault.join("hooks");
+    let Ok(hooks_dir) = crate::secure_fs::real_dir(vault, &["hooks"]) else {
+        return Vec::new();
+    };
     if !hooks_dir.is_dir() {
         return Vec::new();
     }
@@ -479,6 +481,7 @@ mod tests {
 
         let hook_path = vault.join("hooks").join("pre-create");
         write_hook(&hook_path);
+        crate::trust::grant(&vault).unwrap();
 
         let runner = CountingRunner::new();
         let fragment = make_fragment("note");
@@ -497,6 +500,7 @@ mod tests {
 
         let hook_path = vault.join("hooks").join("pre-create");
         write_hook(&hook_path);
+        crate::trust::grant(&vault).unwrap();
 
         let runner = CountingRunner::new();
         let fragment = make_fragment("note");

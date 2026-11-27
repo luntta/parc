@@ -133,7 +133,7 @@ pub fn run_install(vault: &Path, wasm_path: &str, manifest_path: Option<&str>) -
     let manifest = plugin::load_manifest(&manifest_src)?;
     plugin::validate_manifest_metadata(&manifest)?;
 
-    let plugins_dir = vault.join("plugins");
+    let plugins_dir = secure_fs::real_dir(vault, &["plugins"])?;
     secure_fs::create_private_dir_all(&plugins_dir)?;
 
     // Copy files

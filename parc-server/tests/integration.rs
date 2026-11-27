@@ -23,6 +23,7 @@ impl ServerHarness {
 
         let bin = env!("CARGO_BIN_EXE_parc-server");
         let mut child = Command::new(bin)
+            .env("HOME", tmp.path())
             // Whether the meaning model is installed here must not change results.
             .env("PARC_MODELS_DIR", "/nonexistent/parc-test-models")
             .arg("--vault")
@@ -706,6 +707,7 @@ fn test_update_runs_hooks_and_reports_warnings() {
     let post = hooks_dir.join("post-update");
     std::fs::write(&post, "#!/bin/sh\necho 'post broke' >&2\nexit 2\n").unwrap();
     std::fs::set_permissions(&post, std::fs::Permissions::from_mode(0o700)).unwrap();
+    parc_core::trust::grant_for_home(&h.vault_path, h._tmp.path()).unwrap();
 
     let resp = h.send_rpc(rpc(
         2,
@@ -733,6 +735,7 @@ fn test_pre_hook_veto_is_invalid_params() {
     let pre = hooks_dir.join("pre-create");
     std::fs::write(&pre, "#!/bin/sh\necho 'no new notes' >&2\nexit 1\n").unwrap();
     std::fs::set_permissions(&pre, std::fs::Permissions::from_mode(0o700)).unwrap();
+    parc_core::trust::grant_for_home(&h.vault_path, h._tmp.path()).unwrap();
 
     let resp = h.send_rpc(rpc(
         1,

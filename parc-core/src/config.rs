@@ -341,14 +341,16 @@ fn load_config_as(vault: &Path, personal: bool) -> Result<Config, ParcError> {
     if let Some(history) = raw.history {
         config.history_enabled = history.enabled;
     }
-    if let Some(server) = raw.server {
+    let approved = (raw.server.is_some() || raw.hooks.as_ref().is_some_and(|h| h.enabled))
+        && crate::trust::approved_config(vault, content.as_bytes());
+    if let Some(server) = raw.server.filter(|_| approved) {
         config.server = ServerConfig {
             transport: server.transport,
             socket_path: server.socket_path,
         };
     }
     if let Some(hooks) = raw.hooks {
-        config.hooks.enabled = hooks.enabled;
+        config.hooks.enabled = hooks.enabled && approved;
     }
     if let Some(resurfacing) = raw.resurfacing {
         if let Some(stale_days) = resurfacing.stale_days {
@@ -631,7 +633,9 @@ mod tests {
 
         let config = load_config(tmp.path()).unwrap();
 
-        assert!(config.hooks.enabled);
+        assert!(!config.hooks.enabled);
+        crate::trust::grant(tmp.path()).unwrap();
+        assert!(load_config(tmp.path()).unwrap().hooks.enabled);
     }
 
     #[test]

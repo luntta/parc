@@ -454,3 +454,13 @@ The `Release` GitHub Actions workflow uses `dist` to build `parc` and `parc-serv
 ## License
 
 MIT
+
+### Trusting vault automation
+
+A vault cannot enable its own scripts or WASM plugins, or choose its server
+transport/socket. Review `.parc/config.yml`, `hooks/` and `plugins/` before
+running `parc vault trust`. Approval is kept separately in `~/.parc-trust/`
+and applies only at the reviewed path. Moving the vault or changing those files
+requires a fresh approval. Use `parc vault untrust` to revoke it. Ordinary
+fragment edits do not invalidate approval. Without approval the configured
+hooks and plugins are inactive and the server defaults to stdio.

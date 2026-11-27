@@ -500,6 +500,10 @@ enum SchemaCommands {
 
 #[derive(clap::Subcommand)]
 enum VaultCommands {
+    /// Approve the reviewed config, hooks and plugins at this vault path
+    Trust,
+    /// Revoke approval for this vault
+    Untrust,
     /// List all known vaults
     List {
         /// Output as JSON
@@ -595,6 +599,8 @@ fn main() -> anyhow::Result<()> {
             commands::vault::run(
                 &vault,
                 subcommand.map(|s| match s {
+                    VaultCommands::Trust => commands::vault::VaultSubcommand::Trust,
+                    VaultCommands::Untrust => commands::vault::VaultSubcommand::Untrust,
                     VaultCommands::List { json } => commands::vault::VaultSubcommand::List { json },
                 }),
                 json,

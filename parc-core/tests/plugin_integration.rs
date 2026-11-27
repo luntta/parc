@@ -7,6 +7,17 @@ use parc_core::plugin;
 use parc_core::plugin::manager::PluginManager;
 use parc_core::plugin::runtime::WasmRuntime;
 
+// Isolate the approval store from the developer's own home.
+fn approve(vault: &std::path::Path) {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", dir.path());
+        dir
+    });
+    parc_core::trust::grant(vault).unwrap();
+}
+
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -122,6 +133,11 @@ fn test_plugin_command_handler() {
 #[test]
 fn test_plugin_manager_load_all() {
     let (_tmp, vault) = setup_vault_with_plugin();
+    assert!(PluginManager::load_all(&vault, &Config::default())
+        .unwrap()
+        .plugins
+        .is_empty());
+    approve(&vault);
     let config = Config::default();
     let manager = PluginManager::load_all(&vault, &config).unwrap();
     assert_eq!(manager.plugins.len(), 1);
@@ -130,6 +146,7 @@ fn test_plugin_manager_load_all() {
 #[test]
 fn test_plugin_manager_list_commands() {
     let (_tmp, vault) = setup_vault_with_plugin();
+    approve(&vault);
     let config = Config::default();
     let manager = PluginManager::load_all(&vault, &config).unwrap();
     let commands = manager.list_commands();
@@ -141,6 +158,7 @@ fn test_plugin_manager_list_commands() {
 #[test]
 fn test_plugin_manager_execute_command() {
     let (_tmp, vault) = setup_vault_with_plugin();
+    approve(&vault);
     let config = Config::default();
     let mut manager = PluginManager::load_all(&vault, &config).unwrap();
     let output = manager
@@ -152,6 +170,7 @@ fn test_plugin_manager_execute_command() {
 #[test]
 fn test_plugin_manager_dispatch_post_event() {
     let (_tmp, vault) = setup_vault_with_plugin();
+    approve(&vault);
     let config = Config::default();
     let mut manager = PluginManager::load_all(&vault, &config).unwrap();
 

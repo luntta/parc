@@ -775,6 +775,7 @@ mod tests {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
             }
         }
+        crate::trust::grant(&vault).unwrap();
         (tmp, vault)
     }
 
@@ -1017,6 +1018,7 @@ mod tests {
         let post = vault.join("hooks").join("post-create");
         std::fs::write(&post, "#!/bin/sh\necho 'nope' >&2\nexit 3\n").unwrap();
         std::fs::set_permissions(&post, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::trust::grant(&vault).unwrap();
 
         let mut w = Writer::new(&vault, ScriptRunner::new(HookStderr::Capture));
         let frag = w.create(new_note(&vault, "draft")).unwrap();
@@ -1042,6 +1044,7 @@ mod tests {
         let pre = vault.join("hooks").join("pre-create");
         std::fs::write(&pre, "#!/bin/sh\necho 'rejected' >&2\nexit 1\n").unwrap();
         std::fs::set_permissions(&pre, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::trust::grant(&vault).unwrap();
 
         let mut w = Writer::new(&vault, ScriptRunner::new(HookStderr::Capture));
         let note = new_note(&vault, "Nope");
@@ -1334,6 +1337,7 @@ mod tests {
         let pre = vault.join("hooks").join("pre-update");
         std::fs::write(&pre, "#!/bin/sh\necho 'vetoed' >&2\nexit 1\n").unwrap();
         std::fs::set_permissions(&pre, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::trust::grant(&vault).unwrap();
 
         let src = tmp.path().join("incoming.txt");
         std::fs::write(&src, "data").unwrap();

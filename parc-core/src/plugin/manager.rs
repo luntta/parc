@@ -26,6 +26,9 @@ impl PluginManager {
     /// Discover and load all plugins from the vault's plugins/ directory.
     /// Plugins that fail to load are skipped with a warning.
     pub fn load_all(vault: &Path, config: &Config) -> Result<Self, ParcError> {
+        if !crate::trust::approved(vault) {
+            return Self::empty();
+        }
         let runtime = WasmRuntime::new()?;
         let discovered = discover_plugins(vault)?;
         let mut plugins = Vec::new();

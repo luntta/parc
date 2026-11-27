@@ -121,25 +121,10 @@ fn validate_safe_vault_impl(path: &Path) -> Result<(), ParcError> {
         let metadata = std::fs::metadata(ancestor)?;
         let owner = metadata.uid();
         let mode = metadata.permissions().mode();
-        let writable_without_sticky = mode & 0o022 != 0 && mode & 0o1000 == 0;
-
-        if owner == current_uid {
-            if writable_without_sticky {
-                return Err(unsafe_vault_error(&canonical, ancestor));
-            }
-        } else if writable_without_sticky {
+        // A sticky system temp parent is OK, but the sticky bit says
+        // nothing about who controls that directory or the vault itself.
+        if !safe_owner_mode(owner, current_uid, mode, ancestor != canonical) {
             return Err(unsafe_vault_error(&canonical, ancestor));
-        } else if let Some(home) = &home_dir {
-            if ancestor == home {
-                break;
-            }
-            return Err(unsafe_vault_error(&canonical, ancestor));
-        } else if owner != 0 && owner != 65_534 && mode & 0o1000 == 0 {
-            return Err(ParcError::ValidationError(format!(
-                "refusing unsafe vault '{}': ancestor '{}' is not owner-controlled",
-                canonical.display(),
-                ancestor.display()
-            )));
         }
 
         if home_dir.as_deref() == Some(ancestor) {
@@ -148,6 +133,11 @@ fn validate_safe_vault_impl(path: &Path) -> Result<(), ParcError> {
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn safe_owner_mode(owner: u32, user: u32, mode: u32, parent: bool) -> bool {
+    (owner == user || owner == 0) && (mode & 0o022 == 0 || (parent && mode & 0o1000 != 0))
 }
 
 #[cfg(unix)]
@@ -390,6 +380,7 @@ pub fn vault_info(vault_path: &Path) -> Result<VaultInfo, ParcError> {
         return Err(ParcError::VaultNotFound(vault_path.to_path_buf()));
     }
 
+    validate_safe_vault(vault_path)?;
     let scope = match global_vault_path() {
         Ok(global) if vault_path == global.as_path() => VaultScope::Global,
         _ => VaultScope::Local,
@@ -475,6 +466,15 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    #[cfg(unix)]
+    fn sticky_shared_parent_requires_trusted_owner() {
+        assert!(safe_owner_mode(0, 1000, 0o1777, true));
+        assert!(!safe_owner_mode(2000, 1000, 0o1777, true));
+        assert!(!safe_owner_mode(65534, 1000, 0o755, true));
+        assert!(!safe_owner_mode(1000, 1000, 0o1777, false));
+    }
 
     #[test]
     fn test_init_vault() {

@@ -90,7 +90,7 @@ pub fn load_manifest(path: &Path) -> Result<PluginManifest, ParcError> {
 
 /// Scan the vault's `plugins/` directory for `.toml` manifest files.
 pub fn discover_plugins(vault: &Path) -> Result<Vec<DiscoveredPlugin>, ParcError> {
-    let plugins_dir = vault.join("plugins");
+    let plugins_dir = crate::secure_fs::real_dir(vault, &["plugins"])?;
     if !plugins_dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -145,7 +145,7 @@ pub fn discover_plugins(vault: &Path) -> Result<Vec<DiscoveredPlugin>, ParcError
 pub fn validate_manifest(manifest: &PluginManifest, vault: &Path) -> Result<(), ParcError> {
     validate_manifest_metadata(manifest)?;
 
-    let plugins_dir = vault.join("plugins");
+    let plugins_dir = crate::secure_fs::real_dir(vault, &["plugins"])?;
     let wasm_path = resolve_plugin_wasm_path(manifest, &plugins_dir)?;
     let metadata = std::fs::symlink_metadata(&wasm_path).map_err(|e| {
         ParcError::PluginError(format!(

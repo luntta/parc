@@ -23,6 +23,7 @@ pub mod schema;
 pub mod search;
 pub mod secure_fs;
 pub mod tag;
+pub mod trust;
 pub mod vault;
 
 pub use error::ParcError;

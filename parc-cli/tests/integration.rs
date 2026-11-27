@@ -896,6 +896,12 @@ fn test_hooks_fire_for_archive_link_and_delete() {
     let id_a = create_fragment_directly(&tmp, "note", "A", "Body");
     let id_b = create_fragment_directly(&tmp, "note", "B", "Body");
     let log = install_logging_hooks(&vault);
+    parc()
+        .env("HOME", tmp.path())
+        .args(["vault", "trust"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
 
     for args in [
         vec!["archive", id_a.as_str()],
@@ -903,6 +909,7 @@ fn test_hooks_fire_for_archive_link_and_delete() {
         vec!["delete", id_b.as_str()],
     ] {
         parc()
+            .env("HOME", tmp.path())
             .args(&args)
             .current_dir(tmp.path())
             .assert()
@@ -945,6 +952,13 @@ fn test_failing_post_hook_warns_but_succeeds() {
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
 
     parc()
+        .env("HOME", tmp.path())
+        .args(["vault", "trust"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    parc()
+        .env("HOME", tmp.path())
         .args(["set", &id[..8], "status", "done"])
         .current_dir(tmp.path())
         .assert()

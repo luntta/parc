@@ -35,7 +35,7 @@ args = ["mcp"]
 
 `parc-server --mcp --vault <path>` is the same server from the standalone binary.
 
-Writes run the vault's hooks, so only point an agent at vaults you trust.
+Writes can run enabled hooks only after you review the vault and explicitly approve it with `parc vault trust`.
 
 ## Tools
 

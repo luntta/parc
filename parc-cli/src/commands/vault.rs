@@ -4,12 +4,16 @@ use anyhow::Result;
 use parc_core::vault::{self, VaultScope};
 
 pub enum VaultSubcommand {
+    Trust,
+    Untrust,
     List { json: bool },
 }
 
 pub fn run(vault: &Path, subcommand: Option<VaultSubcommand>, json: bool) -> Result<()> {
     match subcommand {
         Some(VaultSubcommand::List { json }) => run_list(vault, json),
+        Some(VaultSubcommand::Trust) => Ok(parc_core::trust::grant(vault)?),
+        Some(VaultSubcommand::Untrust) => Ok(parc_core::trust::revoke(vault)?),
         None => run_info(vault, json),
     }
 }
