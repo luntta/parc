@@ -11,7 +11,7 @@ use crate::router::{extract_params, map_parc_error};
 
 /// List soft-deleted fragments in `<vault>/trash/`, newest first.
 pub fn list(vault: &Path, _params: Value) -> Result<Value, RpcError> {
-    let trash_dir = vault.join("trash");
+    let trash_dir = parc_core::secure_fs::real_dir(vault, &["trash"]).map_err(map_parc_error)?;
     if !trash_dir.is_dir() {
         return Ok(Value::Array(Vec::new()));
     }
@@ -31,7 +31,7 @@ pub fn list(vault: &Path, _params: Value) -> Result<Value, RpcError> {
         if fragment::validate_id(stem).is_err() {
             continue;
         }
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(content) = parc_core::secure_fs::read_regular_text(&path) {
             if let Ok(frag) = fragment::parse_fragment(&content) {
                 entries.push(frag);
             }

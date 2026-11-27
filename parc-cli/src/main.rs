@@ -563,12 +563,7 @@ enum UpdateCommands {
 }
 
 fn main() -> anyhow::Result<()> {
-    if std::env::args_os()
-        .nth(1)
-        .is_some_and(|a| a == parc_core::extract::CHILD_ARG)
-    {
-        parc_core::extract::child_main();
-    }
+    parc_core::extract::dispatch_worker();
     let cli = parse_cli();
     let command = cli.command;
 

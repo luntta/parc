@@ -28,6 +28,15 @@ pub struct ContextParams {
 }
 
 pub fn context(vault: &Path, params: Value) -> Result<Value, RpcError> {
+    let conn = index::open_index(vault).map_err(map_parc_error)?;
+    context_on(vault, &conn, params)
+}
+
+pub(crate) fn context_on(
+    vault: &Path,
+    conn: &index::Connection,
+    params: Value,
+) -> Result<Value, RpcError> {
     let p: ContextParams = extract_params(params)?;
     if p.limit == Some(0) {
         return Err(RpcError::invalid_params("limit must be at least 1"));
@@ -56,8 +65,7 @@ pub fn context(vault: &Path, params: Value) -> Result<Value, RpcError> {
         as_of: None,
         limit: p.limit.unwrap_or(recall::DEFAULT_LIMIT),
     };
-    let conn = index::open_index(vault).map_err(map_parc_error)?;
     let model = embed::shared().ok().flatten();
-    let result = recall::context(&conn, &query, model.as_deref()).map_err(map_parc_error)?;
+    let result = recall::context(conn, &query, model.as_deref()).map_err(map_parc_error)?;
     serde_json::to_value(result).map_err(|e| RpcError::internal_error(&e.to_string()))
 }

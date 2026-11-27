@@ -47,6 +47,7 @@ Prefix a value with ! to negate it (status:!done). An empty query lists the most
 pub struct McpServer {
     vault: PathBuf,
     read_only: bool,
+    scratch: std::cell::RefCell<Option<parc_core::index::Connection>>,
     /// Keeps meaning vectors up to date for `recall`, when serving stdio.
     meaning: Option<crate::meaning::Filler>,
     /// Extracts pending attachment text in the background, when serving stdio.
@@ -58,6 +59,7 @@ impl McpServer {
         Self {
             vault,
             read_only,
+            scratch: Default::default(),
             meaning: None,
             extractor: None,
         }
@@ -114,6 +116,21 @@ impl McpServer {
         tools
     }
 
+    fn indexed(&self, f: impl FnOnce(&parc_core::index::Connection) -> ToolResult) -> ToolResult {
+        use parc_core::index;
+        if !self.read_only {
+            let conn = index::open_index(&self.vault).map_err(|e| e.to_string())?;
+            return f(&conn);
+        }
+        let mut scratch = self.scratch.borrow_mut();
+        if scratch.is_none() {
+            *scratch = Some(index::scratch_index(&self.vault).map_err(|e| e.to_string())?);
+        }
+        let conn = scratch.as_ref().unwrap();
+        index::sync(conn, &self.vault).map_err(|e| e.to_string())?;
+        f(conn)
+    }
+
     fn call(&self, params: &Value) -> Result<Value, RpcError> {
         let name = params
             .get("name")
@@ -127,12 +144,14 @@ impl McpServer {
         };
         let vault = self.vault.as_path();
         let outcome = match name {
-            "search" => search(vault, args),
-            "recall" => recall(vault, args),
-            "get_fragment" => get_fragment(vault, args),
-            "read_attachment" => read_attachment(vault, args),
+            "search" => self.indexed(|conn| search(conn, args)),
+            "recall" => self.indexed(|conn| recall(vault, conn, args)),
+            "get_fragment" => self.indexed(|conn| get_fragment(vault, conn, args)),
+            "read_attachment" => {
+                self.indexed(|conn| read_attachment(vault, conn, args, self.read_only))
+            }
             "list_types" => list_types(vault, args),
-            "list_tags" => list_tags(vault, args),
+            "list_tags" => self.indexed(|conn| list_tags(conn, args)),
             "create_fragment" if !self.read_only => create_fragment(vault, args),
             "update_fragment" if !self.read_only => update_fragment(vault, args),
             "link_fragments" if !self.read_only => link_fragments(vault, args),
@@ -445,7 +464,7 @@ fn warnings_text(value: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn search(vault: &Path, args: &Map<String, Value>) -> ToolResult {
+fn search(conn: &parc_core::index::Connection, args: &Map<String, Value>) -> ToolResult {
     check_args(args, &["query", "limit"])?;
     let query = string_arg(args, "query")?.unwrap_or("").trim();
     let limit = match args.get("limit") {
@@ -456,7 +475,7 @@ fn search(vault: &Path, args: &Map<String, Value>) -> ToolResult {
             .ok_or("'limit' must be a positive integer")?
             .min(MAX_LIMIT),
     };
-    let results = methods::fragment::search(vault, json!({ "query": query, "limit": limit }))
+    let results = methods::fragment::search_on(conn, json!({ "query": query, "limit": limit }))
         .map_err(rpc_message)?;
     let results = results.as_array().cloned().unwrap_or_default();
     if results.is_empty() {
@@ -521,7 +540,11 @@ fn search(vault: &Path, args: &Map<String, Value>) -> ToolResult {
     Ok(text)
 }
 
-fn recall(vault: &Path, args: &Map<String, Value>) -> ToolResult {
+fn recall(
+    vault: &Path,
+    conn: &parc_core::index::Connection,
+    args: &Map<String, Value>,
+) -> ToolResult {
     check_args(args, &["id", "text", "tags", "limit"])?;
     let mut params = json!({});
     if let Some(id) = string_arg(args, "id")?.filter(|s| !s.trim().is_empty()) {
@@ -535,7 +558,7 @@ fn recall(vault: &Path, args: &Map<String, Value>) -> ToolResult {
             params[key] = value.clone();
         }
     }
-    let ctx = methods::recall::context(vault, params).map_err(rpc_message)?;
+    let ctx = methods::recall::context_on(vault, conn, params).map_err(rpc_message)?;
     let sources = ctx["sources"].as_array().cloned().unwrap_or_default();
     let meaning = &ctx["meaning"];
     let note = if meaning.is_null() {
@@ -645,13 +668,17 @@ fn recall(vault: &Path, args: &Map<String, Value>) -> ToolResult {
     Ok(text)
 }
 
-fn get_fragment(vault: &Path, args: &Map<String, Value>) -> ToolResult {
+fn get_fragment(
+    vault: &Path,
+    conn: &parc_core::index::Connection,
+    args: &Map<String, Value>,
+) -> ToolResult {
     check_args(args, &["id"])?;
     let id = resolve_id(vault, required_string(args, "id")?)?;
     let frag = fragment::read_fragment(vault, &id).map_err(|e| e.to_string())?;
     let revision = fragment::revision(vault, &frag.id).map_err(|e| e.to_string())?;
     let backlinks =
-        methods::link::backlinks(vault, json!({ "id": frag.id })).map_err(rpc_message)?;
+        methods::link::backlinks_on(vault, conn, json!({ "id": frag.id })).map_err(rpc_message)?;
 
     let mut text = format!(
         "Fragment {} ({}), file fragments/{}.md, revision {}\n\n{}",
@@ -673,8 +700,8 @@ fn get_fragment(vault: &Path, args: &Map<String, Value>) -> ToolResult {
             ));
         }
     }
-    if let Ok(conn) = parc_core::index::open_index(vault) {
-        if let Ok(atts) = parc_core::extract::list_status(&conn, vault, &frag.id) {
+    {
+        if let Ok(atts) = parc_core::extract::list_status(conn, vault, &frag.id) {
             if !atts.is_empty() {
                 text.push_str("\n\nAttachments:");
                 for a in &atts {
@@ -703,7 +730,12 @@ fn get_fragment(vault: &Path, args: &Map<String, Value>) -> ToolResult {
     Ok(text)
 }
 
-fn read_attachment(vault: &Path, args: &Map<String, Value>) -> ToolResult {
+fn read_attachment(
+    vault: &Path,
+    conn: &parc_core::index::Connection,
+    args: &Map<String, Value>,
+    read_only: bool,
+) -> ToolResult {
     check_args(args, &["id", "filename", "from", "to"])?;
     let id = resolve_id(vault, required_string(args, "id")?)?;
     let filename = required_string(args, "filename")?;
@@ -723,9 +755,12 @@ fn read_attachment(vault: &Path, args: &Map<String, Value>) -> ToolResult {
         ),
     };
 
-    let conn = parc_core::index::open_index(vault).map_err(|e| e.to_string())?;
-    let extracted =
-        parc_core::extract::read_parts(vault, &conn, &id, filename).map_err(|e| e.to_string())?;
+    let read = if read_only {
+        parc_core::extract::read_parts_read_only
+    } else {
+        parc_core::extract::read_parts
+    };
+    let extracted = read(vault, conn, &id, filename).map_err(|e| e.to_string())?;
     let Some(ext) = extracted else {
         return Ok(format!(
             "Attachment '{}' on {} has no extractable text.",
@@ -849,9 +884,9 @@ fn list_types(vault: &Path, args: &Map<String, Value>) -> ToolResult {
     Ok(text)
 }
 
-fn list_tags(vault: &Path, args: &Map<String, Value>) -> ToolResult {
+fn list_tags(conn: &parc_core::index::Connection, args: &Map<String, Value>) -> ToolResult {
     check_args(args, &[])?;
-    let tags = methods::tags::list(vault, json!({})).map_err(rpc_message)?;
+    let tags = methods::tags::list_on(conn).map_err(rpc_message)?;
     let tags = tags.as_array().cloned().unwrap_or_default();
     if tags.is_empty() {
         return Ok("No tags in use yet.".to_string());
@@ -982,8 +1017,10 @@ fn link_fragments(vault: &Path, args: &Map<String, Value>) -> ToolResult {
 /// stderr; stdout carries only protocol messages.
 pub fn run_stdio(vault: PathBuf, read_only: bool) -> anyhow::Result<()> {
     let mut server = McpServer::new(vault.clone(), read_only);
-    server.meaning = Some(crate::meaning::Filler::spawn(vault.clone()));
-    server.extractor = Some(crate::extract_filler::ExtractFiller::spawn(vault));
+    if !read_only {
+        server.meaning = Some(crate::meaning::Filler::spawn(vault.clone()));
+        server.extractor = Some(crate::extract_filler::ExtractFiller::spawn(vault));
+    }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     serve(&server, &mut stdin.lock(), &mut stdout.lock())
@@ -1414,13 +1451,23 @@ mod tests {
             .unwrap();
         let fixture_pdf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../parc-core/tests/fixtures/attachments/sample.pdf");
-        writer
-            .attach(
-                &frag.id,
-                &fixture_pdf,
-                parc_core::attachment::AttachMode::Copy,
-            )
-            .unwrap();
+        let filename = "sample.pdf";
+        let path = parc_core::attachment::attachment_path(&vault, &frag.id, filename).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::copy(&fixture_pdf, &path).unwrap();
+        let mut frag = frag;
+        frag.attachments.push(filename.into());
+        writer.update(frag.clone()).unwrap();
+        let expected = fixture_pdf.with_file_name("sample.pdf.expected.json");
+        let text = serde_json::from_slice(&std::fs::read(expected).unwrap()).unwrap();
+        parc_core::extract::write_sidecar(
+            &vault,
+            &frag.id,
+            filename,
+            &parc_core::extract::sha256_file(&path).unwrap(),
+            &text,
+        )
+        .unwrap();
 
         let (text, is_error) = call(
             &server,

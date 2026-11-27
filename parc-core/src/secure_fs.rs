@@ -15,6 +15,44 @@ pub fn create_private_dir_all(path: &Path) -> Result<(), ParcError> {
     Ok(())
 }
 
+/// Open a regular file without following its final component. On Unix also
+/// prevent a file swapped for a FIFO from blocking the reader.
+pub fn open_regular(path: &Path) -> std::io::Result<fs::File> {
+    let invalid = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("not a regular file: {}", path.display()),
+        )
+    };
+    if !fs::symlink_metadata(path)?.is_file() {
+        return Err(invalid());
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(invalid());
+    }
+    Ok(file)
+}
+
+pub fn read_regular(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut open_regular(path.as_ref())?, &mut bytes)?;
+    Ok(bytes)
+}
+
+pub fn read_regular_text(path: impl AsRef<Path>) -> std::io::Result<String> {
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut open_regular(path.as_ref())?, &mut text)?;
+    Ok(text)
+}
+
 pub fn prepare_private_file(path: &Path) -> Result<(), ParcError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -350,5 +388,41 @@ mod tests {
         create_private_dir_all(&path).unwrap();
 
         assert_eq!(mode(&path), 0o700);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod vault_boundary_tests {
+    use crate::{doctor, fragment, history, index, schema, vault};
+    use std::{fs, os::unix::fs::symlink};
+
+    #[test]
+    fn index_and_readers_ignore_linked_files_and_reject_linked_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = tmp.path().join(".parc");
+        vault::init_vault(&v).unwrap();
+        let id = ulid::Ulid::new().to_string();
+        let path = v.join("fragments").join(format!("{id}.md"));
+        let outside = tmp.path().join("ordinary.md");
+        fs::write(&outside, "external").unwrap();
+        symlink(&outside, &path).unwrap();
+        assert!(fragment::read_fragment(&v, &id).is_err());
+        let (conn, report) = index::open_index_with_report(&v).unwrap();
+        assert!(report.is_empty());
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM fragment_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        symlink(&v, v.join("loop")).unwrap();
+        assert!(doctor::check_vault_size(&v).is_empty());
+        assert!(history::list_versions(&v, "../invalid").is_err());
+        assert!(history::save_snapshot(&v, "../invalid").is_err());
+        assert!(schema::load_template(&v, "../fragments/file").is_none());
+        fs::write(v.join("schemas/bad.yml"), "name: ../invalid\nfields: []\n").unwrap();
+        assert!(schema::load_schemas(&v).is_err());
+        fs::rename(v.join("fragments"), tmp.path().join("old")).unwrap();
+        symlink(tmp.path().join("old"), v.join("fragments")).unwrap();
+        assert!(fragment::list_fragment_ids(&v).is_err());
+        assert!(index::open_index(&v).is_err());
     }
 }

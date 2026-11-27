@@ -28,12 +28,7 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
-    if std::env::args_os()
-        .nth(1)
-        .is_some_and(|a| a == parc_core::extract::CHILD_ARG)
-    {
-        parc_core::extract::child_main();
-    }
+    parc_core::extract::dispatch_worker();
     let args = Args::parse();
 
     let vault_path = parc_core::vault::resolve_vault(args.vault.as_deref())?;

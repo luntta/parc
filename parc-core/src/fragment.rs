@@ -339,7 +339,7 @@ pub fn parse_fragment_file(file_stem: &str, bytes: &[u8]) -> Result<Fragment, Pa
 pub fn create_fragment(vault: &Path, fragment: &Fragment) -> Result<String, ParcError> {
     validate_id(&fragment.id)?;
     let content = serialize_fragment(fragment);
-    let path = vault.join("fragments").join(format!("{}.md", fragment.id));
+    let path = secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", fragment.id));
     secure_fs::write_private_new(&path, content)?;
     Ok(fragment.id.clone())
 }
@@ -347,9 +347,9 @@ pub fn create_fragment(vault: &Path, fragment: &Fragment) -> Result<String, Parc
 /// Read a fragment by full ID or unique prefix.
 pub fn read_fragment(vault: &Path, id_or_prefix: &str) -> Result<Fragment, ParcError> {
     let full_id = resolve_id(vault, id_or_prefix)?;
-    let path = vault.join("fragments").join(format!("{}.md", full_id));
-    let content = std::fs::read_to_string(&path)?;
-    parse_fragment(&content)
+    let path = secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", full_id));
+    let content = secure_fs::read_regular(&path)?;
+    parse_fragment_file(&full_id, &content)
 }
 
 /// Overwrite a fragment file. Saves a history snapshot before overwriting
@@ -364,7 +364,7 @@ pub fn write_fragment(vault: &Path, fragment: &Fragment) -> Result<(), ParcError
     }
 
     let content = serialize_fragment(fragment);
-    let path = vault.join("fragments").join(format!("{}.md", fragment.id));
+    let path = secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", fragment.id));
     secure_fs::write_private_atomic(&path, content)?;
     Ok(())
 }
@@ -400,8 +400,8 @@ pub fn apply_promotion(
 /// Soft-delete: move fragment file to trash/.
 pub fn delete_fragment(vault: &Path, id_or_prefix: &str) -> Result<String, ParcError> {
     let full_id = resolve_id(vault, id_or_prefix)?;
-    let src = vault.join("fragments").join(format!("{}.md", full_id));
-    let dst = vault.join("trash").join(format!("{}.md", full_id));
+    let src = secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", full_id));
+    let dst = secure_fs::real_dir(vault, &["trash"])?.join(format!("{}.md", full_id));
     secure_fs::rename_private_file(&src, &dst)?;
     Ok(full_id)
 }
@@ -411,7 +411,9 @@ pub fn delete_fragment(vault: &Path, id_or_prefix: &str) -> Result<String, ParcE
 /// so a client can name the version it read and have a stale write refused.
 pub fn revision(vault: &Path, id_or_prefix: &str) -> Result<String, ParcError> {
     let full_id = resolve_id(vault, id_or_prefix)?;
-    let bytes = std::fs::read(vault.join("fragments").join(format!("{}.md", full_id)))?;
+    let bytes = secure_fs::read_regular(
+        secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", full_id)),
+    )?;
     Ok(content_revision(&bytes))
 }
 
@@ -426,7 +428,7 @@ pub fn content_revision(bytes: &[u8]) -> String {
 
 /// List all fragment IDs in the vault.
 pub fn list_fragment_ids(vault: &Path) -> Result<Vec<String>, ParcError> {
-    let fragments_dir = vault.join("fragments");
+    let fragments_dir = secure_fs::real_dir(vault, &["fragments"])?;
     if !fragments_dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -435,7 +437,7 @@ pub fn list_fragment_ids(vault: &Path) -> Result<Vec<String>, ParcError> {
     for entry in std::fs::read_dir(&fragments_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "md") {
+        if entry.file_type()?.is_file() && path.extension().is_some_and(|e| e == "md") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 ids.push(stem.to_string());
             }
@@ -450,8 +452,8 @@ pub fn list_fragment_ids(vault: &Path) -> Result<Vec<String>, ParcError> {
 pub fn read_all(vault: &Path) -> Result<Vec<Fragment>, ParcError> {
     let mut fragments = Vec::new();
     for id in list_fragment_ids(vault)? {
-        let path = vault.join("fragments").join(format!("{}.md", id));
-        if let Ok(bytes) = std::fs::read(&path) {
+        let path = secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", id));
+        if let Ok(bytes) = secure_fs::read_regular(&path) {
             if let Ok(fragment) = parse_fragment_file(&id, &bytes) {
                 fragments.push(fragment);
             }

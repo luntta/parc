@@ -60,8 +60,8 @@ On connect the server sends brief instructions: search before starting on a topi
 parc mcp --read-only
 ```
 
-Offers only `search`, `recall`, `get_fragment`, `list_types` and `list_tags`. Use it to let an agent consult a vault without being able to change it.
+Offers only `search`, `recall`, `get_fragment`, `read_attachment`, `list_types` and `list_tags`. This mode uses a private in-memory index and starts no background workers. Reading an uncached attachment extracts its text without writing it back to the vault.
 
 ## What it leaves out
 
-There is no delete, archive, attachment or history tool: those stay with you, in the CLI, the TUI and the desktop app.
+There is no delete, archive, attachment-management or history tool: those stay with you, in the CLI, the TUI and the desktop app.

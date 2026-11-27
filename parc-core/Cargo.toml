@@ -10,7 +10,7 @@ repository = "https://github.com/luntta/parc"
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
 serde_json = "1"
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.34", features = ["bundled", "backup"] }
 ulid = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 thiserror = "1"

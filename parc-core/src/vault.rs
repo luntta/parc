@@ -252,7 +252,7 @@ pub fn init_vault_with(path: &Path, types: &TypesConfig) -> Result<(), ParcError
     // Create directory structure
     secure_fs::create_private_dir_all(path)?;
     for dir in VAULT_DIRS {
-        secure_fs::create_private_dir_all(&path.join(dir))?;
+        secure_fs::create_private_dir_all(&secure_fs::real_dir(path, &[dir])?)?;
     }
 
     // Write default config
@@ -305,13 +305,13 @@ pub fn ensure_inbox_ready(vault: &Path) -> Result<PathBuf, ParcError> {
         Err(e) => return Err(e.into()),
     }
 
-    let source_schema = vault.join("schemas").join("source.yml");
+    let source_schema = secure_fs::real_dir(vault, &["schemas"])?.join("source.yml");
     if !source_schema.exists() {
         secure_fs::create_private_dir_all(&vault.join("schemas"))?;
         secure_fs::write_private(&source_schema, include_str!("builtin/schemas/source.yml"))?;
     }
 
-    let source_tpl = vault.join("templates").join("source.md");
+    let source_tpl = secure_fs::real_dir(vault, &["templates"])?.join("source.md");
     if !source_tpl.exists() {
         secure_fs::create_private_dir_all(&vault.join("templates"))?;
         secure_fs::write_private(&source_tpl, include_str!("builtin/templates/source.md"))?;
@@ -386,7 +386,7 @@ pub fn vault_info(vault_path: &Path) -> Result<VaultInfo, ParcError> {
         _ => VaultScope::Local,
     };
 
-    let fragments_dir = vault_path.join("fragments");
+    let fragments_dir = secure_fs::real_dir(vault_path, &["fragments"])?;
     let fragment_count = if fragments_dir.is_dir() {
         std::fs::read_dir(&fragments_dir)?
             .filter_map(|e| e.ok())

@@ -41,11 +41,19 @@ pub struct BacklinksParams {
 }
 
 pub fn backlinks(vault: &Path, params: Value) -> Result<Value, RpcError> {
+    let conn = index::open_index(vault).map_err(map_parc_error)?;
+    backlinks_on(vault, &conn, params)
+}
+
+pub(crate) fn backlinks_on(
+    vault: &Path,
+    conn: &index::Connection,
+    params: Value,
+) -> Result<Value, RpcError> {
     let p: BacklinksParams = extract_params(params)?;
     let full_id = parc_core::fragment::resolve_id(vault, &p.id).map_err(map_parc_error)?;
 
-    let conn = index::open_index(vault).map_err(map_parc_error)?;
-    let links = index::get_backlinks(&conn, &full_id).map_err(map_parc_error)?;
+    let links = index::get_backlinks(conn, &full_id).map_err(map_parc_error)?;
 
     let items: Vec<Value> = links
         .iter()

@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior};
+pub use rusqlite::Connection;
+use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::error::ParcError;
 use crate::fragment::{self, Fragment};
@@ -198,6 +199,51 @@ fn discard_index(vault: &Path) -> Result<(), ParcError> {
         }
     }
     Ok(())
+}
+
+/// A private index for clients that may not change a byte of the vault.
+/// Seed from a read-only snapshot when possible to retain index-only attachment
+/// text and embeddings. Don't open WAL sources: even a read-only SQLite open
+/// can create a shared-memory file. Files and sidecars remain authoritative.
+pub fn scratch_index(vault: &Path) -> Result<Connection, ParcError> {
+    use rusqlite::{
+        backup::{Backup, StepResult},
+        OpenFlags,
+    };
+    use std::io::Read;
+    let path = vault.join("index.db");
+    let snapshot = || -> Option<Connection> {
+        let mut header = [0; 20];
+        secure_fs::open_regular(&path)
+            .ok()?
+            .read_exact(&mut header)
+            .ok()?;
+        if &header[..16] != b"SQLite format 3\0" || header[18..20] != [1, 1] {
+            return None;
+        }
+        let src = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .ok()?;
+        if user_version(&src).ok()? != index_format() {
+            return None;
+        }
+        let mut dest = Connection::open_in_memory().ok()?;
+        if !matches!(
+            Backup::new(&src, &mut dest).ok()?.step(-1).ok()?,
+            StepResult::Done
+        ) {
+            return None;
+        }
+        Some(dest)
+    };
+    if let Some(conn) = snapshot() {
+        return Ok(conn);
+    }
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch(SCHEMA_SQL)?;
+    Ok(conn)
 }
 
 /// Open the index and bring it up to date with the files in `fragments/`.
@@ -395,13 +441,18 @@ impl Plan {
 }
 
 fn file_revision(vault: &Path, id: &str) -> Option<String> {
-    let bytes = std::fs::read(vault.join("fragments").join(format!("{}.md", id))).ok()?;
+    let bytes = secure_fs::read_regular(
+        secure_fs::real_dir(vault, &["fragments"])
+            .ok()?
+            .join(format!("{}.md", id)),
+    )
+    .ok()?;
     Some(fragment::content_revision(&bytes))
 }
 
 /// Every `*.md` file in `fragments/` by stem, with its size and mtime.
 fn scan_fragment_files(vault: &Path) -> Result<HashMap<String, FileStat>, ParcError> {
-    let dir = vault.join("fragments");
+    let dir = secure_fs::real_dir(vault, &["fragments"])?;
     let mut files = HashMap::new();
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -418,13 +469,7 @@ fn scan_fragment_files(vault: &Path) -> Result<HashMap<String, FileStat>, ParcEr
         else {
             continue;
         };
-        // Follows symlinks, like reading the file does. A file deleted since
-        // the directory was listed is simply not there.
-        let metadata = match entry.file_type() {
-            Ok(file_type) if file_type.is_symlink() => std::fs::metadata(entry.path()),
-            Ok(_) => entry.metadata(),
-            Err(e) => Err(e),
-        };
+        let metadata = std::fs::symlink_metadata(entry.path());
         match metadata {
             Ok(metadata) if metadata.is_file() => {
                 files.insert(stem.to_string(), FileStat::of(&metadata));
@@ -466,7 +511,9 @@ fn apply(conn: &Connection, vault: &Path, plan: Plan) -> Result<SyncReport, Parc
 
     for (id, stat) in plan.to_read {
         let file_name = format!("{}.md", id);
-        let bytes = match std::fs::read(vault.join("fragments").join(&file_name)) {
+        let bytes = match secure_fs::read_regular(
+            secure_fs::real_dir(vault, &["fragments"])?.join(&file_name),
+        ) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Deleted since the scan.
@@ -793,8 +840,8 @@ pub fn index_fragment_auto(
     let old_title = indexed_title(&tx, &fragment.id)?;
     write_rows(&tx, fragment, &merged_tags(fragment), &fragment.links)?;
 
-    let path = vault.join("fragments").join(format!("{}.md", fragment.id));
-    if let Ok(metadata) = std::fs::metadata(&path) {
+    let path = secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", fragment.id));
+    if let Ok(metadata) = secure_fs::open_regular(&path).and_then(|f| f.metadata()) {
         // The revision of what was indexed, not a re-read of the file: if
         // another process wrote it in between, the next sync sees the
         // mismatch (the entry is racy) and indexes the file as it is.

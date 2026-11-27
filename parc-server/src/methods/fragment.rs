@@ -428,6 +428,11 @@ pub struct SearchParams {
 }
 
 pub fn search(vault: &Path, params: Value) -> Result<Value, RpcError> {
+    let conn = index::open_index(vault).map_err(map_parc_error)?;
+    search_on(&conn, params)
+}
+
+pub(crate) fn search_on(conn: &index::Connection, params: Value) -> Result<Value, RpcError> {
     let p: SearchParams = extract_params(params)?;
 
     let mut query = search::parse_query(&p.query).map_err(map_parc_error)?;
@@ -435,8 +440,7 @@ pub fn search(vault: &Path, params: Value) -> Result<Value, RpcError> {
         query.limit = Some(limit);
     }
 
-    let conn = index::open_index(vault).map_err(map_parc_error)?;
-    let results = search::search(&conn, &query).map_err(map_parc_error)?;
+    let results = search::search(conn, &query).map_err(map_parc_error)?;
 
     let only: Option<std::collections::HashSet<&str>> = p
         .ids

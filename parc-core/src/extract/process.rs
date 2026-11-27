@@ -42,8 +42,27 @@ enum ChildResponse {
     Err { message: String },
 }
 
+static WORKER_HOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Call before ordinary argument parsing in a host that supports re-exec.
+/// This works even when the executable has been renamed.
+pub fn dispatch_worker() {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == CHILD_ARG)
+    {
+        child_main();
+    }
+    WORKER_HOST.store(true, std::sync::atomic::Ordering::Release);
+}
+
 /// Extract text from `path` inside a bounded child process of the current binary.
 pub fn isolated(path: &Path, limits: &ExtractLimits) -> Result<ExtractOutcome, ParcError> {
+    if !WORKER_HOST.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(ParcError::ValidationError(
+            "no isolated extractor configured in this host".into(),
+        ));
+    }
     let exe = std::env::current_exe().map_err(|e| {
         ParcError::ValidationError(format!("cannot locate parc binary for extraction: {e}"))
     })?;

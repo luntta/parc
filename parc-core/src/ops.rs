@@ -142,11 +142,9 @@ impl Writer {
         if types.is_enabled(&fragment.fragment_type) {
             return Ok(());
         }
-        let path = self
-            .vault
-            .join("fragments")
-            .join(format!("{}.md", fragment.id));
-        let saved_type = std::fs::read(&path)
+        let path =
+            secure_fs::real_dir(&self.vault, &["fragments"])?.join(format!("{}.md", fragment.id));
+        let saved_type = secure_fs::read_regular(&path)
             .ok()
             .and_then(|bytes| fragment::parse_fragment_file(&fragment.id, &bytes).ok())
             .map(|saved| saved.fragment_type);
@@ -171,8 +169,8 @@ impl Writer {
     /// restore event, matching history restore. `id_or_prefix` matches trashed IDs only.
     pub fn restore_from_trash(&mut self, id_or_prefix: &str) -> Result<Fragment, ParcError> {
         let id = self.resolve_trash_id(id_or_prefix)?;
-        let trash = self.vault.join("trash");
-        let dest = self.vault.join("fragments").join(format!("{}.md", id));
+        let trash = secure_fs::real_dir(&self.vault, &["trash"])?;
+        let dest = secure_fs::real_dir(&self.vault, &["fragments"])?.join(format!("{}.md", id));
         if dest.exists() {
             return Err(ParcError::ValidationError(format!(
                 "fragment {} already exists outside the trash",
@@ -199,7 +197,7 @@ impl Writer {
     /// `attachments/<id>/` and `history/<id>/` directories. Returns how many
     /// fragments were purged.
     pub fn empty_trash(&mut self) -> Result<usize, ParcError> {
-        let trash_dir = self.vault.join("trash");
+        let trash_dir = secure_fs::real_dir(&self.vault, &["trash"])?;
         if !trash_dir.is_dir() {
             return Ok(0);
         }
@@ -233,7 +231,7 @@ impl Writer {
 
     fn resolve_trash_id(&self, id_or_prefix: &str) -> Result<String, ParcError> {
         let upper = id_or_prefix.to_uppercase();
-        let trash = self.vault.join("trash");
+        let trash = secure_fs::real_dir(&self.vault, &["trash"])?;
         let mut matches = Vec::new();
         if trash.is_dir() {
             for entry in std::fs::read_dir(&trash)? {
@@ -264,11 +262,11 @@ impl Writer {
 
     fn purge_trash_id(&mut self, id: &str) -> Result<(), ParcError> {
         fragment::validate_id(id)?;
-        let trash_file = self.vault.join("trash").join(format!("{}.md", id));
+        let trash_file = secure_fs::real_dir(&self.vault, &["trash"])?.join(format!("{}.md", id));
         // Validate attachment and history trees before removing the trash file
         // so a symlink inside them aborts cleanly.
-        let attach_dir = self.vault.join("attachments").join(id);
-        let history_dir = self.vault.join("history").join(id);
+        let attach_dir = secure_fs::real_dir(&self.vault, &["attachments", id])?;
+        let history_dir = secure_fs::real_dir(&self.vault, &["history", id])?;
         secure_fs::remove_private_dir_all(&attach_dir)?;
         secure_fs::remove_private_dir_all(&history_dir)?;
         secure_fs::remove_private_file(&trash_file)?;
@@ -345,11 +343,9 @@ impl Writer {
                 "pre-update hook changed attachment ownership".into(),
             ));
         }
-        let path = self
-            .vault
-            .join("fragments")
-            .join(format!("{}.md", saved.id));
-        let before = std::fs::read(&path)?;
+        let path =
+            secure_fs::real_dir(&self.vault, &["fragments"])?.join(format!("{}.md", saved.id));
+        let before = secure_fs::read_regular(&path)?;
         fragment::write_fragment(&self.vault, &saved)?;
         if let Err(err) = attachment::store_attachment_file(&self.vault, &saved.id, source, mode) {
             secure_fs::write_private_atomic(&path, before)?;
@@ -412,9 +408,13 @@ impl Writer {
 
         // Stage atomic frontmatter writes before moving the original. Roll back
         // exact pre-move bytes without invoking hooks a second time.
-        let path = |id: &str| self.vault.join("fragments").join(format!("{id}.md"));
+        let dir = secure_fs::real_dir(&self.vault, &["fragments"])?;
+        let path = |id: &str| dir.join(format!("{id}.md"));
         let (to_path, from_path) = (path(&to_id), path(&from_id));
-        let (to_before, from_before) = (std::fs::read(&to_path)?, std::fs::read(&from_path)?);
+        let (to_before, from_before) = (
+            secure_fs::read_regular(&to_path)?,
+            secure_fs::read_regular(&from_path)?,
+        );
         fragment::write_fragment(&self.vault, &saved_to)?;
         if let Err(err) = fragment::write_fragment(&self.vault, &saved_from) {
             secure_fs::write_private_atomic(&to_path, to_before)?;

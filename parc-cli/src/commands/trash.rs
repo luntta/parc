@@ -25,7 +25,7 @@ pub fn run(
 }
 
 fn run_list(vault: &Path, json: bool) -> Result<()> {
-    let trash_dir = vault.join("trash");
+    let trash_dir = parc_core::secure_fs::real_dir(vault, &["trash"])?;
     if !trash_dir.is_dir() {
         if json {
             println!("[]");
@@ -40,7 +40,7 @@ fn run_list(vault: &Path, json: bool) -> Result<()> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "md") {
-            if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(content) = parc_core::secure_fs::read_regular_text(&path) {
                 if let Ok(frag) = fragment::parse_fragment(&content) {
                     entries.push(frag);
                 }

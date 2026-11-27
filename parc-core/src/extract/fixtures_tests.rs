@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 
-use parc_core::attachment::{self, AttachMode};
-use parc_core::config::{save_attachments, AttachmentTextMode, AttachmentsConfig};
-use parc_core::extract::{
+use crate::attachment::{self, AttachMode};
+use crate::config::{save_attachments, AttachmentTextMode, AttachmentsConfig};
+use crate::extract::{
     self, in_process, sidecar, ExtractLimits, ExtractOutcome, Extracted, PartUnit, TextFormat,
     TEXT_FORMAT,
 };
-use parc_core::fragment::{self, new_fragment};
-use parc_core::hook::{HookStderr, ScriptRunner};
-use parc_core::index;
-use parc_core::ops::Writer;
-use parc_core::schema::load_schemas;
+use crate::fragment::{self, new_fragment};
+use crate::hook::{HookStderr, ScriptRunner};
+use crate::index;
+use crate::ops::Writer;
+use crate::schema::load_schemas;
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/attachments")
@@ -109,10 +109,10 @@ fn golden_pdf_docx_pptx_html() {
 fn sidecar_stale_newer_and_index_only_modes() {
     let tmp = tempfile::TempDir::new().unwrap();
     let vault = tmp.path().join(".parc");
-    parc_core::vault::init_vault(&vault).unwrap();
+    crate::vault::init_vault(&vault).unwrap();
 
     let mut w = Writer::new(&vault, ScriptRunner::new(HookStderr::Capture));
-    let cfg = parc_core::config::load_config(&vault).unwrap();
+    let cfg = crate::config::load_config(&vault).unwrap();
     let schemas = load_schemas(&vault).unwrap();
     let frag = w
         .create(new_fragment(
@@ -196,9 +196,9 @@ fn sidecar_stale_newer_and_index_only_modes() {
 fn sync_on_open_never_extracts_and_failures_are_remembered() {
     let tmp = tempfile::TempDir::new().unwrap();
     let vault = tmp.path().join(".parc");
-    parc_core::vault::init_vault(&vault).unwrap();
+    crate::vault::init_vault(&vault).unwrap();
 
-    let cfg = parc_core::config::load_config(&vault).unwrap();
+    let cfg = crate::config::load_config(&vault).unwrap();
     let schemas = load_schemas(&vault).unwrap();
     let mut frag = new_fragment("note", "Pulled", schemas.resolve("note").unwrap(), &cfg);
     frag.attachments = vec!["pulled.html".into(), "broken.pdf".into()];
@@ -274,10 +274,10 @@ fn limits_refuse_zip_bomb_and_oversized_file() {
 fn in_files_search_and_attachment_recall_name_pages() {
     let tmp = tempfile::TempDir::new().unwrap();
     let vault = tmp.path().join(".parc");
-    parc_core::vault::init_vault(&vault).unwrap();
+    crate::vault::init_vault(&vault).unwrap();
 
     let mut w = Writer::new(&vault, ScriptRunner::new(HookStderr::Capture));
-    let cfg = parc_core::config::load_config(&vault).unwrap();
+    let cfg = crate::config::load_config(&vault).unwrap();
     let schemas = load_schemas(&vault).unwrap();
     let pdf_frag = w
         .create(new_fragment(
@@ -305,14 +305,12 @@ fn in_files_search_and_attachment_recall_name_pages() {
     let conn = index::open_index(&vault).unwrap();
 
     // Plain search without in:files must NOT match text that only exists inside attachments.
-    let plain_q = parc_core::search::parse_query("icebreaker").unwrap();
-    assert!(parc_core::search::search(&conn, &plain_q)
-        .unwrap()
-        .is_empty());
+    let plain_q = crate::search::parse_query("icebreaker").unwrap();
+    assert!(crate::search::search(&conn, &plain_q).unwrap().is_empty());
 
     // `in:files` finds the fragment and returns page-labeled file_hits.
-    let files_q = parc_core::search::parse_query("in:files crew rotation").unwrap();
-    let hits = parc_core::search::search(&conn, &files_q).unwrap();
+    let files_q = crate::search::parse_query("in:files crew rotation").unwrap();
+    let hits = crate::search::search(&conn, &files_q).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, pdf_frag.id);
     assert_eq!(hits[0].file_hits.len(), 1);
@@ -322,10 +320,10 @@ fn in_files_search_and_attachment_recall_name_pages() {
     assert!(hits[0].file_hits[0].snippet.contains("crew"));
 
     // Recall picks up attachment full text and produces page-labeled excerpts.
-    let ctx = parc_core::recall::context(
+    let ctx = crate::recall::context(
         &conn,
-        &parc_core::recall::RecallQuery {
-            seed: parc_core::recall::Seed::Draft {
+        &crate::recall::RecallQuery {
+            seed: crate::recall::Seed::Draft {
                 text: "Planning icebreaker escort and crew rotation for winter ferries".into(),
                 tags: Vec::new(),
                 id: Some(plain_frag.id.clone()),
@@ -532,13 +530,13 @@ fn symlinked_attachment_folders_lead_nowhere() {
     use std::os::unix::fs::symlink;
     let tmp = tempfile::TempDir::new().unwrap();
     let vault = tmp.path().join(".parc");
-    parc_core::vault::init_vault(&vault).unwrap();
+    crate::vault::init_vault(&vault).unwrap();
     let outside = tmp.path().join("outside");
     std::fs::create_dir(&outside).unwrap();
     std::fs::write(outside.join("id_test"), "PRIVATE KEY MATERIAL").unwrap();
 
     let mut w = Writer::new(&vault, ScriptRunner::new(HookStderr::Capture));
-    let cfg = parc_core::config::load_config(&vault).unwrap();
+    let cfg = crate::config::load_config(&vault).unwrap();
     let schemas = load_schemas(&vault).unwrap();
     let frag = w
         .create(new_fragment(
@@ -565,11 +563,11 @@ fn symlinked_attachment_folders_lead_nowhere() {
         !outside.join("new.txt").exists(),
         "nothing attached outside the vault"
     );
-    let findings = parc_core::doctor::check_attachments(
+    let findings = crate::doctor::check_attachments(
         &vault,
         &[fragment::read_fragment(&vault, &frag.id).unwrap()],
     );
-    assert!(findings.iter().any(|f| matches!(f, parc_core::doctor::DoctorFinding::AttachmentMismatch { detail, .. } if detail.contains("symlink"))));
+    assert!(findings.iter().any(|f| matches!(f, crate::doctor::DoctorFinding::AttachmentMismatch { detail, .. } if detail.contains("symlink"))));
 
     // The whole attachments/ folder as a symlink: the same.
     std::fs::remove_file(vault.join("attachments").join(&frag.id)).unwrap();

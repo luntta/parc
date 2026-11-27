@@ -10,7 +10,11 @@ use crate::router::map_parc_error;
 
 pub fn list(vault: &Path, _params: Value) -> Result<Value, RpcError> {
     let conn = index::open_index(vault).map_err(map_parc_error)?;
-    let tags = tag::aggregate_tags(&conn).map_err(map_parc_error)?;
+    list_on(&conn)
+}
+
+pub(crate) fn list_on(conn: &index::Connection) -> Result<Value, RpcError> {
+    let tags = tag::aggregate_tags(conn).map_err(map_parc_error)?;
 
     let items: Vec<Value> = tags
         .iter()

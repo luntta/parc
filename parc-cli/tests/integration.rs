@@ -3363,3 +3363,83 @@ fn explicit_tui_requires_a_terminal() {
         .stderr(predicate::str::contains("stdin and stdout"))
         .stdout("");
 }
+
+#[test]
+fn read_only_mcp_leaves_vault_unchanged_even_for_uncached_text() {
+    use parc_core::{config, fragment, schema, vault};
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn tree(dir: &Path, out: &mut BTreeMap<PathBuf, (Vec<u8>, std::time::SystemTime)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                tree(&path, out);
+            } else {
+                out.insert(
+                    path.clone(),
+                    (
+                        std::fs::read(&path).unwrap(),
+                        std::fs::metadata(path).unwrap().modified().unwrap(),
+                    ),
+                );
+            }
+        }
+    }
+    let tmp = TempDir::new().unwrap();
+    let vault = tmp.path().join(".parc");
+    vault::init_vault(&vault).unwrap();
+    let schemas = schema::load_schemas(&vault).unwrap();
+    let mut f = fragment::new_fragment(
+        "note",
+        "River",
+        schemas.resolve("note").unwrap(),
+        &config::load_config(&vault).unwrap(),
+    );
+    f.attachments.push("log.txt".into());
+    fragment::create_fragment(&vault, &f).unwrap();
+    let dir = vault.join("attachments").join(&f.id);
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("log.txt"), "Ferry crossing").unwrap();
+    for preindexed in [false, true] {
+        if preindexed {
+            drop(parc_core::index::open_index(&vault).unwrap());
+        }
+        let mut before = BTreeMap::new();
+        tree(&vault, &mut before);
+        let input = [("list_types", json!({})), ("list_tags", json!({})), ("search", json!({"query":"River"})),
+            ("get_fragment", json!({"id":f.id})), ("recall", json!({"text":"river crossing"})),
+            ("read_attachment", json!({"id":f.id, "filename":"log.txt"}))].into_iter().enumerate()
+            .map(|(i,(name,args))| json!({"jsonrpc":"2.0","id":i,"method":"tools/call","params":{"name":name,"arguments":args}}).to_string()+"\n").collect::<String>();
+        let out = parc()
+            .args(["mcp", "--read-only"])
+            .current_dir(tmp.path())
+            .write_stdin(input)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let results: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(results.len(), 6);
+        assert!(
+            results
+                .iter()
+                .all(|v| v.get("error").is_none() && v["result"]["isError"] != true),
+            "{results:?}"
+        );
+        assert!(results[5]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Ferry crossing"));
+        let mut after = BTreeMap::new();
+        tree(&vault, &mut after);
+        assert_eq!(before, after);
+        assert!(!dir.join(".text").exists());
+    }
+}

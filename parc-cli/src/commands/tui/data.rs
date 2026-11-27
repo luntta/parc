@@ -56,13 +56,17 @@ pub(super) struct VaultStamp {
 impl VaultStamp {
     pub(super) fn read(vault: &Path) -> Self {
         let mtime = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        let dir = vault.join("fragments");
+        let Ok(dir) = parc_core::secure_fs::real_dir(vault, &["fragments"]) else {
+            return Self::default();
+        };
 
         let mut fragment_count = 0;
         let mut newest_fragment = None;
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                if entry.path().extension().is_some_and(|ext| ext == "md") {
+                if entry.file_type().is_ok_and(|t| t.is_file())
+                    && entry.path().extension().is_some_and(|ext| ext == "md")
+                {
                     fragment_count += 1;
                     let modified = entry.metadata().and_then(|m| m.modified()).ok();
                     newest_fragment = newest_fragment.max(modified);

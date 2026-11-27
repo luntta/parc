@@ -452,7 +452,7 @@ impl SchemaRegistry {
 
 /// Load all schemas from the vault's schemas/ directory.
 pub fn load_schemas(vault_path: &Path) -> Result<SchemaRegistry, ParcError> {
-    let schemas_dir = vault_path.join("schemas");
+    let schemas_dir = secure_fs::real_dir(vault_path, &["schemas"])?;
     let mut schemas = Vec::new();
     let mut paths = Vec::new();
 
@@ -468,8 +468,9 @@ pub fn load_schemas(vault_path: &Path) -> Result<SchemaRegistry, ParcError> {
         entries.sort_by_key(|e| e.file_name());
 
         for entry in entries {
-            let content = std::fs::read_to_string(entry.path())?;
+            let content = secure_fs::read_regular_text(entry.path())?;
             let schema = parse_schema(&content)?;
+            validate_schema_name(&schema.name)?;
             schemas.push(schema);
             paths.push(entry.path());
         }
@@ -508,11 +509,12 @@ pub fn get_builtin_template(type_name: &str) -> Option<&'static str> {
 
 /// Load template from vault or fall back to built-in.
 pub fn load_template(vault_path: &Path, type_name: &str) -> Option<String> {
-    let template_path = vault_path
-        .join("templates")
+    validate_schema_name(type_name).ok()?;
+    let template_path = secure_fs::real_dir(vault_path, &["templates"])
+        .ok()?
         .join(format!("{}.md", type_name));
     if template_path.exists() {
-        std::fs::read_to_string(template_path).ok()
+        secure_fs::read_regular_text(template_path).ok()
     } else {
         get_builtin_template(type_name).map(|s| s.to_string())
     }
@@ -595,9 +597,7 @@ pub fn add_schema(vault_path: &Path, source_path: &Path) -> Result<String, ParcE
     }
 
     // Copy to schemas/
-    let dest = vault_path
-        .join("schemas")
-        .join(format!("{}.yml", schema.name));
+    let dest = secure_fs::real_dir(vault_path, &["schemas"])?.join(format!("{}.yml", schema.name));
     secure_fs::copy_private_new(source_path, &dest)?;
     ensure_template(vault_path, &schema.name)?;
 
@@ -606,7 +606,7 @@ pub fn add_schema(vault_path: &Path, source_path: &Path) -> Result<String, ParcE
 
 /// Give a new type an empty body template unless it has one.
 fn ensure_template(vault_path: &Path, name: &str) -> Result<(), ParcError> {
-    let template_dir = vault_path.join("templates");
+    let template_dir = secure_fs::real_dir(vault_path, &["templates"])?;
     let template_path = template_dir.join(format!("{}.md", name));
     if template_path.exists() {
         return Ok(());

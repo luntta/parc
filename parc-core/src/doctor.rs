@@ -264,14 +264,19 @@ pub fn check_attachments(vault: &Path, fragments: &[Fragment]) -> Vec<DoctorFind
     // Check for attachment directories belonging to non-existent fragments
     // (trashed fragments keep their attachments until purged, so restore works).
     let fragment_ids: HashSet<&str> = fragments.iter().map(|f| f.id.as_str()).collect();
-    let trash_dir = vault.join("trash");
-    let attachments_dir = vault.join("attachments");
+    let trash_dir = crate::secure_fs::real_dir(vault, &["trash"]).ok();
+    let Ok(attachments_dir) = crate::secure_fs::real_dir(vault, &["attachments"]) else {
+        return findings;
+    };
     if attachments_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&attachments_dir) {
             for entry in entries.flatten() {
                 if entry.file_type().is_ok_and(|t| t.is_dir()) {
                     if let Some(dir_name) = entry.file_name().to_str() {
-                        let in_trash = trash_dir.join(format!("{dir_name}.md")).is_file();
+                        let in_trash = trash_dir.as_ref().is_some_and(|d| {
+                            std::fs::symlink_metadata(d.join(format!("{dir_name}.md")))
+                                .is_ok_and(|m| m.is_file())
+                        });
                         if !fragment_ids.contains(dir_name) && !in_trash {
                             findings.push(DoctorFinding::AttachmentMismatch {
                                 fragment_id: dir_name.to_string(),
@@ -305,9 +310,9 @@ fn dir_size(path: &Path) -> u64 {
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 total += dir_size(&path);
-            } else if let Ok(meta) = entry.metadata() {
+            } else if let Ok(meta) = std::fs::symlink_metadata(&path) {
                 total += meta.len();
             }
         }
@@ -318,7 +323,9 @@ fn dir_size(path: &Path) -> u64 {
 /// Check plugin manifests for issues.
 pub fn check_plugins(vault: &Path) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
-    let plugins_dir = vault.join("plugins");
+    let Ok(plugins_dir) = crate::secure_fs::real_dir(vault, &["plugins"]) else {
+        return findings;
+    };
 
     let entries = match std::fs::read_dir(&plugins_dir) {
         Ok(entries) => entries,
@@ -385,8 +392,8 @@ pub fn run_doctor(vault: &Path) -> Result<DoctorReport, ParcError> {
     let mut fragments = Vec::new();
     let mut findings = Vec::new();
     for id in &all_ids {
-        let path = vault.join("fragments").join(format!("{}.md", id));
-        let reason = match std::fs::read(&path) {
+        let path = crate::secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", id));
+        let reason = match crate::secure_fs::read_regular(&path) {
             Ok(bytes) => match fragment::parse_fragment_file(id, &bytes) {
                 Ok(frag) => {
                     fragments.push(frag);

@@ -11,16 +11,18 @@
 //! ([`isolated`]) with `RLIMIT_AS`, `RLIMIT_CPU`, and a wall-clock timeout so a
 //! hostile or broken file can never hang or crash `parc-server`.
 
+#[cfg(test)]
+mod fixtures_tests;
 mod process;
 pub mod sidecar;
 pub mod store;
 
-pub use process::{child_main, isolated, isolated_with_exe, CHILD_ARG};
+pub use process::{child_main, dispatch_worker, isolated, isolated_with_exe, CHILD_ARG};
 pub use sidecar::{read_sidecar, write_sidecar, SidecarState};
 pub use store::{
     attachments_need_sync, claim_lease, ensure_cache_tables, fill, fill_one, has_pending,
-    list_status, locate, pending_count, read_parts, release_lease, sync_attachments,
-    AttachmentTextStatus, FillReport,
+    list_status, locate, pending_count, read_parts, read_parts_read_only, release_lease,
+    sync_attachments, AttachmentTextStatus, FillReport,
 };
 
 use std::io::Read;

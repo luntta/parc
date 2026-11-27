@@ -33,19 +33,21 @@ pub struct VersionEntry {
 /// Save a snapshot of the current fragment file before it is overwritten.
 /// If the fragment file doesn't exist (new fragment), this is a no-op.
 pub fn save_snapshot(vault: &Path, fragment_id: &str) -> Result<(), ParcError> {
-    let fragment_path = vault.join("fragments").join(format!("{}.md", fragment_id));
+    fragment::validate_id(fragment_id)?;
+    let fragment_path =
+        secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", fragment_id));
 
     if !fragment_path.exists() {
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&fragment_path)?;
+    let content = secure_fs::read_regular_text(&fragment_path)?;
 
     // Use current time as the snapshot timestamp (when the snapshot was taken).
     // Micros precision to avoid collisions in fast operations.
     let timestamp = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
 
-    let history_dir = vault.join("history").join(fragment_id);
+    let history_dir = secure_fs::real_dir(vault, &["history", fragment_id])?;
     secure_fs::create_private_dir_all(&history_dir)?;
 
     let snapshot_path = history_dir.join(format!("{}.md", timestamp));
@@ -60,7 +62,8 @@ pub fn save_snapshot(vault: &Path, fragment_id: &str) -> Result<(), ParcError> {
 
 /// List all version snapshots for a fragment, sorted newest-first.
 pub fn list_versions(vault: &Path, fragment_id: &str) -> Result<Vec<VersionEntry>, ParcError> {
-    let history_dir = vault.join("history").join(fragment_id);
+    fragment::validate_id(fragment_id)?;
+    let history_dir = secure_fs::real_dir(vault, &["history", fragment_id])?;
 
     if !history_dir.is_dir() {
         return Ok(Vec::new());
@@ -70,7 +73,7 @@ pub fn list_versions(vault: &Path, fragment_id: &str) -> Result<Vec<VersionEntry
     for entry in std::fs::read_dir(&history_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "md") {
+        if entry.file_type()?.is_file() && path.extension().is_some_and(|e| e == "md") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 let metadata = entry.metadata()?;
                 versions.push(VersionEntry {
@@ -96,10 +99,8 @@ pub fn read_version(
 ) -> Result<Fragment, ParcError> {
     fragment::validate_id(fragment_id)?;
     validate_snapshot_timestamp(timestamp)?;
-    let snapshot_path = vault
-        .join("history")
-        .join(fragment_id)
-        .join(format!("{}.md", timestamp));
+    let snapshot_path =
+        secure_fs::real_dir(vault, &["history", fragment_id])?.join(format!("{}.md", timestamp));
 
     if !snapshot_path.exists() {
         return Err(ParcError::ValidationError(format!(
@@ -109,7 +110,7 @@ pub fn read_version(
         )));
     }
 
-    let content = std::fs::read_to_string(&snapshot_path)?;
+    let content = secure_fs::read_regular_text(&snapshot_path)?;
     fragment::parse_fragment(&content)
 }
 
@@ -136,7 +137,7 @@ pub fn restore_version(
     // but write_fragment checks config — we already saved above manually,
     // so just write directly to avoid double-snapshot)
     let content = fragment::serialize_fragment(&old);
-    let path = vault.join("fragments").join(format!("{}.md", fragment_id));
+    let path = secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", fragment_id));
     secure_fs::write_private(&path, content)?;
 
     Ok(old)
@@ -152,8 +153,8 @@ pub fn diff_versions(
     let full_id = fragment::resolve_id(vault, fragment_id)?;
 
     // Read current version
-    let current_path = vault.join("fragments").join(format!("{}.md", full_id));
-    let current_content = std::fs::read_to_string(&current_path)?;
+    let current_path = secure_fs::real_dir(vault, &["fragments"])?.join(format!("{}.md", full_id));
+    let current_content = secure_fs::read_regular_text(&current_path)?;
 
     // Determine which historical version to diff against
     let ts = match timestamp {
@@ -170,10 +171,8 @@ pub fn diff_versions(
     };
     validate_snapshot_timestamp(&ts)?;
 
-    let snapshot_path = vault
-        .join("history")
-        .join(&full_id)
-        .join(format!("{}.md", ts));
+    let snapshot_path =
+        secure_fs::real_dir(vault, &["history", &full_id])?.join(format!("{}.md", ts));
 
     if !snapshot_path.exists() {
         return Err(ParcError::ValidationError(format!(
@@ -182,7 +181,7 @@ pub fn diff_versions(
         )));
     }
 
-    let old_content = std::fs::read_to_string(&snapshot_path)?;
+    let old_content = secure_fs::read_regular_text(&snapshot_path)?;
 
     let diff = TextDiff::from_lines(&old_content, &current_content);
     let mut output = String::new();
@@ -265,7 +264,8 @@ mod tests {
         crate::vault::init_vault(&vault).unwrap();
 
         // Snapshot of non-existent fragment should be no-op
-        assert!(save_snapshot(&vault, "NONEXISTENT").is_ok());
+        assert!(save_snapshot(&vault, &ulid::Ulid::new().to_string()).is_ok());
+        assert!(save_snapshot(&vault, "NONEXISTENT").is_err());
     }
 
     #[test]

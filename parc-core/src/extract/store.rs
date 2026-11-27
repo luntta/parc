@@ -18,8 +18,7 @@ use crate::config::{load_config, AttachmentTextMode};
 use crate::error::ParcError;
 use crate::extract::sidecar::{read_sidecar, write_sidecar, SidecarState};
 use crate::extract::{
-    isolated, sha256_file, ExtractLimits, ExtractOutcome, Extracted, PartUnit, TextFormat,
-    TEXT_FORMAT,
+    sha256_file, ExtractLimits, ExtractOutcome, Extracted, PartUnit, TextFormat, TEXT_FORMAT,
 };
 use crate::fragment;
 use crate::quote::{self, QuoteLocation};
@@ -399,8 +398,7 @@ fn fill_one_inner(
         return Ok(FillOneOutcome::Cached(ext));
     }
 
-    // 3. Extract via isolated child process (in unit tests where the current_exe
-    // isn't `parc`/`parc-server`, fall back to `in_process` cleanly).
+    // 3. Extract via the isolated child process.
     let limits = ExtractLimits::default();
     let outcome = extract_file(&path, &limits);
 
@@ -459,39 +457,17 @@ fn fill_one_inner(
     }
 }
 
+#[cfg(not(test))]
 fn extract_file(path: &Path, limits: &ExtractLimits) -> Result<ExtractOutcome, ParcError> {
-    if running_as_parc_binary() {
-        isolated(path, limits)
-    } else {
-        // Test binaries (cargo test) don't dispatch CHILD_ARG; call in_process directly.
-        let meta = std::fs::symlink_metadata(path)?;
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            return Err(ParcError::ValidationError(format!(
-                "not a regular file: {}",
-                path.display()
-            )));
-        }
-        if meta.len() > limits.max_file_bytes as u64 {
-            return Err(ParcError::ValidationError(format!(
-                "too large ({} bytes; limit {} bytes)",
-                meta.len(),
-                limits.max_file_bytes
-            )));
-        }
-        let bytes = std::fs::read(path)?;
-        let hint = path.file_name().and_then(|n| n.to_str());
-        crate::extract::in_process(&bytes, hint, limits)
-    }
+    crate::extract::isolated(path, limits)
 }
 
-fn running_as_parc_binary() -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    let Some(stem) = exe.file_stem().and_then(|s| s.to_str()) else {
-        return false;
-    };
-    matches!(stem, "parc" | "parc-server")
+// Only the core unit-test harness bypasses re-exec. Never present in a
+// production library (including one embedded by another executable).
+#[cfg(test)]
+fn extract_file(path: &Path, limits: &ExtractLimits) -> Result<ExtractOutcome, ParcError> {
+    let bytes = crate::secure_fs::read_regular(path)?;
+    crate::extract::in_process(&bytes, path.file_name().and_then(|n| n.to_str()), limits)
 }
 
 /// Read extracted parts for `(fragment_id, filename)`, filling on demand if pending.
@@ -500,6 +476,26 @@ pub fn read_parts(
     conn: &Connection,
     fragment_id: &str,
     filename: &str,
+) -> Result<Option<Extracted>, ParcError> {
+    read_parts_impl(vault, conn, fragment_id, filename, true)
+}
+
+/// Read cached text, or extract transiently without writing a sidecar or database row.
+pub fn read_parts_read_only(
+    vault: &Path,
+    conn: &Connection,
+    fragment_id: &str,
+    filename: &str,
+) -> Result<Option<Extracted>, ParcError> {
+    read_parts_impl(vault, conn, fragment_id, filename, false)
+}
+
+fn read_parts_impl(
+    vault: &Path,
+    conn: &Connection,
+    fragment_id: &str,
+    filename: &str,
+    persist: bool,
 ) -> Result<Option<Extracted>, ParcError> {
     let full_id = fragment::resolve_id(vault, fragment_id)?;
     validate_attachment_filename(filename)?;
@@ -535,9 +531,9 @@ pub fn read_parts(
     let existing: Option<(String, i64, Option<String>)> = conn
         .prepare_cached(
             "SELECT status, text_format, error FROM attachment_files
-             WHERE fragment_id = ?1 AND filename = ?2",
+             WHERE fragment_id = ?1 AND filename = ?2 AND sha256 = ?3",
         )?
-        .query_row(rusqlite::params![full_id, filename], |r| {
+        .query_row(rusqlite::params![full_id, filename, sha256], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })
         .optional()?;
@@ -559,6 +555,12 @@ pub fn read_parts(
         }
     }
 
+    if !persist {
+        return Ok(match extract_file(&path, &ExtractLimits::default())? {
+            ExtractOutcome::Extracted(text) => Some(text),
+            ExtractOutcome::NoText => None,
+        });
+    }
     // Extract on demand if still pending or uncached.
     fill_one(vault, conn, &full_id, filename)
 }
