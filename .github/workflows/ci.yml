@@ -32,3 +32,11 @@ jobs:
       - run: cargo fmt --check
 
       - run: cargo test --workspace --no-default-features
+
+  macos-check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --locked

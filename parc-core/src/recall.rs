@@ -975,7 +975,7 @@ fn clip(line: usize, text: &str, ranges: &[(usize, usize)]) -> Excerpt {
         }
     }
     if end < chars.len() {
-        let from = focus_end.max(start);
+        let from = focus_end.clamp(start, end);
         if let Some(k) = chars[from..end].iter().rposition(|c| c.is_whitespace()) {
             end = from + k;
         }
@@ -1387,6 +1387,17 @@ mod tests {
     use crate::hook::ScriptRunner;
     use crate::ops::Writer;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn clip_handles_match_extending_beyond_window() {
+        let word = "ä".repeat(180);
+        let line = format!("{} {} {}", "prefix ".repeat(30), word, "tail ".repeat(80));
+        let (ranges, _) = word_ranges(&line, &HashSet::from([word.as_str()]));
+        let excerpt = clip(3, &line, &ranges);
+        assert_eq!(excerpt.line, 3);
+        assert!(excerpt.text.contains("ää"));
+        assert!(excerpt.text.chars().count() <= EXCERPT_CHARS);
+    }
 
     fn vault() -> (tempfile::TempDir, PathBuf, Writer) {
         let tmp = tempfile::TempDir::new().unwrap();

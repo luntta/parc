@@ -195,7 +195,7 @@ fn classify_exit(status: std::process::ExitStatus, stderr: &str) -> String {
         if let Some(sig) = status.signal() {
             return match sig {
                 libc::SIGXCPU => "took too long".to_string(),
-                libc::SIGKILL => "too large or ran out of memory".to_string(),
+                libc::SIGKILL | libc::SIGABRT => "too large or ran out of memory".to_string(),
                 _ => format!("unreadable (extractor crashed with signal {sig})"),
             };
         }
@@ -252,7 +252,8 @@ fn run_child_main() -> Result<(), String> {
     let req: ChildRequest = serde_json::from_str(header_line.trim())
         .map_err(|e| format!("invalid extraction request: {e}"))?;
 
-    apply_resource_limits(&req.limits);
+    apply_resource_limits(&req.limits)
+        .map_err(|e| format!("cannot enforce extractor resource limits: {e}"))?;
 
     let mut bytes = Vec::new();
     reader
@@ -275,15 +276,36 @@ fn run_child_main() -> Result<(), String> {
 }
 
 #[cfg(unix)]
-fn apply_resource_limits(limits: &ExtractLimits) {
-    set_rlimit(libc::RLIMIT_AS, limits.max_memory_bytes);
-    set_rlimit(libc::RLIMIT_CPU, limits.max_cpu_secs);
+fn apply_resource_limits(limits: &ExtractLimits) -> std::io::Result<()> {
+    #[cfg(target_os = "openbsd")]
+    let memory = libc::RLIMIT_DATA; // OpenBSD has no RLIMIT_AS.
+    #[cfg(not(target_os = "openbsd"))]
+    let memory = libc::RLIMIT_AS;
+    set_rlimit(memory, limits.max_memory_bytes)?;
+    set_rlimit(libc::RLIMIT_CPU, limits.max_cpu_secs)
 }
 
+#[cfg(all(
+    unix,
+    any(
+        all(target_os = "linux", any(target_env = "gnu", target_env = "uclibc")),
+        target_os = "hurd"
+    )
+))]
+type Resource = libc::__rlimit_resource_t;
+#[cfg(all(
+    unix,
+    not(any(
+        all(target_os = "linux", any(target_env = "gnu", target_env = "uclibc")),
+        target_os = "hurd"
+    ))
+))]
+type Resource = libc::c_int;
+
 #[cfg(unix)]
-fn set_rlimit(resource: libc::__rlimit_resource_t, limit: u64) {
+fn set_rlimit(resource: Resource, limit: u64) -> std::io::Result<()> {
     if limit == 0 {
-        return;
+        return Ok(());
     }
     let mut cur = libc::rlimit {
         rlim_cur: 0,
@@ -291,18 +313,25 @@ fn set_rlimit(resource: libc::__rlimit_resource_t, limit: u64) {
     };
     // SAFETY: valid pointer to initialized rlimit struct.
     if unsafe { libc::getrlimit(resource, &mut cur) } != 0 {
-        return;
+        return Err(std::io::Error::last_os_error());
     }
-    let target = (limit as libc::rlim_t).min(cur.rlim_max);
+    // Never raise an inherited limit or wrap a large request on 32-bit targets.
+    let target = libc::rlim_t::try_from(limit)
+        .unwrap_or(libc::rlim_t::MAX)
+        .min(cur.rlim_cur)
+        .min(cur.rlim_max);
     let next = libc::rlimit {
         rlim_cur: target,
-        rlim_max: cur.rlim_max,
+        rlim_max: target,
     };
-    // SAFETY: valid rlimit struct with rlim_cur <= rlim_max.
-    unsafe {
-        libc::setrlimit(resource, &next);
+    // SAFETY: both limits are <= the inherited hard limit.
+    if unsafe { libc::setrlimit(resource, &next) } != 0 {
+        return Err(std::io::Error::last_os_error());
     }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn apply_resource_limits(_limits: &ExtractLimits) {}
+fn apply_resource_limits(_limits: &ExtractLimits) -> std::io::Result<()> {
+    Ok(())
+}
