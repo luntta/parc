@@ -225,6 +225,9 @@ pub fn check_attachments(vault: &Path, fragments: &[Fragment]) -> Vec<DoctorFind
             if let Ok(entries) = std::fs::read_dir(&attach_dir) {
                 for entry in entries.flatten() {
                     if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                        if name == attachment::TEXT_SIDECAR_DIR {
+                            continue;
+                        }
                         if !frag.attachments.contains(&name.to_string()) {
                             findings.push(DoctorFinding::AttachmentMismatch {
                                 fragment_id: frag.id.clone(),
@@ -241,14 +244,17 @@ pub fn check_attachments(vault: &Path, fragments: &[Fragment]) -> Vec<DoctorFind
     }
 
     // Check for attachment directories belonging to non-existent fragments
+    // (trashed fragments keep their attachments until purged, so restore works).
     let fragment_ids: HashSet<&str> = fragments.iter().map(|f| f.id.as_str()).collect();
+    let trash_dir = vault.join("trash");
     let attachments_dir = vault.join("attachments");
     if attachments_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&attachments_dir) {
             for entry in entries.flatten() {
                 if entry.path().is_dir() {
                     if let Some(dir_name) = entry.file_name().to_str() {
-                        if !fragment_ids.contains(dir_name) {
+                        let in_trash = trash_dir.join(format!("{dir_name}.md")).is_file();
+                        if !fragment_ids.contains(dir_name) && !in_trash {
                             findings.push(DoctorFinding::AttachmentMismatch {
                                 fragment_id: dir_name.to_string(),
                                 detail: "attachment directory exists but fragment not found"

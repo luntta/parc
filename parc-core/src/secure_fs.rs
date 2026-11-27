@@ -118,6 +118,85 @@ pub fn rename_private_file(source: &Path, dest: &Path) -> Result<(), ParcError> 
     Ok(())
 }
 
+/// Make the attachment private before rename. Once the original has moved
+/// no fallible chmod may turn a committed transfer into a reported failure.
+pub(crate) fn rename_private_attachment(source: &Path, dest: &Path) -> Result<(), ParcError> {
+    let meta = fs::symlink_metadata(source)?;
+    if !meta.is_file() {
+        return Err(ParcError::ValidationError(
+            "attachment is not a regular file".into(),
+        ));
+    }
+    reject_existing_symlink(dest)?;
+    set_private_file_permissions(source)?;
+    fs::rename(source, dest)?;
+    Ok(())
+}
+
+/// Remove a regular file, refusing symlinks and directories.
+pub fn remove_private_file(path: &Path) -> Result<(), ParcError> {
+    let metadata = fs::symlink_metadata(path)?;
+    reject_symlink_metadata(path, &metadata)?;
+    if !metadata.is_file() {
+        return Err(ParcError::ValidationError(format!(
+            "refusing to remove non-file '{}'",
+            path.display()
+        )));
+    }
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+/// Recursively remove a directory tree after checking that neither `path` nor
+/// any entry inside it is a symlink. Missing paths are a no-op.
+pub fn remove_private_dir_all(path: &Path) -> Result<(), ParcError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(ParcError::Io(e)),
+    };
+    reject_symlink_metadata(path, &metadata)?;
+    if !metadata.is_dir() {
+        return Err(ParcError::ValidationError(format!(
+            "refusing to remove non-directory '{}'",
+            path.display()
+        )));
+    }
+    check_tree_no_symlinks(path)?;
+    remove_dir_contents(path)?;
+    fs::remove_dir(path)?;
+    Ok(())
+}
+
+fn check_tree_no_symlinks(dir: &Path) -> Result<(), ParcError> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let child = entry.path();
+        let meta = fs::symlink_metadata(&child)?;
+        reject_symlink_metadata(&child, &meta)?;
+        if meta.is_dir() {
+            check_tree_no_symlinks(&child)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_dir_contents(dir: &Path) -> Result<(), ParcError> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let child = entry.path();
+        let meta = fs::symlink_metadata(&child)?;
+        reject_symlink_metadata(&child, &meta)?;
+        if meta.is_dir() {
+            remove_dir_contents(&child)?;
+            fs::remove_dir(&child)?;
+        } else {
+            fs::remove_file(&child)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn set_private_file_permissions(path: &Path) -> Result<(), ParcError> {
     reject_existing_symlink(path)?;
     set_file_mode(path)

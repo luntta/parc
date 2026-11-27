@@ -11,6 +11,7 @@ pub mod export;
 pub mod git_hooks;
 pub mod history;
 pub mod import;
+pub mod inbox;
 pub mod init;
 pub mod link;
 pub mod list;

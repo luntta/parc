@@ -1,0 +1,9 @@
+{
+  "title": "Q4 Architecture Review",
+  "unit": "slide",
+  "format": "markdown",
+  "parts": [
+    "## Q4 Architecture Review\n\nLocal-first storage stays plain Markdown.\n\nSidecar text travels cleanly over git.\n\n> Notes: Remind the team about offline latency targets.",
+    "## Next Milestones\n\nShip inbox triage and PDF highlights."
+  ]
+}

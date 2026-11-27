@@ -283,20 +283,69 @@ pub fn init_vault_with(path: &Path, types: &TypesConfig) -> Result<(), ParcError
     }
 
     // If the vault's parent directory is inside a git repository,
-    // ensure index.db is listed in .gitignore
-    if let Some(parent) = path.parent() {
-        if let Some(git_root) = find_git_root(parent) {
-            let gitignore_path = git_root.join(".gitignore");
-            let relative = path
-                .strip_prefix(&git_root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            let entry = format!("{}/index.db", relative);
-            add_gitignore_entry(&gitignore_path, &entry)?;
+    // ensure index.db and inbox/ are listed in .gitignore
+    ensure_gitignored(path, &["index.db", "inbox/"])?;
+
+    Ok(())
+}
+
+/// Fixed path to the vault's inbox drop folder (`<vault>/inbox/`).
+/// Never configurable from `config.yml`.
+pub fn inbox_dir(vault: &Path) -> PathBuf {
+    vault.join("inbox")
+}
+
+/// Ensure `<vault>/inbox/`, `schemas/source.yml`, `templates/source.md`, and
+/// the `.gitignore` entry for `inbox/` exist. Safe to call repeatedly and
+/// brings vaults created before Inbox existed up to date on first use.
+pub fn ensure_inbox_ready(vault: &Path) -> Result<PathBuf, ParcError> {
+    let dir = inbox_dir(vault);
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                return Err(ParcError::ValidationError(format!(
+                    "refusing unsafe inbox path '{}'",
+                    dir.display()
+                )));
+            }
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            secure_fs::create_private_dir_all(&dir)?;
+        }
+        Err(e) => return Err(e.into()),
     }
 
+    let source_schema = vault.join("schemas").join("source.yml");
+    if !source_schema.exists() {
+        secure_fs::create_private_dir_all(&vault.join("schemas"))?;
+        secure_fs::write_private(&source_schema, include_str!("builtin/schemas/source.yml"))?;
+    }
+
+    let source_tpl = vault.join("templates").join("source.md");
+    if !source_tpl.exists() {
+        secure_fs::create_private_dir_all(&vault.join("templates"))?;
+        secure_fs::write_private(&source_tpl, include_str!("builtin/templates/source.md"))?;
+    }
+
+    ensure_gitignored(vault, &["inbox/"])?;
+    Ok(dir)
+}
+
+fn ensure_gitignored(vault: &Path, entries: &[&str]) -> Result<(), ParcError> {
+    if let Some(parent) = vault.parent() {
+        if let Some(git_root) = find_git_root(parent) {
+            let gitignore_path = git_root.join(".gitignore");
+            let relative = vault
+                .strip_prefix(&git_root)
+                .unwrap_or(vault)
+                .to_string_lossy()
+                .replace('\\', "/");
+            for suffix in entries {
+                let entry = format!("{}/{}", relative, suffix);
+                add_gitignore_entry(&gitignore_path, &entry)?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -305,6 +354,7 @@ const VAULT_DIRS: &[&str] = &[
     "templates",
     "fragments",
     "attachments",
+    "inbox",
     "history",
     "trash",
     "plugins",
@@ -409,6 +459,7 @@ pub const BUILTIN_SCHEMAS: &[(&str, &str)] = &[
     ("decision.yml", include_str!("builtin/schemas/decision.yml")),
     ("risk.yml", include_str!("builtin/schemas/risk.yml")),
     ("idea.yml", include_str!("builtin/schemas/idea.yml")),
+    ("source.yml", include_str!("builtin/schemas/source.yml")),
 ];
 
 const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
@@ -417,6 +468,7 @@ const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
     ("decision.md", include_str!("builtin/templates/decision.md")),
     ("risk.md", include_str!("builtin/templates/risk.md")),
     ("idea.md", include_str!("builtin/templates/idea.md")),
+    ("source.md", include_str!("builtin/templates/source.md")),
 ];
 
 #[cfg(test)]

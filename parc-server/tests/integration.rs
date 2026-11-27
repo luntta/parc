@@ -995,7 +995,7 @@ fn test_mcp_mode_over_stdio() {
         .collect();
     assert_eq!(lines.len(), 2, "the notification gets no reply");
     assert_eq!(lines[0]["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 6);
 
     // --read-only only makes sense for MCP.
     let status = Command::new(bin)
@@ -1189,4 +1189,31 @@ fn test_promote_templates_and_trash_management() {
     assert_eq!(result_of(&resp)["purged_count"], 1);
     let resp = h.send_rpc(rpc(12, "trash.list", serde_json::json!({})));
     assert_eq!(result_of(&resp).as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn inbox_rpc_stays_responsive_while_a_batch_waits_for_extraction() {
+    use std::time::{Duration, SystemTime};
+
+    let mut server = ServerHarness::new();
+    let conn = parc_core::index::open_index(&server.vault_path).unwrap();
+    // Hold the worker lease instead of sleeping or relying on a slow parser.
+    assert!(parc_core::extract::claim_lease(&conn, "test-controlled-delay", 60).unwrap());
+    for i in 0..8 {
+        let file = std::fs::File::create(server.vault_path.join("inbox").join(format!("{i}.txt"))).unwrap();
+        (&file).write_all(b"Original contents").unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(5)).unwrap();
+    }
+    let report = server.send_rpc(rpc(1, "inbox.sweep", serde_json::json!({})));
+    assert_eq!(report["result"]["pending"], 8);
+    let id = report["result"]["created"][0]["id"].as_str().unwrap();
+    let read = server.send_rpc(rpc(2, "fragment.get", serde_json::json!({ "id": id })));
+    assert_eq!(read["result"]["id"], id);
+    let snapshot = server.send_rpc(rpc(3, "inbox.attachments", serde_json::json!({})));
+    assert_eq!(snapshot["result"].as_object().unwrap().len(), 8);
+    assert_eq!(snapshot["result"][id][0]["status"], "pending");
+    let text = server.send_rpc(rpc(4, "attachment.text", serde_json::json!({
+        "id": id, "filename": "0.txt", "ready_only": true
+    })));
+    assert_eq!(text["result"]["status"], "pending");
 }

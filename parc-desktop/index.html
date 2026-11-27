@@ -22,6 +22,7 @@
 
     <nav aria-label="Workspace">
       <button type="button" data-view="pulse" aria-keyshortcuts="P"><i data-icon="pulse" class="icon"></i><span>Pulse</span><kbd aria-hidden="true">P</kbd></button>
+      <button type="button" data-view="inbox" aria-keyshortcuts="I"><i data-icon="inbox" class="icon"></i><span>Inbox</span><span id="inboxBadge" class="nav-badge" hidden></span><kbd aria-hidden="true">I</kbd></button>
       <button type="button" id="goTo" aria-keyshortcuts="Control+K"><i data-icon="command" class="icon"></i><span>Go to…</span><kbd aria-hidden="true">Ctrl K</kbd></button>
       <button type="button" data-view="search" aria-keyshortcuts="/ Control+F"><i data-icon="search" class="icon"></i><span>Search</span><kbd aria-hidden="true">/</kbd></button>
       <button type="button" data-view="graph" aria-keyshortcuts="G"><i data-icon="graph" class="icon"></i><span>Graph</span><kbd aria-hidden="true">G</kbd></button>
@@ -88,10 +89,18 @@
   <template id="docTemplate">
     <div class="scroll">
       <div class="doc-layout">
-        <article id="document" class="page doc" aria-label="Fragment editor">
+        <section id="sourcePane" class="source-pane" aria-label="Document viewer" hidden></section>
+        <div id="sourceRailBar" class="source-rail-bar" hidden>
+          <div class="lens" role="group" aria-label="Source side panel">
+            <button type="button" id="railNotes" class="lens-option" data-rail="notes" aria-pressed="true">Notes</button>
+            <button type="button" id="railRelated" class="lens-option" data-rail="related" aria-pressed="false">Related<span id="railRelatedCount" class="rail-count" hidden></span></button>
+          </div>
+        </div>
+        <article id="document" class="workspace-page doc" aria-label="Fragment editor">
           <div id="meta" class="doc-meta"></div>
           <label class="sr" for="title">Fragment title</label>
           <textarea id="title" class="doc-title" rows="1" placeholder="Untitled" autocomplete="off"></textarea>
+          <div id="quoteActions" class="quote-actions" hidden></div>
           <div id="draft" class="draft"></div>
           <section id="docAttachments" class="doc-attachments" aria-labelledby="docAttachmentsTitle" hidden>
             <h2 id="docAttachmentsTitle" class="section-label">Attachments<small id="docAttachmentsNote"></small></h2>
@@ -112,7 +121,7 @@
   </template>
   <template id="viewTemplate">
     <div class="scroll">
-      <section id="tool" class="page wide tool" aria-labelledby="toolTitle">
+      <section id="tool" class="workspace-page wide tool" aria-labelledby="toolTitle">
         <header class="tool-head">
           <h1 id="toolTitle" class="tool-title"></h1>
           <p id="intro" class="intro"></p>
@@ -184,9 +193,14 @@
       <section aria-labelledby="vaultHeading">
         <h3 id="vaultHeading">Types and statuses</h3>
         <div class="setting">
-          <div class="setting-text"><span>Which types are on, and what each type holds, are kept in each vault for everyone who opens it.</span></div>
+          <div class="setting-text"><span>Which types are on, what each type holds, and where attachment text is stored are kept in each vault.</span></div>
           <aihio-button id="vaultSettingsLink" variant="outline" size="sm">Vault settings…</aihio-button>
         </div>
+      </section>
+      <section aria-labelledby="inboxHeading">
+        <h3 id="inboxHeading">Inbox folders</h3>
+        <div id="inboxFolders" class="inbox-folders"></div>
+        <p class="setting-hint">Drop PDFs, Word documents, presentations, HTML or text files into a vault’s inbox folder. Bookmark it in your file manager so browser downloads can land straight in.</p>
       </section>
       <section aria-labelledby="quickHeading">
         <h3 id="quickHeading">Quick capture</h3>

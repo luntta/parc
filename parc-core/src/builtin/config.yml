@@ -23,3 +23,7 @@ resurfacing:
 types:
   default: note
   disabled: []
+# Where extracted attachment text is kept: `sidecar` writes `.text/` files beside
+# attachments so they travel over git; `index` keeps them in index.db only.
+attachments:
+  text: sidecar

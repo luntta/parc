@@ -34,6 +34,18 @@ pub fn run(
 
     search_query.limit = limit;
 
+    if search::has_in_files(&search_query) {
+        let results = search::search(&conn, &search_query)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&results)?);
+        } else if results.is_empty() {
+            println!("No fragments found.");
+        } else {
+            render::print_table(&results, config.id_display_length);
+        }
+        return Ok(());
+    }
+
     let hits = search::fuzzy_search(&conn, &search_query)?;
 
     if json {
@@ -61,5 +73,6 @@ fn hit_to_result(hit: &FuzzyHit) -> SearchResult {
         snippet: None,
         archived: false,
         fields: Default::default(),
+        file_hits: Vec::new(),
     }
 }

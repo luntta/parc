@@ -1,0 +1,11 @@
+[
+  { "input": "ﬁle  ﬂow\u00a0test", "expected": "file flow test" },
+  { "input": "“Smart quotes” and ‘single’", "expected": "\"Smart quotes\" and 'single'" },
+  { "input": "en–dash — em—dash − minus", "expected": "en-dash - em-dash - minus" },
+  { "input": "inter-\nnational\tco-\r\noperation", "expected": "international cooperation" },
+  { "input": "keep - \nspaced dash", "expected": "keep - spaced dash" },
+  { "input": "soft\u00adhyphen", "expected": "softhyphen" },
+  { "input": "   lots   of\n\n  space  ", "expected": "lots of space" },
+  { "input": "ﬃce ﬂight ﬀort ﬄing ﬅer ﬆep", "expected": "ffice flight ffort ffling ster step" },
+  { "input": "hyphen‐\nated and non‑\nbreaking", "expected": "hyphenated and nonbreaking" }
+]

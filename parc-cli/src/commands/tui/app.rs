@@ -17,8 +17,8 @@ use super::cache::FragmentCache;
 use super::data::VaultStamp;
 use super::markdown::{ActionKind, Actionable};
 use super::{
-    actions, data, ui, CaptureField, CaptureForm, ConfirmAction, Focus, InputAction, Mode,
-    OverlayKind, OverlayState, QuickField, Row, Tab,
+    actions, data, ui, AttachmentPagerState, CaptureField, CaptureForm, ConfirmAction, Focus,
+    InputAction, Mode, OverlayKind, OverlayState, QuickField, Row, Tab,
 };
 
 mod launcher;
@@ -333,6 +333,9 @@ pub(super) fn run_loop(
                     handle_launcher(&mut app, key, popup, terminal, vault, config)
                 }
                 Mode::Overlay(state) => handle_overlay(&mut app, key, state, vault, config),
+                Mode::AttachmentPager(pager) => {
+                    handle_attachment_pager(&mut app, key, pager, vault)
+                }
                 Mode::Help => handle_help(&mut app, key),
             },
             Event::Resize(_, _) => {
@@ -453,6 +456,11 @@ fn handle_normal(
                 yank_id(app, &id);
             }
         }
+        (KeyCode::Char('v'), _) if plain => {
+            if let Some(id) = app.selected_id() {
+                open_attachment_pager(app, vault, &id);
+            }
+        }
         (KeyCode::Char('d'), _) if plain => {
             if let Some(id) = app.selected_id() {
                 open_delete_confirm(app, id);
@@ -521,6 +529,136 @@ fn handle_confirm(
         }
         _ => {}
     }
+    Ok(true)
+}
+
+fn open_attachment_pager(app: &mut App, vault: &Path, fragment_id: &str) {
+    let files = match parc_core::attachment::list_attachments(vault, fragment_id) {
+        Ok(list) => list,
+        Err(e) => {
+            app.set_status(format!("attachments error: {e}"));
+            return;
+        }
+    };
+    if files.is_empty() {
+        app.set_status("no attachments on this fragment");
+        return;
+    }
+    let names: Vec<String> = files.into_iter().map(|a| a.filename).collect();
+    let pager = load_attachment_pager(app, vault, fragment_id, names, 0);
+    app.mode = Mode::AttachmentPager(pager);
+    app.dirty = true;
+}
+
+fn load_attachment_pager(
+    app: &mut App,
+    vault: &Path,
+    fragment_id: &str,
+    attachments: Vec<String>,
+    index: usize,
+) -> AttachmentPagerState {
+    let filename = attachments
+        .get(index)
+        .cloned()
+        .unwrap_or_default();
+    let mut lines = Vec::new();
+    let mut title = filename.clone();
+    if let Some(conn) = app.ensure_index(vault) {
+        match parc_core::extract::read_parts(vault, conn, fragment_id, &filename) {
+            Ok(Some(ext)) => {
+                if let Some(doc_title) = ext.title.as_deref() {
+                    title = format!("{filename} — {doc_title}");
+                }
+                for (i, part) in ext.parts.iter().enumerate() {
+                    if ext.parts.len() > 1 {
+                        let label = ext.unit.format_ref(i + 1, Some(part));
+                        lines.push(format!("─── {label} ───"));
+                    }
+                    for line in part.lines() {
+                        lines.push(line.to_string());
+                    }
+                    if i + 1 < ext.parts.len() {
+                        lines.push(String::new());
+                    }
+                }
+                if lines.is_empty() {
+                    lines.push("(empty extracted text)".to_string());
+                }
+            }
+            Ok(None) => {
+                lines.push(format!("No extracted text available for '{filename}'."));
+            }
+            Err(e) => {
+                lines.push(format!("Could not extract text: {e}"));
+            }
+        }
+    } else {
+        lines.push("Search index unavailable.".to_string());
+    }
+    AttachmentPagerState {
+        fragment_id: fragment_id.to_string(),
+        attachments,
+        index,
+        title,
+        lines,
+        scroll: 0,
+        max_scroll: 0,
+    }
+}
+
+fn handle_attachment_pager(
+    app: &mut App,
+    key: KeyEvent,
+    mut pager: AttachmentPagerState,
+    vault: &Path,
+) -> Result<bool> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = Mode::Normal;
+            app.dirty = true;
+            return Ok(true);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            pager.scroll = (pager.scroll.saturating_add(1)).min(pager.max_scroll);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            pager.scroll = pager.scroll.saturating_sub(1);
+        }
+        KeyCode::PageDown => {
+            pager.scroll = (pager.scroll.saturating_add(PAGE_LINES)).min(pager.max_scroll);
+        }
+        KeyCode::PageUp => {
+            pager.scroll = pager.scroll.saturating_sub(PAGE_LINES);
+        }
+        KeyCode::Char('d') if ctrl => {
+            pager.scroll = (pager.scroll.saturating_add(HALF_PAGE_LINES)).min(pager.max_scroll);
+        }
+        KeyCode::Char('u') if ctrl => {
+            pager.scroll = pager.scroll.saturating_sub(HALF_PAGE_LINES);
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+            pager.scroll = 0;
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            pager.scroll = pager.max_scroll;
+        }
+        KeyCode::Char(']') | KeyCode::Char('n') if pager.attachments.len() > 1 => {
+            let next = (pager.index + 1) % pager.attachments.len();
+            pager = load_attachment_pager(app, vault, &pager.fragment_id, pager.attachments, next);
+        }
+        KeyCode::Char('[') | KeyCode::Char('p') if pager.attachments.len() > 1 => {
+            let prev = if pager.index == 0 {
+                pager.attachments.len() - 1
+            } else {
+                pager.index - 1
+            };
+            pager = load_attachment_pager(app, vault, &pager.fragment_id, pager.attachments, prev);
+        }
+        _ => {}
+    }
+    app.mode = Mode::AttachmentPager(pager);
+    app.dirty = true;
     Ok(true)
 }
 

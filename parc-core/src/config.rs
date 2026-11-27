@@ -40,7 +40,43 @@ pub struct Config {
     pub hooks: ScriptHooksConfig,
     pub resurfacing: ResurfacingConfig,
     pub types: TypesConfig,
+    pub attachments: AttachmentsConfig,
     pub plugins: HashMap<String, serde_yaml_ng::Value>,
+}
+
+/// Where extracted attachment text is kept (`attachments:` in config.yml).
+/// - `sidecar` (default): writes `attachments/<id>/.text/<filename>.txt|.md`
+///   beside the file so it travels over git and other machines need not re-extract.
+/// - `index`: keeps extracted text only in `index.db` (`attachment_text`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentTextMode {
+    #[default]
+    Sidecar,
+    Index,
+}
+
+impl AttachmentTextMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AttachmentTextMode::Sidecar => "sidecar",
+            AttachmentTextMode::Index => "index",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "sidecar" => Some(AttachmentTextMode::Sidecar),
+            "index" => Some(AttachmentTextMode::Index),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentsConfig {
+    #[serde(default)]
+    pub text: AttachmentTextMode,
 }
 
 /// Which types new fragments can use (`types:` in config.yml). Turning a type
@@ -155,6 +191,7 @@ impl Default for Config {
             hooks: ScriptHooksConfig::default(),
             resurfacing: ResurfacingConfig::default(),
             types: TypesConfig::default(),
+            attachments: AttachmentsConfig::default(),
             plugins: HashMap::new(),
         }
     }
@@ -227,6 +264,8 @@ struct ConfigFile {
     resurfacing: Option<ResurfacingConfigFile>,
     #[serde(default)]
     types: Option<TypesConfig>,
+    #[serde(default)]
+    attachments: Option<AttachmentsConfig>,
     #[serde(default)]
     plugins: HashMap<String, serde_yaml_ng::Value>,
 }
@@ -325,9 +364,35 @@ fn load_config_as(vault: &Path, personal: bool) -> Result<Config, ParcError> {
     if let Some(types) = raw.types {
         config.types = types;
     }
+    if let Some(attachments) = raw.attachments {
+        config.attachments = attachments;
+    }
     config.plugins = raw.plugins;
 
     Ok(config)
+}
+
+/// Save the `attachments:` block in `config.yml`, rewriting only that block
+/// and keeping the rest of the file (comments included) intact.
+pub fn save_attachments(vault: &Path, attachments: &AttachmentsConfig) -> Result<(), ParcError> {
+    let path = vault.join("config.yml");
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let next = replace_top_level_block(&current, "attachments", &render_attachments(attachments)?);
+    serde_yaml_ng::from_str::<ConfigFile>(&next)?;
+    secure_fs::write_private_atomic(&path, next)
+}
+
+/// The `attachments:` block as config.yml holds it.
+pub fn render_attachments(attachments: &AttachmentsConfig) -> Result<String, ParcError> {
+    #[derive(Serialize)]
+    struct Block<'a> {
+        attachments: &'a AttachmentsConfig,
+    }
+    Ok(serde_yaml_ng::to_string(&Block { attachments })?)
 }
 
 /// Save which types are on and the default capture type. Checks that the
@@ -694,7 +759,7 @@ mod tests {
             .contains("can't be turned off"));
         assert!(save(Some("bug"), &[]).is_err());
         assert!(save(None, &["bug"]).is_err());
-        let all = ["note", "todo", "decision", "risk", "idea"];
+        let all = ["note", "todo", "decision", "risk", "idea", "source"];
         assert!(save(None, &all).unwrap_err().contains("stay on"));
         save(None, &["note"]).unwrap();
     }

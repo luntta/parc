@@ -6,7 +6,8 @@ use crate::error::ParcError;
 use crate::fragment;
 use crate::secure_fs;
 
-/// Reject filenames that could escape the per-fragment attachment directory.
+/// Reject filenames that could escape the per-fragment attachment directory or
+/// collide with internal metadata directories (`.text`).
 /// Filenames must be a single path component with no separators or `..`.
 pub fn validate_attachment_filename(name: &str) -> Result<(), ParcError> {
     if name.is_empty() {
@@ -14,7 +15,7 @@ pub fn validate_attachment_filename(name: &str) -> Result<(), ParcError> {
             "attachment filename cannot be empty".into(),
         ));
     }
-    if name == "." || name == ".." {
+    if name == "." || name == ".." || name == TEXT_SIDECAR_DIR {
         return Err(ParcError::ValidationError(format!(
             "invalid attachment filename '{}'",
             name
@@ -37,6 +38,16 @@ pub fn validate_attachment_filename(name: &str) -> Result<(), ParcError> {
     Ok(())
 }
 
+/// Directory inside `attachments/<id>/` that holds extracted text sidecars.
+/// Excluded from attachment listings, counts, and doctor mismatch checks.
+pub const TEXT_SIDECAR_DIR: &str = ".text";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachMode {
+    Copy,
+    Move,
+}
+
 #[derive(Debug, Clone)]
 pub struct AttachmentInfo {
     pub filename: String,
@@ -50,19 +61,100 @@ pub struct AttachmentRef {
     pub display_text: Option<String>,
 }
 
-/// Attach a file to a fragment. Copies (or moves) the source file into the
-/// fragment's attachment directory and updates the fragment's frontmatter.
-pub fn attach_file(
-    vault: &Path,
-    id_or_prefix: &str,
-    source_path: &Path,
-    move_file: bool,
-) -> Result<String, ParcError> {
-    let full_id = fragment::resolve_id(vault, id_or_prefix)?;
+/// Path to the `.text/` sidecar directory for a fragment.
+pub fn sidecar_dir(vault: &Path, full_id: &str) -> PathBuf {
+    vault
+        .join("attachments")
+        .join(full_id)
+        .join(TEXT_SIDECAR_DIR)
+}
 
-    if !source_path.exists() {
+/// Sidecar paths a given attachment filename could have (`.txt` or `.md`).
+pub fn sidecar_paths(vault: &Path, full_id: &str, filename: &str) -> [PathBuf; 2] {
+    let dir = sidecar_dir(vault, full_id);
+    [
+        dir.join(format!("{filename}.txt")),
+        dir.join(format!("{filename}.md")),
+    ]
+}
+
+/// Remove any `.text/` sidecars belonging to `filename`, and clean up `.text/`
+/// if it is now empty.
+pub fn remove_sidecars(vault: &Path, full_id: &str, filename: &str) -> Result<(), ParcError> {
+    validate_attachment_filename(filename)?;
+    for path in sidecar_paths(vault, full_id, filename) {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if !meta.file_type().is_symlink() && meta.is_file() => {
+                std::fs::remove_file(&path)?;
+            }
+            Ok(_) | Err(_) => {}
+        }
+    }
+    cleanup_empty_dir(&sidecar_dir(vault, full_id));
+    Ok(())
+}
+
+/// Move any `.text/` sidecars belonging to `filename` from one fragment to
+/// another.
+pub fn move_sidecars(
+    vault: &Path,
+    from_id: &str,
+    to_id: &str,
+    filename: &str,
+) -> Result<(), ParcError> {
+    validate_attachment_filename(filename)?;
+    let from_paths = sidecar_paths(vault, from_id, filename);
+    let to_paths = sidecar_paths(vault, to_id, filename);
+    for (src, dst) in from_paths.iter().zip(to_paths.iter()) {
+        if let Ok(meta) = std::fs::symlink_metadata(src) {
+            if !meta.file_type().is_symlink() && meta.is_file() {
+                if let Some(parent) = dst.parent() {
+                    secure_fs::create_private_dir_all(parent)?;
+                }
+                secure_fs::rename_private_file(src, dst)?;
+            }
+        }
+    }
+    cleanup_empty_dir(&sidecar_dir(vault, from_id));
+    cleanup_empty_dir(&vault.join("attachments").join(from_id));
+    Ok(())
+}
+
+fn cleanup_empty_dir(dir: &Path) {
+    if dir.is_dir() {
+        if let Ok(mut entries) = std::fs::read_dir(dir) {
+            if entries.next().is_none() {
+                let _ = std::fs::remove_dir(dir);
+            }
+        }
+    }
+}
+
+/// Copy or move `source_path` into `attachments/<full_id>/` without modifying
+/// fragment frontmatter. Frontends should call [`crate::ops::Writer::attach`].
+pub fn store_attachment_file(
+    vault: &Path,
+    full_id: &str,
+    source_path: &Path,
+    mode: AttachMode,
+) -> Result<String, ParcError> {
+    fragment::validate_id(full_id)?;
+    let meta = std::fs::symlink_metadata(source_path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ParcError::ValidationError(format!("file not found: {}", source_path.display()))
+        } else {
+            ParcError::Io(e)
+        }
+    })?;
+    if meta.file_type().is_symlink() {
         return Err(ParcError::ValidationError(format!(
-            "file not found: {}",
+            "refusing to follow symlink '{}'",
+            source_path.display()
+        )));
+    }
+    if !meta.is_file() {
+        return Err(ParcError::ValidationError(format!(
+            "not a regular file: {}",
             source_path.display()
         )));
     }
@@ -74,11 +166,11 @@ pub fn attach_file(
         .to_string();
     validate_attachment_filename(&filename)?;
 
-    let attach_dir = vault.join("attachments").join(&full_id);
+    let attach_dir = vault.join("attachments").join(full_id);
     secure_fs::create_private_dir_all(&attach_dir)?;
 
     let dest = attach_dir.join(&filename);
-    if dest.exists() {
+    if dest.exists() || std::fs::symlink_metadata(&dest).is_ok() {
         return Err(ParcError::ValidationError(format!(
             "attachment '{}' already exists for fragment '{}'",
             filename,
@@ -86,19 +178,102 @@ pub fn attach_file(
         )));
     }
 
-    if move_file {
-        // Try rename first, fall back to copy+delete for cross-device moves
-        match secure_fs::rename_private_file(source_path, &dest) {
-            Ok(()) => {}
-            Err(ParcError::Io(err)) if err.kind() == std::io::ErrorKind::CrossesDevices => {
-                secure_fs::copy_private_new(source_path, &dest)?;
-                std::fs::remove_file(source_path)?;
+    match mode {
+        AttachMode::Move => {
+            // Try rename first, fall back to copy+delete for cross-device moves
+            match secure_fs::rename_private_attachment(source_path, &dest) {
+                Ok(()) => {}
+                Err(ParcError::Io(err)) if err.kind() == std::io::ErrorKind::CrossesDevices => {
+                    secure_fs::copy_private_new(source_path, &dest)?;
+                    std::fs::remove_file(source_path)?;
+                }
+                Err(err) => return Err(err),
             }
-            Err(err) => return Err(err),
         }
-    } else {
-        secure_fs::copy_private_new(source_path, &dest)?;
+        AttachMode::Copy => {
+            secure_fs::copy_private_new(source_path, &dest)?;
+        }
     }
+
+    Ok(filename)
+}
+
+/// Remove an attachment file (and its text sidecars) from `attachments/<full_id>/`
+/// without modifying fragment frontmatter. Frontends should call [`crate::ops::Writer::detach`].
+pub fn remove_attachment_file(
+    vault: &Path,
+    full_id: &str,
+    filename: &str,
+) -> Result<(), ParcError> {
+    fragment::validate_id(full_id)?;
+    validate_attachment_filename(filename)?;
+
+    let attach_path = vault.join("attachments").join(full_id).join(filename);
+    match std::fs::symlink_metadata(&attach_path) {
+        Ok(_) => secure_fs::remove_private_file(&attach_path)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(ParcError::Io(e)),
+    }
+
+    remove_sidecars(vault, full_id, filename)?;
+
+    // Remove empty attachment directory
+    cleanup_empty_dir(&vault.join("attachments").join(full_id));
+    Ok(())
+}
+
+/// Move the original attachment file (derived sidecars are handled after commit) from `from_id` to `to_id`
+/// without modifying frontmatter. Frontends should call [`crate::ops::Writer::move_attachment`].
+pub fn move_attachment_file(
+    vault: &Path,
+    from_id: &str,
+    to_id: &str,
+    filename: &str,
+) -> Result<(), ParcError> {
+    fragment::validate_id(from_id)?;
+    fragment::validate_id(to_id)?;
+    validate_attachment_filename(filename)?;
+
+    let src = vault.join("attachments").join(from_id).join(filename);
+    if std::fs::symlink_metadata(&src).is_err() {
+        return Err(ParcError::ValidationError(format!(
+            "attachment '{}' not found on fragment '{}'",
+            filename,
+            &from_id[..8.min(from_id.len())]
+        )));
+    }
+
+    let dest_dir = vault.join("attachments").join(to_id);
+    secure_fs::create_private_dir_all(&dest_dir)?;
+    let dest = dest_dir.join(filename);
+    if dest.exists() || std::fs::symlink_metadata(&dest).is_ok() {
+        return Err(ParcError::ValidationError(format!(
+            "attachment '{}' already exists for fragment '{}'",
+            filename,
+            &to_id[..8.min(to_id.len())]
+        )));
+    }
+
+    secure_fs::rename_private_attachment(&src, &dest)?;
+    cleanup_empty_dir(&vault.join("attachments").join(from_id));
+    Ok(())
+}
+
+/// Attach a file to a fragment. Prefer [`crate::ops::Writer::attach`], which
+/// runs hooks, records history, and updates the index.
+pub fn attach_file(
+    vault: &Path,
+    id_or_prefix: &str,
+    source_path: &Path,
+    move_file: bool,
+) -> Result<String, ParcError> {
+    let full_id = fragment::resolve_id(vault, id_or_prefix)?;
+    let mode = if move_file {
+        AttachMode::Move
+    } else {
+        AttachMode::Copy
+    };
+    let filename = store_attachment_file(vault, &full_id, source_path, mode)?;
 
     // Update fragment frontmatter
     let mut frag = fragment::read_fragment(vault, &full_id)?;
@@ -110,23 +285,13 @@ pub fn attach_file(
     Ok(filename)
 }
 
-/// Remove an attachment from a fragment.
+/// Remove an attachment from a fragment. Prefer [`crate::ops::Writer::detach`],
+/// which runs hooks, records history, and updates the index.
 pub fn detach_file(vault: &Path, id_or_prefix: &str, filename: &str) -> Result<(), ParcError> {
     validate_attachment_filename(filename)?;
     let full_id = fragment::resolve_id(vault, id_or_prefix)?;
 
-    let attach_path = vault.join("attachments").join(&full_id).join(filename);
-    if attach_path.exists() {
-        std::fs::remove_file(&attach_path)?;
-    }
-
-    // Remove empty attachment directory
-    let attach_dir = vault.join("attachments").join(&full_id);
-    if attach_dir.is_dir() {
-        if std::fs::read_dir(&attach_dir)?.next().is_none() {
-            let _ = std::fs::remove_dir(&attach_dir);
-        }
-    }
+    remove_attachment_file(vault, &full_id, filename)?;
 
     // Update fragment frontmatter
     let mut frag = fragment::read_fragment(vault, &full_id)?;
@@ -136,14 +301,23 @@ pub fn detach_file(vault: &Path, id_or_prefix: &str, filename: &str) -> Result<(
     Ok(())
 }
 
-/// List attachments for a fragment (from filesystem).
+/// List attachments for a fragment (from filesystem). Excludes internal
+/// directories such as `.text/` and skips symlinks.
 pub fn list_attachments(
     vault: &Path,
     id_or_prefix: &str,
 ) -> Result<Vec<AttachmentInfo>, ParcError> {
     let full_id = fragment::resolve_id(vault, id_or_prefix)?;
+    list_attachments_by_id(vault, &full_id)
+}
 
-    let attach_dir = vault.join("attachments").join(&full_id);
+/// List attachments for a fragment whose full ID is already known.
+pub fn list_attachments_by_id(
+    vault: &Path,
+    full_id: &str,
+) -> Result<Vec<AttachmentInfo>, ParcError> {
+    fragment::validate_id(full_id)?;
+    let attach_dir = vault.join("attachments").join(full_id);
     if !attach_dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -152,15 +326,21 @@ pub fn list_attachments(
     for entry in std::fs::read_dir(&attach_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() {
-            let metadata = entry.metadata()?;
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                attachments.push(AttachmentInfo {
-                    filename: name.to_string(),
-                    size: metadata.len(),
-                    path,
-                });
-            }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name == TEXT_SIDECAR_DIR {
+            continue;
+        }
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.is_file() && !metadata.file_type().is_symlink() {
+            attachments.push(AttachmentInfo {
+                filename: name.to_string(),
+                size: metadata.len(),
+                path,
+            });
         }
     }
 

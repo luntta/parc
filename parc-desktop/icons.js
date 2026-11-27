@@ -47,16 +47,25 @@ const paths = {
   shuffle: '<path d="M16 4h4v4M4 19 20 4M20 16v4h-4M14 14l6 6M4 5l6 6"/>',
   text: '<path d="M4 6h16M4 12h11M4 18h7"/>',
   list: '<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+  inbox: '<path d="M4 13V6.5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2V13"/><path d="M4 13h4.5l1.5 2.5h4l1.5-2.5H20v4.5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/>',
+  quote: '<path d="M9.5 8.5H6a1.5 1.5 0 0 0-1.5 1.5v3A1.5 1.5 0 0 0 6 14.5h2v1.5a2.5 2.5 0 0 1-2.5 2.5"/><path d="M18.5 8.5H15a1.5 1.5 0 0 0-1.5 1.5v3a1.5 1.5 0 0 0 1.5 1.5h2v1.5a2.5 2.5 0 0 1-2.5 2.5"/>',
+  sparkles: '<path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z"/><path d="m18.5 15.5.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8Z"/>',
+  external: '<path d="M14 4.5h5.5V10M19.5 4.5 11 13"/><path d="M18.5 13.5v4a2 2 0 0 1-2 2h-10a2 2 0 0 1-2-2v-10a2 2 0 0 1 2-2h4"/>',
+  zoomIn: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.8-3.8M11 8v6M8 11h6"/>',
+  zoomOut: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.8-3.8M8 11h6"/>',
+  panel: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M14.5 4.5v15"/>',
+  arrowUp: '<path d="m12 19V5M6.5 10.5 12 5l5.5 5.5"/>',
   // Fragment types
   note: '<path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5Z"/><path d="M14 3.5v5h5M9 13h6M9 16.5h4"/>',
   todo: '<rect x="4.5" y="4.5" width="15" height="15" rx="4"/><path d="m8.5 12.2 2.5 2.5 4.5-5"/>',
   decision: '<path d="M12 21v-8M12 3v2.5"/><path d="M5 5.5h11.5l3.5 3.5-3.5 3.5H5Z"/>',
   risk: '<path d="M10.3 4.6 3.4 16.8a2 2 0 0 0 1.7 3h13.8a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z"/><path d="M12 9.5v4M12 16.6v.1"/>',
   idea: '<path d="M9 17.5h6M10 21h4"/><path d="M15 14.5c.3-1.4 1-2.2 1.8-3A6 6 0 1 0 6 8c0 1.4.4 2.4 1.2 3.4.8.9 1.5 1.7 1.8 3.1"/>',
+  source: '<path d="M5 4.5h10a2.5 2.5 0 0 1 2.5 2.5v12.5H7a2 2 0 0 0-2 2Z"/><path d="M5 19.5a2 2 0 0 1 2-2h10.5M9 9h5M9 12.5h4"/>',
   fragment: '<path d="M12 3.5 19.5 8v8L12 20.5 4.5 16V8Z"/>'
 };
 const SVG = 'http://www.w3.org/2000/svg';
-export const types = ['note', 'todo', 'decision', 'risk', 'idea'];
+export const types = ['note', 'todo', 'decision', 'risk', 'idea', 'source'];
 export function icon(name, className = 'icon') {
   const svg = document.createElementNS(SVG, 'svg');
   svg.setAttribute('viewBox', '0 0 24 24');

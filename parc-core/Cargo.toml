@@ -25,6 +25,10 @@ gemm = { version = "0.19", default-features = false, features = ["std", "rayon"]
 memmap2 = "0.9"
 rayon = "1"
 spm_precompiled = "0.1"
+xberg = { version = "=1.5.4", default-features = false, features = ["pdf", "office", "html"] }
+pollster = "0.4"
+sha2 = "0.10"
+unicode-normalization = "0.1"
 
 [features]
 default = []

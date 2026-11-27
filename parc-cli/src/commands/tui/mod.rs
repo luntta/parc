@@ -38,7 +38,19 @@ pub(crate) enum Mode {
     Capture(CaptureForm),
     Launcher(LauncherPopup),
     Overlay(OverlayState),
+    AttachmentPager(AttachmentPagerState),
     Help,
+}
+
+#[derive(Clone)]
+pub(crate) struct AttachmentPagerState {
+    pub fragment_id: String,
+    pub attachments: Vec<String>,
+    pub index: usize,
+    pub title: String,
+    pub lines: Vec<String>,
+    pub scroll: u16,
+    pub max_scroll: u16,
 }
 
 /// Vimium-style overlay over the detail pane: visible actionables get a

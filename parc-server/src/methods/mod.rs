@@ -1,6 +1,7 @@
 pub mod attachment;
 pub mod fragment;
 pub mod history;
+pub mod inbox;
 pub mod link;
 pub mod meaning;
 pub mod recall;

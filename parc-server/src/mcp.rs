@@ -24,18 +24,24 @@ pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26
 const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_LIMIT: u64 = 20;
 const MAX_LIMIT: u64 = 100;
+/// Maximum parts returned by one `read_attachment` call.
+const MAX_ATTACHMENT_PARTS: usize = 5;
+/// Maximum extracted text characters returned by one `read_attachment` call.
+const MAX_ATTACHMENT_CHARS: usize = 16_000;
 
-const INSTRUCTIONS: &str = "parc is the user's local archive of notes, todos, decisions, risks and ideas (Markdown files with YAML frontmatter). \
+const INSTRUCTIONS: &str = "parc is the user's local archive of notes, todos, decisions, risks, ideas and sources (Markdown files with YAML frontmatter and optional attached documents). \
 Search it for earlier decisions, known risks and open todos before starting work on a topic, and respect what you find. \
+Use `in:files` in search to look inside attached PDFs, Word documents, presentations and web pages, and `read_attachment` to read specific pages or slides (cite pages as `[[ID]] p. 12`). \
 Record durable, user-relevant context: a decision and why it was made, a risk and how to mitigate it, follow-up work. Don't log routine progress. \
 Search before creating to avoid duplicates; prefer updating or linking an existing fragment. \
 Call list_types for each type's fields and allowed values, and list_tags to reuse existing tags. \
 IDs are ULIDs; any unique prefix works as an ID. Never write secrets into fragments.";
 
-const SEARCH_HELP: &str = "Search the vault. Plain words are full-text search (\"quoted phrase\" for exact). Filters, all AND-ed: \
-type:todo, status:open, priority:high (also priority:>=medium), tag:backend or #backend, \
+const SEARCH_HELP: &str = "Search the vault. Plain words are full-text search (\"quoted phrase\" for exact) over fragment titles and bodies. \
+Add `in:files` to search inside attached documents' extracted text instead (results name the file and page/slide/section). \
+Filters, all AND-ed: type:todo, type:source, status:open, priority:high (also priority:>=medium), tag:backend or #backend, \
 due:today|this-week|overdue|<date> (also >2026-01-01), created:<range>, updated:<range>, by:<author>, \
-has:links|attachments|due, linked:<id>, is:archived (archived fragments are left out unless asked for) or is:all. \
+has:links|attachments|due, linked:<id>, in:files, is:archived (archived fragments are left out unless asked for) or is:all. \
 Prefix a value with ! to negate it (status:!done). An empty query lists the most recently updated fragments.";
 
 pub struct McpServer {
@@ -43,6 +49,8 @@ pub struct McpServer {
     read_only: bool,
     /// Keeps meaning vectors up to date for `recall`, when serving stdio.
     meaning: Option<crate::meaning::Filler>,
+    /// Extracts pending attachment text in the background, when serving stdio.
+    extractor: Option<crate::extract_filler::ExtractFiller>,
 }
 
 impl McpServer {
@@ -51,6 +59,7 @@ impl McpServer {
             vault,
             read_only,
             meaning: None,
+            extractor: None,
         }
     }
 
@@ -84,6 +93,9 @@ impl McpServer {
         if let Some(filler) = &self.meaning {
             filler.nudge();
         }
+        if let Some(extractor) = &self.extractor {
+            extractor.nudge();
+        }
         Some(reply(id, result))
     }
 
@@ -92,6 +104,7 @@ impl McpServer {
             search_tool(),
             recall_tool(),
             get_tool(),
+            read_attachment_tool(),
             types_tool(),
             tags_tool(),
         ];
@@ -117,6 +130,7 @@ impl McpServer {
             "search" => search(vault, args),
             "recall" => recall(vault, args),
             "get_fragment" => get_fragment(vault, args),
+            "read_attachment" => read_attachment(vault, args),
             "list_types" => list_types(vault, args),
             "list_tags" => list_tags(vault, args),
             "create_fragment" if !self.read_only => create_fragment(vault, args),
@@ -227,10 +241,30 @@ fn get_tool() -> Value {
     tool(
         "get_fragment",
         "Read a fragment",
-        "Read one fragment in full: its Markdown file (frontmatter and body), its revision, and the fragments that link to it.",
+        "Read one fragment in full: its Markdown file (frontmatter and body), its revision, attached files with their extracted-text status, and the fragments that link to it.",
         object(
             json!({ "id": { "type": "string", "description": "Fragment ID or unique prefix." } }),
             &["id"],
+        ),
+        read_only_hints(),
+    )
+}
+
+fn read_attachment_tool() -> Value {
+    tool(
+        "read_attachment",
+        "Read extracted attachment text",
+        "Read extracted text from an attached document (PDF pages, PPTX slides, or DOCX/HTML sections). \
+Returns at most 5 parts per call within a character budget, along with total part count, so request only the pages or slides you need. \
+Cite specific pages in answers as `[[ID]] p. 12`.",
+        object(
+            json!({
+                "id": { "type": "string", "description": "Fragment ID or unique prefix." },
+                "filename": { "type": "string", "description": "Attachment filename listed on the fragment." },
+                "from": { "type": "integer", "minimum": 1, "description": "1-based first page, slide, or section (default 1)." },
+                "to": { "type": "integer", "minimum": 1, "description": "1-based last page, slide, or section (capped at 5 parts per call)." },
+            }),
+            &["id", "filename"],
         ),
         read_only_hints(),
     )
@@ -472,6 +506,17 @@ fn search(vault: &Path, args: &Map<String, Value>) -> ToolResult {
                 text.push_str(&format!("\n    {}", snippet));
             }
         }
+        if let Some(file_hits) = r.get("file_hits").and_then(Value::as_array) {
+            for fh in file_hits {
+                let fname = str_field(fh, "filename");
+                let label = str_field(fh, "label");
+                let snip = str_field(fh, "snippet")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                text.push_str(&format!("\n    {} ({}): {}", fname, label, snip));
+            }
+        }
     }
     Ok(text)
 }
@@ -579,11 +624,20 @@ fn recall(vault: &Path, args: &Map<String, Value>) -> ToolResult {
         }
         text.push_str(&format!("\n    why: {}", why.join("; ")));
         for e in s["excerpts"].as_array().into_iter().flatten() {
-            let column = e["column"].as_u64().unwrap_or(1);
-            let at = if column > 1 {
-                format!("line {}, from column {}", e["line"], column)
+            let at = if let Some(att) = e.get("attachment").and_then(Value::as_str) {
+                let loc = str_field(e, "label");
+                if loc.is_empty() {
+                    att.to_string()
+                } else {
+                    format!("{att} ({loc})")
+                }
             } else {
-                format!("line {}", e["line"])
+                let column = e["column"].as_u64().unwrap_or(1);
+                if column > 1 {
+                    format!("line {}, from column {}", e["line"], column)
+                } else {
+                    format!("line {}", e["line"])
+                }
             };
             text.push_str(&format!("\n    {}: \"{}\"", at, str_field(e, "text")));
         }
@@ -619,7 +673,139 @@ fn get_fragment(vault: &Path, args: &Map<String, Value>) -> ToolResult {
             ));
         }
     }
+    if let Ok(conn) = parc_core::index::open_index(vault) {
+        if let Ok(atts) = parc_core::extract::list_status(&conn, vault, &frag.id) {
+            if !atts.is_empty() {
+                text.push_str("\n\nAttachments:");
+                for a in &atts {
+                    let detail = match a.status.as_str() {
+                        "ready" => {
+                            let unit = match a.unit {
+                                Some(parc_core::extract::PartUnit::Page) => "pages",
+                                Some(parc_core::extract::PartUnit::Slide) => "slides",
+                                Some(parc_core::extract::PartUnit::Section) => "sections",
+                                None => "parts",
+                            };
+                            format!("ready, {} {}", a.parts, unit)
+                        }
+                        "no_text" => "no extractable text".to_string(),
+                        "error" => format!(
+                            "error: {}",
+                            a.error.as_deref().unwrap_or("unreadable")
+                        ),
+                        other => other.to_string(),
+                    };
+                    text.push_str(&format!(
+                        "\n- {} ({} bytes, {})",
+                        a.filename, a.size, detail
+                    ));
+                }
+            }
+        }
+    }
     Ok(text)
+}
+
+fn read_attachment(vault: &Path, args: &Map<String, Value>) -> ToolResult {
+    check_args(args, &["id", "filename", "from", "to"])?;
+    let id = resolve_id(vault, required_string(args, "id")?)?;
+    let filename = required_string(args, "filename")?;
+    let from = match args.get("from") {
+        None | Some(Value::Null) => 1usize,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| *n >= 1)
+            .ok_or("'from' must be a positive integer")? as usize,
+    };
+    let requested_to = match args.get("to") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_u64()
+                .filter(|n| *n >= 1)
+                .ok_or("'to' must be a positive integer")? as usize,
+        ),
+    };
+
+    let conn = parc_core::index::open_index(vault).map_err(|e| e.to_string())?;
+    let extracted =
+        parc_core::extract::read_parts(vault, &conn, &id, filename).map_err(|e| e.to_string())?;
+    let Some(ext) = extracted else {
+        return Ok(format!(
+            "Attachment '{}' on {} has no extractable text.",
+            filename, id
+        ));
+    };
+    let total = ext.parts.len();
+    if total == 0 {
+        return Ok(format!(
+            "Attachment '{}' on {} has no text content.",
+            filename, id
+        ));
+    }
+    if from > total {
+        return Err(format!(
+            "'from' ({from}) exceeds total parts ({total}) of '{}'",
+            filename
+        ));
+    }
+    let max_to = (from + MAX_ATTACHMENT_PARTS - 1).min(total);
+    let to = requested_to.unwrap_or(max_to).min(max_to).max(from);
+    let capped_parts = requested_to.is_some_and(|t| t > max_to);
+
+    let unit_plural = match ext.unit {
+        parc_core::extract::PartUnit::Page => "pages",
+        parc_core::extract::PartUnit::Slide => "slides",
+        parc_core::extract::PartUnit::Section => "sections",
+    };
+    let mut out = format!(
+        "Attachment {} on {} ({} {} total; showing {}-{}):\n",
+        filename, id, total, unit_plural, from, to
+    );
+    let mut budget = MAX_ATTACHMENT_CHARS;
+    let mut truncated_chars = false;
+    for part in from..=to {
+        let Some(body) = ext.parts.get(part - 1) else {
+            continue;
+        };
+        let label = ext.unit.format_ref(part, Some(body));
+        let header = format!("\n--- {} ---\n", label);
+        if budget < header.len() {
+            truncated_chars = true;
+            break;
+        }
+        out.push_str(&header);
+        budget -= header.len();
+        let char_count = body.chars().count();
+        if char_count <= budget {
+            out.push_str(body);
+            out.push('\n');
+            budget = budget.saturating_sub(char_count + 1);
+        } else {
+            let clipped: String = body.chars().take(budget).collect();
+            out.push_str(&clipped);
+            out.push_str("\n… (truncated to character budget)\n");
+            truncated_chars = true;
+            break;
+        }
+    }
+    if capped_parts {
+        out.push_str(&format!(
+            "\n(Capped at {} {} per call; call read_attachment again with from: {} to continue.)",
+            MAX_ATTACHMENT_PARTS,
+            unit_plural,
+            to + 1
+        ));
+    } else if truncated_chars {
+        out.push_str("\n(Truncated to character budget; ask for fewer pages/parts per call.)");
+    } else if to < total {
+        out.push_str(&format!(
+            "\n({} more {} remain; call read_attachment with from: {} to read further.)",
+            total - to,
+            unit_plural,
+            to + 1
+        ));
+    }
+    Ok(out)
 }
 
 fn list_types(vault: &Path, args: &Map<String, Value>) -> ToolResult {
@@ -799,7 +985,8 @@ fn link_fragments(vault: &Path, args: &Map<String, Value>) -> ToolResult {
 /// stderr; stdout carries only protocol messages.
 pub fn run_stdio(vault: PathBuf, read_only: bool) -> anyhow::Result<()> {
     let mut server = McpServer::new(vault.clone(), read_only);
-    server.meaning = Some(crate::meaning::Filler::spawn(vault));
+    server.meaning = Some(crate::meaning::Filler::spawn(vault.clone()));
+    server.extractor = Some(crate::extract_filler::ExtractFiller::spawn(vault));
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     serve(&server, &mut stdin.lock(), &mut stdout.lock())
@@ -964,13 +1151,14 @@ mod tests {
                 })
                 .collect()
         };
-        assert_eq!(names(&full).len(), 8);
+        assert_eq!(names(&full).len(), 9);
         assert_eq!(
             names(&read_only),
             vec![
                 "search",
                 "recall",
                 "get_fragment",
+                "read_attachment",
                 "list_types",
                 "list_tags"
             ]
@@ -1210,5 +1398,46 @@ mod tests {
         assert_eq!(lines[0]["id"], 1);
         assert_eq!(lines[1]["error"]["code"], -32700);
         assert_eq!(lines[2]["id"], 2);
+    }
+
+    #[test]
+    fn read_attachment_is_read_only_and_search_in_files_names_pages() {
+        let (tmp, server) = server(true);
+        let vault = tmp.path().join(".parc");
+        let mut writer = crate::methods::write::writer(&vault);
+        let cfg = parc_core::config::load_config(&vault).unwrap();
+        let schemas = parc_core::schema::load_schemas(&vault).unwrap();
+        let frag = writer
+            .create(parc_core::fragment::new_fragment(
+                "source",
+                "Winter Plan",
+                schemas.resolve("source").unwrap(),
+                &cfg,
+            ))
+            .unwrap();
+        let fixture_pdf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../parc-core/tests/fixtures/attachments/sample.pdf");
+        writer
+            .attach(&frag.id, &fixture_pdf, parc_core::attachment::AttachMode::Copy)
+            .unwrap();
+
+        let (text, is_error) = call(
+            &server,
+            "search",
+            json!({ "query": "in:files crew rotation" }),
+        );
+        assert!(!is_error, "{text}");
+        assert!(text.contains(&frag.id), "{text}");
+        assert!(text.contains("sample.pdf (p. 2)"), "{text}");
+
+        let (text, is_error) = call(
+            &server,
+            "read_attachment",
+            json!({ "id": &frag.id, "filename": "sample.pdf", "from": 2, "to": 2 }),
+        );
+        assert!(!is_error, "{text}");
+        assert!(text.contains("--- p. 2 ---"), "{text}");
+        assert!(text.contains("crew rotation"), "{text}");
+        assert!(!text.contains("Icebreaker"), "{text}");
     }
 }

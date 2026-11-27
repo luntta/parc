@@ -144,7 +144,10 @@ test('vault settings: types turn off, statuses rename with their fragments, new 
   await store.init();
 
   // Every built-in type starts on, notes by default; statuses say what they mean.
-  assert.deepEqual(await store.vaultSettings(), { types: { default: 'note', disabled: [] } });
+  assert.deepEqual(await store.vaultSettings(), { types: { default: 'note', disabled: [] }, attachments: { text: 'sidecar' } });
+  await store.updateVaultSettings({ attachments: { text: 'index' } });
+  assert.equal((await store.vaultSettings()).attachments.text, 'index');
+  await store.updateVaultSettings({ attachments: { text: 'sidecar' } });
   const todo = schemaOf(await store.schemas(), 'todo');
   assert.equal(todo.enabled, true); assert.equal(todo.builtin, true);
   assert.deepEqual(todo.fields[0].categories, { open: 'open', 'in-progress': 'active', done: 'done', cancelled: 'closed' });
@@ -509,7 +512,10 @@ test('promote, templates, attachments, trash management, doctor and reindex', as
   assert.deepEqual(attached.attachments, ['diagram.txt']);
   assert.ok(/^[0-9a-f]{16}$/.test(attached.revision));
   const listedAtt = await store.attachments(promoted.id);
-  assert.deepEqual(listedAtt, [{ filename: 'diagram.txt', size: 16 }]);
+  assert.equal(listedAtt.length, 1);
+  assert.equal(listedAtt[0].filename, 'diagram.txt');
+  assert.equal(listedAtt[0].size, 16);
+  assert.equal(listedAtt[0].status, 'ready');
   assert.equal((await store.search('has:attachments')).some(r => r.id === promoted.id), true);
   await assert.rejects(store.detach(promoted.id, '../escape'), /Invalid attachment/);
   const detached = await store.detach(promoted.id, 'diagram.txt');
@@ -536,4 +542,69 @@ test('promote, templates, attachments, trash management, doctor and reindex', as
   const reindexed = await store.reindex();
   assert.ok(reindexed.indexed >= 3);
   assert.deepEqual(reindexed.problems, []);
+});
+
+test('inbox sweep, attachment text/locate, in:files search, moveAttachment and link', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-inbox-test-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const vault = path.join(dir, '.parc'), store = archive(vault);
+  t.after(() => store.close());
+  await store.init();
+
+  const inboxDir = path.join(vault, 'inbox');
+  const dropped = path.join(inboxDir, 'maritime-brief.md');
+  await fs.writeFile(dropped, '# Maritime Brief\n\nThe “ﬁnal” harbour timetable takes effect in autumn.\n\n## Budget\n\nFuel reserves increased by 12 percent.\n');
+  // Backdate mtime by 3 seconds so the settle window has elapsed.
+  const past = new Date(Date.now() - 3000);
+  await fs.utimes(dropped, past, past);
+
+  const report = await store.inboxSweep();
+  assert.equal(report.created.length, 1);
+  const srcId = report.created[0].id;
+  await assert.rejects(fs.access(dropped), { code: 'ENOENT' }, 'file moved out of inbox/');
+
+  assert.equal(report.pending, 1);
+  assert.equal(report.created[0].text_extracted, false);
+  assert.ok((await store.list()).some(f => f.id === srcId), 'ordinary RPC available before derived text');
+  const snapshot = await store.inboxAttachments();
+  assert.equal(snapshot[srcId][0].filename, 'maritime-brief.md');
+  // The desktop checks again while imports are pending. Enrichment and title
+  // adoption survive across requests; they need not finish in the import RPC.
+  let pending = report.pending;
+  for (let i = 0; pending && i < 100; i++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    pending = (await store.inboxSweep()).pending;
+  }
+  assert.equal(pending, 0);
+  const src = await store.get(srcId);
+  assert.equal(src.type, 'source');
+  assert.equal(src.status, 'inbox');
+  assert.equal(src.title, 'Maritime Brief');
+  assert.deepEqual(src.attachments, ['maritime-brief.md']);
+
+  const textRes = await store.attachmentText(srcId, 'maritime-brief.md');
+  assert.equal(textRes.status, 'ready');
+  assert.equal(textRes.unit, 'section');
+  assert.equal(textRes.parts.length, 2);
+
+  // Normalized quote location works across ligatures & curly quotes.
+  const loc = await store.attachmentLocate(srcId, 'maritime-brief.md', 'The "final" harbour timetable');
+  assert.equal(loc.part, 1);
+
+  // Plain search does not hit attachment-only words; in:files does and returns file_hits.
+  assert.equal((await store.search('reserves')).length, 0);
+  const fileHits = await store.search('in:files reserves');
+  assert.equal(fileHits.length, 1);
+  assert.equal(fileHits[0].id, srcId);
+  assert.equal(fileHits[0].file_hits[0].filename, 'maritime-brief.md');
+  assert.equal(fileHits[0].file_hits[0].part, 2);
+
+  // Move attachment to another fragment and link fragments.
+  const target = await store.save({ title: 'Harbour plan', body: 'Main plan.' });
+  await store.moveAttachment(srcId, target.id, 'maritime-brief.md');
+  assert.deepEqual(await store.attachments(srcId), []);
+  assert.equal((await store.attachments(target.id)).length, 1);
+  await store.link(srcId, target.id);
+  const links = await store.links();
+  assert.ok(links.some(e => e.source === srcId && e.target === target.id));
 });

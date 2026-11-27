@@ -1,0 +1,12 @@
+name: source
+editor_skip: false
+fields:
+  - name: status
+    type: enum
+    values: [inbox, reading, processed]
+    required: true
+    default: inbox
+    toggle: [inbox, processed]
+    categories:
+      active: [reading]
+      done: [processed]

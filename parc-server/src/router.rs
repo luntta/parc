@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::extract_filler::ExtractFiller;
 use crate::jsonrpc::RpcError;
 use crate::meaning::Filler;
 use crate::methods;
@@ -11,6 +12,8 @@ pub struct Router {
     pub vault_path: PathBuf,
     /// Computes meaning vectors in the background, in a long-running server.
     meaning: Option<Filler>,
+    /// Extracts pending attachment text in the background, in a long-running server.
+    extractor: Option<ExtractFiller>,
 }
 
 impl Router {
@@ -18,23 +21,28 @@ impl Router {
         Router {
             vault_path,
             meaning: None,
+            extractor: None,
         }
     }
 
     /// A router for a long-running server, which also keeps the vault's
-    /// meaning vectors up to date in the background.
+    /// meaning vectors and attachment text up to date in the background.
     pub fn with_meaning(vault_path: PathBuf) -> Self {
         Router {
             meaning: Some(Filler::spawn(vault_path.clone())),
+            extractor: Some(ExtractFiller::spawn(vault_path.clone())),
             vault_path,
         }
     }
 
     pub fn dispatch(&self, method: &str, params: Value) -> Result<Value, RpcError> {
         let result = self.route(method, params);
-        // Any request may have changed a fragment, or found a new model.
+        // Any request may have changed a fragment, added an attachment, or found a new model.
         if let Some(filler) = &self.meaning {
             filler.nudge();
+        }
+        if let Some(extractor) = &self.extractor {
+            extractor.nudge();
         }
         result
     }
@@ -69,7 +77,16 @@ impl Router {
             // Attachment methods
             "fragment.attach" => methods::attachment::attach(vault, params),
             "fragment.detach" => methods::attachment::detach(vault, params),
-            "fragment.attachments" => methods::attachment::attachments(vault, params),
+            "fragment.attachments" | "attachment.list" => {
+                methods::attachment::attachments(vault, params)
+            }
+            "attachment.move" => methods::attachment::move_attachment(vault, params),
+            "attachment.text" => methods::attachment::text(vault, params),
+            "attachment.locate" => methods::attachment::locate(vault, params),
+
+            // Inbox
+            "inbox.sweep" => methods::inbox::sweep(vault, params),
+            "inbox.attachments" => methods::inbox::attachments(vault),
 
             // Vault methods
             "vault.info" => methods::vault::info(vault, params),

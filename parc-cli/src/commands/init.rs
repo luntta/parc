@@ -14,6 +14,7 @@ fn describe(name: &str) -> &'static str {
         "decision" => "choices and the reasons for them",
         "risk" => "what could go wrong, and what is being done about it",
         "idea" => "possibilities to explore later",
+        "source" => "documents and files dropped in the inbox",
         _ => "",
     }
 }
@@ -191,7 +192,7 @@ mod tests {
 
     #[test]
     fn enter_everywhere_takes_the_defaults() {
-        let (types, out) = answers("\n\n\n\n\n\n\n");
+        let (types, out) = answers("\n\n\n\n\n\n\n\n");
         assert_eq!(types.unwrap().unwrap(), vault::default_init_types());
         assert!(out.contains("note      free-form thoughts and captures (Y/n) "));
         assert!(out.contains("Type new captures start as: (note) "));
@@ -199,8 +200,8 @@ mod tests {
 
     #[test]
     fn turned_off_types_and_a_chosen_default() {
-        // note, todo, decision, risk, idea; default; confirm.
-        let (types, out) = answers("n\n\nno\nN\nyes\nidea\ny\n");
+        // note, todo, decision, risk, idea, source; default; confirm.
+        let (types, out) = answers("n\n\nno\nN\nyes\n\nidea\ny\n");
         let types = types.unwrap().unwrap();
         assert_eq!(types.default.as_deref(), Some("idea"));
         assert_eq!(types.disabled, vec!["note", "decision", "risk"]);
@@ -211,17 +212,17 @@ mod tests {
     #[test]
     fn unclear_answers_are_asked_again() {
         // A bad yes/no, then a default that is off, then a good one.
-        let (types, out) = answers("maybe\n\n\n\nn\nn\nrisk\ntodo\n\n");
+        let (types, out) = answers("maybe\n\n\n\nn\nn\nn\nrisk\ntodo\n\n");
         let types = types.unwrap().unwrap();
         assert_eq!(types.default.as_deref(), Some("todo"));
-        assert_eq!(types.disabled, vec!["risk", "idea"]);
+        assert_eq!(types.disabled, vec!["risk", "idea", "source"]);
         assert!(out.contains("Answer yes or no."));
         assert!(out.contains("Choose one of: note, todo, decision"));
     }
 
     #[test]
     fn every_type_off_starts_over_and_one_type_needs_no_default_question() {
-        let (types, out) = answers("n\nn\nn\nn\nn\nn\ny\nn\nn\nn\n\n");
+        let (types, out) = answers("n\nn\nn\nn\nn\nn\nn\ny\nn\nn\nn\nn\n\n");
         let types = types.unwrap().unwrap();
         assert_eq!(types.default.as_deref(), Some("todo"));
         assert!(out.contains("Keep at least one type on."));
@@ -230,7 +231,7 @@ mod tests {
 
     #[test]
     fn no_at_the_end_and_end_of_input_create_nothing() {
-        let (types, _) = answers("\n\n\n\n\n\nno\n");
+        let (types, _) = answers("\n\n\n\n\n\n\nno\n");
         assert!(types.unwrap().is_none());
         let (types, _) = answers("\n\n");
         assert!(types.is_err());

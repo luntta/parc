@@ -45,12 +45,12 @@ function input(value, label, onInput, placeholder = '') {
 export function vaultSettings({ api, vaults, schemasOf, counts, reload, notify }) {
   const $ = id => document.getElementById(id);
   const dialog = $('vaultSettings'), body = $('vsBody'), foot = $('vsFooter');
-  let vault = '', view = 'types', model = null, usage = null, tally = new Map(), busy = false, nextKey = 1;
+  let vault = '', view = 'types', model = null, usage = null, tally = new Map(), vaultCfg = null, busy = false, nextKey = 1;
   let message = { text: '', tone: '' }, focusKey = null;
 
   const vaultName = () => vaults().find(v => v.path === vault)?.name || 'this vault';
   // The built-in types in their usual order, then the vault's own.
-  const BUILTIN = ['note', 'todo', 'decision', 'risk', 'idea'], rank = s => { const i = BUILTIN.indexOf(s.name); return i < 0 ? BUILTIN.length : i; };
+  const BUILTIN = ['note', 'todo', 'decision', 'risk', 'idea', 'source'], rank = s => { const i = BUILTIN.indexOf(s.name); return i < 0 ? BUILTIN.length : i; };
   const types = () => [...(schemasOf(vault) || [])].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
   const say = (text = '', tone = '') => { message = { text: String(text?.message ?? text).replace(/^Error invoking remote method '[^']+': Error: /, ''), tone }; const m = $('vsMessage'); if (m) { m.textContent = message.text; m.dataset.tone = tone; } };
 
@@ -62,7 +62,8 @@ export function vaultSettings({ api, vaults, schemasOf, counts, reload, notify }
   }
   async function showTypes() {
     view = 'types'; model = null;
-    try { tally = await counts(vault); } catch { tally = new Map(); }
+    try { [tally, vaultCfg] = await Promise.all([counts(vault), api.vaultSettings(vault).catch(() => null)]); }
+    catch { tally = new Map(); vaultCfg = null; }
     render();
   }
   // One change at a time; the dialog keeps its place and says what happened.
@@ -127,6 +128,26 @@ export function vaultSettings({ api, vaults, schemasOf, counts, reload, notify }
       name => change(() => api.updateVaultSettings(vault, { types: { default: name } }), `New captures start as ${name}.`)));
     start.append(h2, row);
     body.append(start);
+
+    const attSec = el('section'); attSec.setAttribute('aria-labelledby', 'vsAttHeading');
+    const h3 = el('h3', '', 'Attachment text'); h3.id = 'vsAttHeading';
+    const attRow = el('div', 'setting'), attText = el('div', 'setting-text');
+    const attMode = vaultCfg?.attachments?.text || 'sidecar';
+    attText.append(
+      el('strong', '', 'Where extracted text is stored'),
+      el('span', 'setting-sub', attMode === 'sidecar'
+        ? 'Sidecar files (.text/) travel over git so other computers don’t need to re-extract PDFs, docs and slides.'
+        : 'Kept only in local index.db; nothing extra is written beside attachments.')
+    );
+    attRow.append(attText, select([['sidecar', 'Sidecar files (.text/)'], ['index', 'Local index only']], attMode, 'Attachment text storage',
+      mode => change(async () => {
+        const res = await api.updateVaultSettings(vault, { attachments: { text: mode } });
+        vaultCfg = res;
+        return res;
+      }, mode === 'sidecar' ? 'Attachment text will be saved in .text/ sidecars. Reindex to write sidecars for existing files.' : 'Attachment text kept in local index only.')));
+    attSec.append(h3, attRow);
+    body.append(attSec);
+
     const done = button('Done', 'default', () => dialog.close());
     foot.append(done);
   }

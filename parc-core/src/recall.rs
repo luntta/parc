@@ -192,10 +192,10 @@ pub struct Source {
     pub excerpts: Vec<Excerpt>,
 }
 
-/// Part of one body line.
+/// Part of one body line, or one line from an attachment part.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Excerpt {
-    /// 1-based line of the body as it is edited (as in `grep`).
+    /// 1-based line of the body (or of the attachment part) as it is edited (as in `grep`).
     pub line: usize,
     /// 1-based column, in characters, where `text` starts: past 1 when a long
     /// line was cut down to the part around its first match.
@@ -203,6 +203,15 @@ pub struct Excerpt {
     pub text: String,
     /// Shared words in `text`, as `[start, end)` character offsets into it.
     pub ranges: Vec<(usize, usize)>,
+    /// Attachment filename when this excerpt comes from an attachment rather than the fragment body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<String>,
+    /// 1-based page, slide, or section number within `attachment`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<usize>,
+    /// Human-readable location label (`p. 12`, `slide 3`, `§ Heading`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// The seed reduced to what the signals search with.
@@ -241,7 +250,7 @@ pub fn context(
 ) -> Result<RecallContext, ParcError> {
     let probe = probe(conn, &query.seed)?;
     let limit = query.limit.min(MAX_LIMIT);
-    let (mut found, meaning) = rank(conn, &probe, query.as_of, limit + 1, meaning)?;
+    let (mut found, meaning, att_hits) = rank(conn, &probe, query.as_of, limit + 1, meaning)?;
     let truncated = found.len() > limit;
     found.truncate(limit);
 
@@ -252,8 +261,11 @@ pub fn context(
     )?;
     let mut sources = Vec::with_capacity(found.len());
     for c in found {
+        let att_hit = att_hits.get(&c.id);
         let mut source = stmt.query_row([&c.id], |row| {
             let body: String = row.get(6)?;
+            let body_ex = excerpts(&body, &c.reasons.shared_words);
+            let combined_ex = combine_excerpts(body_ex, att_hit, &c.reasons.shared_words);
             Ok(Source {
                 id: String::new(),
                 fragment_type: row.get(0)?,
@@ -264,7 +276,7 @@ pub fn context(
                 updated_at: row.get(5)?,
                 revision: row.get(7)?,
                 score: c.score,
-                excerpts: excerpts(&body, &c.reasons.shared_words),
+                excerpts: combined_ex,
                 reasons: Reasons::default(),
             })
         })?;
@@ -283,6 +295,41 @@ pub fn context(
         truncated,
         meaning,
     })
+}
+
+fn combine_excerpts(
+    body_ex: Vec<Excerpt>,
+    att_hit: Option<&AttachmentMatch>,
+    words: &[String],
+) -> Vec<Excerpt> {
+    let Some(hit) = att_hit else {
+        return body_ex;
+    };
+    let label = hit.unit.format_ref(hit.part, Some(&hit.text));
+    let mut att_ex: Vec<Excerpt> = excerpts(&hit.text, words)
+        .into_iter()
+        .map(|mut e| {
+            e.attachment = Some(hit.filename.clone());
+            e.part = Some(hit.part);
+            e.label = Some(label.clone());
+            e
+        })
+        .collect();
+    if att_ex.is_empty() {
+        return body_ex;
+    }
+    let body_has_match = body_ex.iter().any(|e| !e.ranges.is_empty());
+    if !body_has_match {
+        return att_ex;
+    }
+    let mut combined = Vec::with_capacity(MAX_EXCERPTS);
+    if let Some(first_body) = body_ex.into_iter().next() {
+        combined.push(first_body);
+    }
+    if combined.len() < MAX_EXCERPTS {
+        combined.push(att_ex.remove(0));
+    }
+    combined
 }
 
 fn probe(conn: &Connection, seed: &Seed) -> Result<Probe, ParcError> {
@@ -391,13 +438,27 @@ fn draft_links(
     Ok(ids)
 }
 
+struct AttachmentMatch {
+    filename: String,
+    part: usize,
+    unit: crate::extract::PartUnit,
+    text: String,
+}
+
 fn rank(
     conn: &Connection,
     probe: &Probe,
     as_of: Option<DateTime<Utc>>,
     limit: usize,
     meaning: Option<&Model>,
-) -> Result<(Vec<Candidate>, Option<MeaningInfo>), ParcError> {
+) -> Result<
+    (
+        Vec<Candidate>,
+        Option<MeaningInfo>,
+        HashMap<String, AttachmentMatch>,
+    ),
+    ParcError,
+> {
     let filter = Eligible {
         exclude: probe.exclude.as_deref(),
         as_of: as_of.map(|t| t.to_rfc3339()),
@@ -422,6 +483,8 @@ fn rank(
         }
     };
     fuse(by_words(conn, &filter, &probe.words)?);
+    let (att_ranking, att_hits) = by_attachment_words(conn, &filter, &probe.words)?;
+    fuse(att_ranking);
     fuse(by_tags(conn, &filter, &probe.tags)?);
     fuse(by_links(
         conn,
@@ -472,7 +535,7 @@ fn rank(
     // for what would otherwise be forgotten.
     found.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
     found.truncate(limit);
-    Ok((found, info))
+    Ok((found, info, att_hits))
 }
 
 /// A signal's candidate: higher `strength` ranks higher, equal strengths
@@ -484,8 +547,14 @@ struct Ranked {
 }
 
 fn merge(into: &mut Reasons, from: Reasons) {
-    if into.shared_words.is_empty() {
-        into.shared_words = from.shared_words;
+    if !from.shared_words.is_empty() {
+        if into.shared_words.is_empty() {
+            into.shared_words = from.shared_words;
+        } else {
+            let mut combined: BTreeSet<String> = into.shared_words.drain(..).collect();
+            combined.extend(from.shared_words);
+            into.shared_words = combined.into_iter().collect();
+        }
     }
     if into.shared_tags.is_empty() {
         into.shared_tags = from.shared_tags;
@@ -563,6 +632,117 @@ fn by_words(
         });
     }
     Ok(ranked)
+}
+
+/// Fragments whose attachments share the seed's words, ranked by best part BM25.
+fn by_attachment_words(
+    conn: &Connection,
+    filter: &Eligible,
+    words: &[String],
+) -> Result<(Vec<Ranked>, HashMap<String, AttachmentMatch>), ParcError> {
+    if words.is_empty() {
+        return Ok((Vec::new(), HashMap::new()));
+    }
+    let seed_words: HashSet<&str> = words.iter().map(String::as_str).collect();
+    let fts_query = words
+        .iter()
+        .map(|w| format!("\"{w}\""))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let row_limit = POOL * 3;
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT f.id, attachment_fts.filename, CAST(attachment_fts.part AS INTEGER),
+                af.unit, attachment_fts.text, bm25(attachment_fts)
+         FROM attachment_fts
+         JOIN fragments f ON f.id = attachment_fts.fragment_id
+         LEFT JOIN attachment_files af
+           ON af.fragment_id = attachment_fts.fragment_id
+          AND af.filename = attachment_fts.filename
+         WHERE attachment_fts MATCH ?3 AND {ELIGIBLE}
+         ORDER BY bm25(attachment_fts) LIMIT {row_limit}"
+    ))?;
+    let rows = stmt.query_map(
+        rusqlite::params![filter.exclude, filter.as_of, fts_query],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, f64>(5)?,
+            ))
+        },
+    )?;
+
+    struct Acc {
+        strength: f64,
+        shared: BTreeSet<String>,
+        best: AttachmentMatch,
+    }
+    let mut by_frag: HashMap<String, Acc> = HashMap::new();
+    for row in rows {
+        let (id, filename, part_i, unit_s, text, bm25) = row?;
+        let strength = -bm25;
+        let part = part_i.max(1) as usize;
+        let unit = unit_s
+            .as_deref()
+            .and_then(crate::extract::PartUnit::parse)
+            .unwrap_or(crate::extract::PartUnit::Page);
+        let shared: Vec<String> = content_words(&text)
+            .into_iter()
+            .filter(|w| seed_words.contains(w.as_str()))
+            .collect();
+        if shared.is_empty() {
+            continue;
+        }
+        match by_frag.get_mut(&id) {
+            Some(acc) => {
+                acc.shared.extend(shared);
+                if strength > acc.strength {
+                    acc.strength = strength;
+                    acc.best = AttachmentMatch {
+                        filename,
+                        part,
+                        unit,
+                        text,
+                    };
+                }
+            }
+            None => {
+                by_frag.insert(
+                    id,
+                    Acc {
+                        strength,
+                        shared: shared.into_iter().collect(),
+                        best: AttachmentMatch {
+                            filename,
+                            part,
+                            unit,
+                            text,
+                        },
+                    },
+                );
+            }
+        }
+    }
+
+    let mut ranked = Vec::with_capacity(by_frag.len());
+    let mut hits = HashMap::with_capacity(by_frag.len());
+    for (id, acc) in by_frag {
+        hits.insert(id.clone(), acc.best);
+        ranked.push(Ranked {
+            id,
+            reasons: Reasons {
+                shared_words: acc.shared.into_iter().collect(),
+                ..Reasons::default()
+            },
+            strength: acc.strength,
+        });
+    }
+    ranked.sort_by(|a, b| b.strength.total_cmp(&a.strength).then_with(|| a.id.cmp(&b.id)));
+    ranked.truncate(POOL);
+    Ok((ranked, hits))
 }
 
 /// Fragments sharing the seed's tags. A rare tag says more than a common
@@ -773,6 +953,9 @@ fn clip(line: usize, text: &str, ranges: &[(usize, usize)]) -> Excerpt {
             column: 1,
             text: text.to_string(),
             ranges: ranges.to_vec(),
+            attachment: None,
+            part: None,
+            label: None,
         };
     }
     let (focus, focus_end) = ranges.first().copied().unwrap_or((0, 0));
@@ -802,6 +985,9 @@ fn clip(line: usize, text: &str, ranges: &[(usize, usize)]) -> Excerpt {
             .filter(|r| r.0 >= start && r.1 <= end)
             .map(|r| (r.0 - start, r.1 - start))
             .collect(),
+        attachment: None,
+        part: None,
+        label: None,
     }
 }
 
@@ -1498,6 +1684,9 @@ mod tests {
                 column: 1,
                 text: "First words.".into(),
                 ranges: vec![],
+                attachment: None,
+                part: None,
+                label: None,
             }]
         );
     }

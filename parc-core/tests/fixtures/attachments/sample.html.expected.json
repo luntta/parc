@@ -1,0 +1,10 @@
+{
+  "title": "Harbor Operations Handbook",
+  "unit": "section",
+  "format": "markdown",
+  "parts": [
+    "# Harbor Operations Handbook\n\nDaily mooring checks begin at 06:00 local time across all berths.",
+    "## Safety Checks\n\n- Inspect gangway railings and lighting.\n- Confirm tide tables match the harbor radio bulletin.",
+    "## Contact Directory\n\n| Role         | Channel |\n| ------------ | ------- |\n| Harbormaster | VHF 12  |"
+  ]
+}

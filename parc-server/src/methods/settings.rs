@@ -7,20 +7,23 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::Value;
 
-use parc_core::config::{load_config, save_types};
+use parc_core::config::{
+    load_config, save_attachments, save_types, AttachmentTextMode, AttachmentsConfig,
+};
 use parc_core::schema::load_schemas;
 
 use crate::jsonrpc::RpcError;
 use crate::router::{extract_params, map_parc_error};
 
-/// `{ "types": { "default", "disabled" } }`. `default` is the type captures
-/// start as, worked out as parc does when config.yml doesn't name a usable one.
+/// `{ "types": { "default", "disabled" }, "attachments": { "text" } }`.
 pub fn get(vault: &Path, _params: Value) -> Result<Value, RpcError> {
-    let types = load_config(vault).map_err(map_parc_error)?.types;
+    let config = load_config(vault).map_err(map_parc_error)?;
+    let types = config.types;
     let registry = load_schemas(vault).map_err(map_parc_error)?;
     let default = types.default_type(&registry).map(|s| s.name.clone());
     Ok(serde_json::json!({
         "types": { "default": default, "disabled": types.disabled },
+        "attachments": { "text": config.attachments.text },
     }))
 }
 
@@ -33,8 +36,15 @@ pub struct TypesInput {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AttachmentsInput {
+    pub text: Option<AttachmentTextMode>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateParams {
     pub types: Option<TypesInput>,
+    pub attachments: Option<AttachmentsInput>,
 }
 
 /// Change the settings given and keep the rest. Returns what `settings.get` does.
@@ -52,6 +62,11 @@ pub fn update(vault: &Path, params: Value) -> Result<Value, RpcError> {
             types.disabled = disabled;
         }
         save_types(vault, &types).map_err(map_parc_error)?;
+    }
+    if let Some(input) = p.attachments {
+        if let Some(text) = input.text {
+            save_attachments(vault, &AttachmentsConfig { text }).map_err(map_parc_error)?;
+        }
     }
     get(vault, Value::Null)
 }

@@ -365,7 +365,7 @@ pub fn write_fragment(vault: &Path, fragment: &Fragment) -> Result<(), ParcError
 
     let content = serialize_fragment(fragment);
     let path = vault.join("fragments").join(format!("{}.md", fragment.id));
-    secure_fs::write_private(&path, content)?;
+    secure_fs::write_private_atomic(&path, content)?;
     Ok(())
 }
 

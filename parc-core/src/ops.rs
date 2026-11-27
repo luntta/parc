@@ -21,10 +21,12 @@ use chrono::Utc;
 use rusqlite::Connection;
 use serde_json::Value;
 
+use crate::attachment::{self, AttachMode};
 use crate::error::ParcError;
 use crate::fragment::{self, Fragment};
 use crate::hook::{self, HookEvent, HookRunner};
 use crate::index;
+use crate::secure_fs;
 
 /// Result of a link or unlink: the two full IDs, and whether either
 /// fragment actually changed.
@@ -105,13 +107,32 @@ impl Writer {
     /// makes on the user's behalf, such as renaming a status in every
     /// fragment of a type, which shouldn't make them look freshly edited.
     fn rewrite(&mut self, fragment: Fragment) -> Result<Fragment, ParcError> {
-        self.check_type_change(&fragment)?;
-        fragment::validate_fragment_in_vault(&self.vault, &fragment)?;
-        let fragment = self.pre_hooks(HookEvent::PreUpdate, &fragment)?;
+        let fragment = self.prepare_update(&fragment)?;
         fragment::write_fragment(&self.vault, &fragment)?;
         self.index(&fragment)?;
         self.post_hooks(HookEvent::PostUpdate, &fragment);
         Ok(fragment)
+    }
+
+    fn prepare_update(&mut self, fragment: &Fragment) -> Result<Fragment, ParcError> {
+        self.check_type_change(fragment)?;
+        fragment::validate_fragment_in_vault(&self.vault, fragment)?;
+        self.pre_hooks(HookEvent::PreUpdate, fragment)
+    }
+
+    pub(crate) fn warn(&mut self, message: String) {
+        self.warnings.push(message);
+    }
+
+    // An index error after a file operation commits must never trigger rollback of the original.
+    fn finish_attachment_update(&mut self, fragment: &Fragment) {
+        if let Err(e) = self.index(fragment) {
+            self.warn(format!(
+                "Saved {}, but could not update its index: {e}",
+                fragment.id
+            ));
+        }
+        self.post_hooks(HookEvent::PostUpdate, fragment);
     }
 
     /// A fragment may keep a type that is turned off, but may not change to
@@ -149,6 +170,68 @@ impl Writer {
     /// Move a fragment back from the trash and index it. Runs no hooks: there is no
     /// restore event, matching history restore. `id_or_prefix` matches trashed IDs only.
     pub fn restore_from_trash(&mut self, id_or_prefix: &str) -> Result<Fragment, ParcError> {
+        let id = self.resolve_trash_id(id_or_prefix)?;
+        let trash = self.vault.join("trash");
+        let dest = self.vault.join("fragments").join(format!("{}.md", id));
+        if dest.exists() {
+            return Err(ParcError::ValidationError(format!(
+                "fragment {} already exists outside the trash",
+                id
+            )));
+        }
+        crate::secure_fs::rename_private_file(&trash.join(format!("{}.md", id)), &dest)?;
+        let fragment = fragment::read_fragment(&self.vault, &id)?;
+        self.index(&fragment)?;
+        let vault = self.vault.clone();
+        let _ = crate::extract::sync_attachments(self.conn()?, &vault);
+        Ok(fragment)
+    }
+
+    /// Permanently remove one trashed fragment along with its `attachments/<id>/`
+    /// (including `.text/` sidecars) and `history/<id>/` directories. Refuses symlinks.
+    pub fn purge(&mut self, id_or_prefix: &str) -> Result<String, ParcError> {
+        let id = self.resolve_trash_id(id_or_prefix)?;
+        self.purge_trash_id(&id)?;
+        Ok(id)
+    }
+
+    /// Permanently remove every valid trashed fragment, along with its
+    /// `attachments/<id>/` and `history/<id>/` directories. Returns how many
+    /// fragments were purged.
+    pub fn empty_trash(&mut self) -> Result<usize, ParcError> {
+        let trash_dir = self.vault.join("trash");
+        if !trash_dir.is_dir() {
+            return Ok(0);
+        }
+        let mut ids = Vec::new();
+        for entry in std::fs::read_dir(&trash_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if fragment::validate_id(stem).is_err() {
+                continue;
+            }
+            if let Ok(meta) = std::fs::symlink_metadata(&path) {
+                if !meta.file_type().is_symlink() && meta.is_file() {
+                    ids.push(stem.to_string());
+                }
+            }
+        }
+        ids.sort();
+        let mut count = 0;
+        for id in ids {
+            self.purge_trash_id(&id)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn resolve_trash_id(&self, id_or_prefix: &str) -> Result<String, ParcError> {
         let upper = id_or_prefix.to_uppercase();
         let trash = self.vault.join("trash");
         let mut matches = Vec::new();
@@ -166,32 +249,201 @@ impl Writer {
                 }
             }
         }
-        let id = match matches.as_slice() {
-            [id] => id.clone(),
-            [] => {
-                return Err(ParcError::FragmentNotFound(format!(
-                    "{} (not in the trash)",
-                    id_or_prefix
-                )))
-            }
-            _ => {
-                return Err(ParcError::AmbiguousId(
-                    id_or_prefix.to_string(),
-                    matches.len(),
-                ))
-            }
-        };
-        let dest = self.vault.join("fragments").join(format!("{}.md", id));
-        if dest.exists() {
-            return Err(ParcError::ValidationError(format!(
-                "fragment {} already exists outside the trash",
-                id
-            )));
+        match matches.as_slice() {
+            [id] => Ok(id.clone()),
+            [] => Err(ParcError::FragmentNotFound(format!(
+                "{} (not in the trash)",
+                id_or_prefix
+            ))),
+            _ => Err(ParcError::AmbiguousId(
+                id_or_prefix.to_string(),
+                matches.len(),
+            )),
         }
-        crate::secure_fs::rename_private_file(&trash.join(format!("{}.md", id)), &dest)?;
-        let fragment = fragment::read_fragment(&self.vault, &id)?;
-        self.index(&fragment)?;
-        Ok(fragment)
+    }
+
+    fn purge_trash_id(&mut self, id: &str) -> Result<(), ParcError> {
+        fragment::validate_id(id)?;
+        let trash_file = self.vault.join("trash").join(format!("{}.md", id));
+        // Validate attachment and history trees before removing the trash file
+        // so a symlink inside them aborts cleanly.
+        let attach_dir = self.vault.join("attachments").join(id);
+        let history_dir = self.vault.join("history").join(id);
+        secure_fs::remove_private_dir_all(&attach_dir)?;
+        secure_fs::remove_private_dir_all(&history_dir)?;
+        secure_fs::remove_private_file(&trash_file)?;
+        Ok(())
+    }
+
+    /// Attach a file to a fragment (copy or move), updating frontmatter through
+    /// the writer so hooks, history, indexing, and attachment text extraction all run.
+    pub fn attach(
+        &mut self,
+        id_or_prefix: &str,
+        source_path: &Path,
+        mode: AttachMode,
+    ) -> Result<(Fragment, String), ParcError> {
+        let (frag, filename, _) = self.attach_and_extract(id_or_prefix, source_path, mode)?;
+        Ok((frag, filename))
+    }
+
+    /// Like [`Writer::attach`], also returning the extracted attachment text
+    /// (including document title metadata) if extraction produced text.
+    pub fn attach_and_extract(
+        &mut self,
+        id_or_prefix: &str,
+        source_path: &Path,
+        mode: AttachMode,
+    ) -> Result<(Fragment, String, Option<crate::extract::Extracted>), ParcError> {
+        let (frag, filename) = self.attach_file_only(id_or_prefix, source_path, mode)?;
+        let extracted = self.extract_attached(&frag.id, &filename);
+        Ok((frag, filename, extracted))
+    }
+
+    pub(crate) fn extract_attached(
+        &mut self,
+        id: &str,
+        filename: &str,
+    ) -> Option<crate::extract::Extracted> {
+        let vault = self.vault.clone();
+        match self
+            .conn()
+            .and_then(|conn| crate::extract::fill_one(&vault, conn, id, filename))
+        {
+            Ok(extracted) => extracted,
+            Err(err) => {
+                self.warn(format!(
+                    "Kept {filename}; text indexing failed: {err}. Retry with parc reindex."
+                ));
+                None
+            }
+        }
+    }
+
+    /// Commit the original independently of derived text. Run vetoable hooks
+    /// before moving bytes; never overwrite another incoming file in rollback.
+    pub(crate) fn attach_file_only(
+        &mut self,
+        id: &str,
+        source: &Path,
+        mode: AttachMode,
+    ) -> Result<(Fragment, String), ParcError> {
+        let mut frag = fragment::read_fragment(&self.vault, id)?;
+        let filename = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| ParcError::ValidationError("invalid filename".into()))?
+            .to_owned();
+        attachment::validate_attachment_filename(&filename)?;
+        if !frag.attachments.contains(&filename) {
+            frag.attachments.push(filename.clone());
+        }
+        frag.updated_at = Utc::now();
+        let saved = self.prepare_update(&frag)?;
+        if saved.id != frag.id || !saved.attachments.contains(&filename) {
+            return Err(ParcError::ValidationError(
+                "pre-update hook changed attachment ownership".into(),
+            ));
+        }
+        let path = self
+            .vault
+            .join("fragments")
+            .join(format!("{}.md", saved.id));
+        let before = std::fs::read(&path)?;
+        fragment::write_fragment(&self.vault, &saved)?;
+        if let Err(err) = attachment::store_attachment_file(&self.vault, &saved.id, source, mode) {
+            secure_fs::write_private_atomic(&path, before)?;
+            return Err(err);
+        }
+        self.finish_attachment_update(&saved);
+        Ok((saved, filename))
+    }
+
+    /// Detach an attachment from a fragment, updating frontmatter through the
+    /// writer before deleting the file, its `.text/` sidecar, and its index rows.
+    pub fn detach(&mut self, id_or_prefix: &str, filename: &str) -> Result<Fragment, ParcError> {
+        attachment::validate_attachment_filename(filename)?;
+        let mut frag = fragment::read_fragment(&self.vault, id_or_prefix)?;
+        let full_id = frag.id.clone();
+        frag.attachments.retain(|a| a != filename);
+        let saved = self.update(frag)?;
+        attachment::remove_attachment_file(&self.vault, &full_id, filename)?;
+        crate::extract::store::remove_one_attachment(self.conn()?, &full_id, filename)?;
+        Ok(saved)
+    }
+
+    /// Move an attachment (and its `.text/` sidecar) from one fragment to
+    /// another, updating both fragments through the writer.
+    pub fn move_attachment(
+        &mut self,
+        from_id_or_prefix: &str,
+        to_id_or_prefix: &str,
+        filename: &str,
+    ) -> Result<(Fragment, Fragment), ParcError> {
+        attachment::validate_attachment_filename(filename)?;
+        let mut from = fragment::read_fragment(&self.vault, from_id_or_prefix)?;
+        let mut to = fragment::read_fragment(&self.vault, to_id_or_prefix)?;
+        if from.id == to.id {
+            return Err(ParcError::ValidationError(
+                "cannot move an attachment onto the same fragment".into(),
+            ));
+        }
+        let from_id = from.id.clone();
+        let to_id = to.id.clone();
+
+        if !to.attachments.contains(&filename.to_string()) {
+            to.attachments.push(filename.to_string());
+        }
+        from.attachments.retain(|a| a != filename);
+
+        from.updated_at = Utc::now();
+        to.updated_at = from.updated_at;
+        let saved_to = self.prepare_update(&to)?;
+        let saved_from = self.prepare_update(&from)?;
+        if saved_to.id != to_id
+            || saved_from.id != from_id
+            || !saved_to.attachments.iter().any(|a| a == filename)
+            || saved_from.attachments.iter().any(|a| a == filename)
+        {
+            return Err(ParcError::ValidationError(
+                "pre-update hook changed attachment ownership".into(),
+            ));
+        }
+
+        // Stage atomic frontmatter writes before moving the original. Roll back
+        // exact pre-move bytes without invoking hooks a second time.
+        let path = |id: &str| self.vault.join("fragments").join(format!("{id}.md"));
+        let (to_path, from_path) = (path(&to_id), path(&from_id));
+        let (to_before, from_before) = (std::fs::read(&to_path)?, std::fs::read(&from_path)?);
+        fragment::write_fragment(&self.vault, &saved_to)?;
+        if let Err(err) = fragment::write_fragment(&self.vault, &saved_from) {
+            secure_fs::write_private_atomic(&to_path, to_before)?;
+            return Err(err);
+        }
+        if let Err(err) = attachment::move_attachment_file(&self.vault, &from_id, &to_id, filename)
+        {
+            let restore_from = secure_fs::write_private_atomic(&from_path, from_before);
+            let restore_to = secure_fs::write_private_atomic(&to_path, to_before);
+            restore_from?;
+            restore_to?;
+            return Err(err);
+        }
+
+        if let Err(err) = attachment::move_sidecars(&self.vault, &from_id, &to_id, filename) {
+            self.warn(format!(
+                "Moved {filename}, but its derived text needs rebuilding: {err}"
+            ));
+        }
+        self.finish_attachment_update(&saved_to);
+        self.finish_attachment_update(&saved_from);
+        if let Err(err) = self.conn().and_then(|c| {
+            crate::extract::store::move_indexed_attachment(c, &from_id, &to_id, filename)
+        }) {
+            self.warn(format!(
+                "Moved {filename}, but its old index needs rebuilding: {err}"
+            ));
+        }
+        Ok((saved_from, saved_to))
     }
 
     pub fn set_archived(
@@ -1002,5 +1254,215 @@ mod tests {
             .create(fragment::new_fragment("bug", "Crash", bug, &config))
             .unwrap();
         assert_eq!(frag.extra_fields["status"], Value::String("new".into()));
+    }
+
+    #[test]
+    fn writer_attach_detach_and_move_run_hooks_history_and_index() {
+        let (tmp, vault) = vault_with_hooks();
+        let rec = Recorder::default();
+        let mut w = Writer::new(&vault, rec.clone());
+        let a = w.create(new_note(&vault, "First")).unwrap();
+        let b = w.create(new_note(&vault, "Second")).unwrap();
+
+        let src = tmp.path().join("report.txt");
+        std::fs::write(&src, "hello report").unwrap();
+
+        let (saved_a, name) = w.attach(&a.id, &src, AttachMode::Copy).unwrap();
+        assert_eq!(name, "report.txt");
+        assert_eq!(saved_a.attachments, vec!["report.txt"]);
+        assert!(src.exists(), "copy keeps source");
+        assert!(vault
+            .join("attachments")
+            .join(&a.id)
+            .join("report.txt")
+            .exists());
+        // History snapshot taken before attach update
+        assert!(!crate::history::list_versions(&vault, &a.id)
+            .unwrap()
+            .is_empty());
+        // Pre- and post-update hooks ran
+        assert!(rec.calls().contains(&"pre-update:First".to_string()));
+        assert!(rec.calls().contains(&"post-update:First".to_string()));
+        // Index attachment_count updated
+        let conn = index::open_index(&vault).unwrap();
+        let att_count: i64 = conn
+            .query_row(
+                "SELECT attachment_count FROM fragments WHERE id = ?1",
+                [&a.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(att_count, 1);
+
+        // Create a sidecar next to the attachment and verify move_attachment moves both
+        let sidecar = attachment::sidecar_dir(&vault, &a.id).join("report.txt.txt");
+        secure_fs::create_private_dir_all(sidecar.parent().unwrap()).unwrap();
+        secure_fs::write_private(&sidecar, "extracted").unwrap();
+
+        let (from_after, to_after) = w.move_attachment(&a.id, &b.id, "report.txt").unwrap();
+        assert!(from_after.attachments.is_empty());
+        assert_eq!(to_after.attachments, vec!["report.txt"]);
+        assert!(!vault.join("attachments").join(&a.id).exists());
+        assert!(vault
+            .join("attachments")
+            .join(&b.id)
+            .join("report.txt")
+            .exists());
+        assert!(attachment::sidecar_dir(&vault, &b.id)
+            .join("report.txt.txt")
+            .exists());
+
+        // Detach removes both file and sidecar
+        let after_detach = w.detach(&b.id, "report.txt").unwrap();
+        assert!(after_detach.attachments.is_empty());
+        assert!(!vault.join("attachments").join(&b.id).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_attach_move_rolls_back_on_pre_hook_veto() {
+        use crate::hook::{HookStderr, ScriptRunner};
+        use std::os::unix::fs::PermissionsExt;
+
+        let (tmp, vault) = vault_with_hooks();
+        let mut w = Writer::new(&vault, ScriptRunner::new(HookStderr::Capture));
+        let note = w.create(new_note(&vault, "Keep")).unwrap();
+
+        let pre = vault.join("hooks").join("pre-update");
+        std::fs::write(&pre, "#!/bin/sh\necho 'vetoed' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&pre, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let src = tmp.path().join("incoming.txt");
+        std::fs::write(&src, "data").unwrap();
+        let err = w.attach(&note.id, &src, AttachMode::Move).unwrap_err();
+        assert!(err.to_string().contains("vetoed"), "{err}");
+        assert!(src.exists(), "source restored when pre-hook vetoes move");
+        assert!(!vault
+            .join("attachments")
+            .join(&note.id)
+            .join("incoming.txt")
+            .exists());
+    }
+
+    #[test]
+    fn source_veto_and_destination_collision_leave_move_retryable() {
+        #[derive(Default)]
+        struct VetoSource;
+        impl HookRunner for VetoSource {
+            fn run_pre_hook(
+                &self,
+                script: &HookScript,
+                f: &Fragment,
+            ) -> Result<Option<Fragment>, ParcError> {
+                if script.event == HookEvent::PreUpdate
+                    && f.title == "From"
+                    && f.attachments.is_empty()
+                {
+                    return Err(ParcError::ValidationError("source veto".into()));
+                }
+                Ok(None)
+            }
+            fn run_post_hook(&self, _: &HookScript, _: &Fragment) -> Result<(), ParcError> {
+                Ok(())
+            }
+        }
+        let (tmp, vault) = vault_with_hooks();
+        let mut w = Writer::new(&vault, VetoSource);
+        let from = w.create(new_note(&vault, "From")).unwrap();
+        let to = w.create(new_note(&vault, "To")).unwrap();
+        let src = tmp.path().join("memo.txt");
+        std::fs::write(&src, "original").unwrap();
+        w.attach(&from.id, &src, AttachMode::Copy).unwrap();
+        let revision = |id| fragment::revision(&vault, id).unwrap();
+        let revs = (revision(&from.id), revision(&to.id));
+        let original = vault.join("attachments").join(&from.id).join("memo.txt");
+        let dest = vault.join("attachments").join(&to.id).join("memo.txt");
+        assert!(w
+            .move_attachment(&from.id, &to.id, "memo.txt")
+            .unwrap_err()
+            .to_string()
+            .contains("source veto"));
+        assert_eq!((revision(&from.id), revision(&to.id)), revs);
+        assert!(!dest.exists());
+        let mut w = Writer::new(&vault, Recorder::default());
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, "existing").unwrap();
+        assert!(w.move_attachment(&from.id, &to.id, "memo.txt").is_err());
+        assert_eq!((revision(&from.id), revision(&to.id)), revs);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"existing");
+        assert_eq!(std::fs::read(&original).unwrap(), b"original");
+        std::fs::remove_file(&dest).unwrap();
+        w.move_attachment(&from.id, &to.id, "memo.txt").unwrap();
+        assert!(!original.exists());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"original");
+    }
+
+    #[test]
+    fn writer_purge_and_empty_trash_remove_attachments_and_history() {
+        let (tmp, vault) = plain_vault();
+        let mut w = Writer::new(&vault, Recorder::default());
+        let a = w.create(new_note(&vault, "One")).unwrap();
+        let b = w.create(new_note(&vault, "Two")).unwrap();
+
+        let f1 = tmp.path().join("a.txt");
+        let f2 = tmp.path().join("b.txt");
+        std::fs::write(&f1, "alpha").unwrap();
+        std::fs::write(&f2, "beta").unwrap();
+        w.attach(&a.id, &f1, AttachMode::Copy).unwrap();
+        w.attach(&b.id, &f2, AttachMode::Copy).unwrap();
+        // Add a .text sidecar too
+        let sidecar = attachment::sidecar_dir(&vault, &a.id).join("a.txt.txt");
+        secure_fs::create_private_dir_all(sidecar.parent().unwrap()).unwrap();
+        secure_fs::write_private(&sidecar, "text").unwrap();
+
+        assert!(vault.join("history").join(&a.id).is_dir());
+        assert!(vault.join("attachments").join(&a.id).is_dir());
+
+        // Soft-delete keeps attachments and history so restore works
+        w.delete(&a.id).unwrap();
+        assert!(vault.join("attachments").join(&a.id).is_dir());
+        assert!(vault.join("history").join(&a.id).is_dir());
+
+        // Restore brings it back intact
+        w.restore_from_trash(&a.id[..8]).unwrap();
+        assert!(vault
+            .join("fragments")
+            .join(format!("{}.md", a.id))
+            .exists());
+
+        // Delete again and purge one
+        w.delete(&a.id).unwrap();
+        let purged = w.purge(&a.id[..8]).unwrap();
+        assert_eq!(purged, a.id);
+        assert!(!vault.join("trash").join(format!("{}.md", a.id)).exists());
+        assert!(!vault.join("attachments").join(&a.id).exists());
+        assert!(!vault.join("history").join(&a.id).exists());
+
+        // Delete second and empty trash
+        w.delete(&b.id).unwrap();
+        assert_eq!(w.empty_trash().unwrap(), 1);
+        assert!(!vault.join("trash").join(format!("{}.md", b.id)).exists());
+        assert!(!vault.join("attachments").join(&b.id).exists());
+        assert!(!vault.join("history").join(&b.id).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_purge_refuses_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let (tmp, vault) = plain_vault();
+        let mut w = Writer::new(&vault, Recorder::default());
+        let a = w.create(new_note(&vault, "Sym")).unwrap();
+        w.delete(&a.id).unwrap();
+
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("precious.txt"), "keep").unwrap();
+        symlink(&outside, vault.join("attachments").join(&a.id)).unwrap();
+
+        assert!(w.purge(&a.id).is_err());
+        assert!(outside.join("precious.txt").exists());
+        assert!(vault.join("trash").join(format!("{}.md", a.id)).exists());
     }
 }

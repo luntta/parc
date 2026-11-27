@@ -12,3 +12,4 @@ docs/_site/
 
 # Parc vault (personal scratchpad, not shared)
 .parc/
+.parc/inbox/

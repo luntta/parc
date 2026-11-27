@@ -163,15 +163,32 @@ function validFields(fields) {
 const CATEGORIES = ['open', 'active', 'done', 'closed'], KINDS = ['string', 'date', 'enum', 'list'];
 const word = (v, max = 64) => typeof v === 'string' && v.length > 0 && v.length <= max && !/[\s\0]/.test(v);
 function validVaultSettings(changes) {
-  const types = changes?.types;
-  if (!changes || typeof changes !== 'object' || Object.keys(changes).some(k => k !== 'types') || !types || typeof types !== 'object') throw new Error('Invalid vault settings');
-  const out = {};
-  if (types.default !== undefined) out.default = validType(types.default);
-  if (types.disabled !== undefined) {
-    if (!Array.isArray(types.disabled) || types.disabled.length > 256) throw new Error('Invalid vault settings');
-    out.disabled = types.disabled.map(validType);
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new Error('Invalid vault settings');
+  const keys = Object.keys(changes);
+  if (!keys.length || keys.some(k => k !== 'types' && k !== 'attachments')) throw new Error('Invalid vault settings');
+  const result = {};
+  if (changes.types !== undefined) {
+    const types = changes.types;
+    if (!types || typeof types !== 'object' || Array.isArray(types)) throw new Error('Invalid vault settings');
+    const out = {};
+    if (types.default !== undefined) out.default = validType(types.default);
+    if (types.disabled !== undefined) {
+      if (!Array.isArray(types.disabled) || types.disabled.length > 256) throw new Error('Invalid vault settings');
+      out.disabled = types.disabled.map(validType);
+    }
+    result.types = out;
   }
-  return { types: out };
+  if (changes.attachments !== undefined) {
+    const att = changes.attachments;
+    if (!att || typeof att !== 'object' || Array.isArray(att) || Object.keys(att).some(k => k !== 'text')) {
+      throw new Error('Invalid vault settings');
+    }
+    if (att.text !== undefined) {
+      if (att.text !== 'sidecar' && att.text !== 'index') throw new Error('Invalid attachment text setting');
+      result.attachments = { text: att.text };
+    }
+  }
+  return result;
 }
 function validSchema(schema) {
   const ok = schema && typeof schema === 'object' && !Array.isArray(schema) && Array.isArray(schema.fields) && schema.fields.length <= 32
@@ -260,6 +277,32 @@ function archive(vault, options) {
       return request('fragment.attach', { id: validId(id), path: filePath });
     },
     detach: async (id, filename) => request('fragment.detach', { id: validId(id), filename: validAttachment(filename) }),
+    moveAttachment: async (from, to, filename) => request('attachment.move', { from: validId(from), to: validId(to), filename: validAttachment(filename) }),
+    async attachmentText(id, filename, { from, to, readyOnly = false } = {}) {
+      const params = { id: validId(id), filename: validAttachment(filename) };
+      if (readyOnly) params.ready_only = true;
+      if (from != null) {
+        if (!Number.isInteger(from) || from < 1) throw new Error('Invalid page number');
+        params.from = from;
+      }
+      if (to != null) {
+        if (!Number.isInteger(to) || to < 1) throw new Error('Invalid page number');
+        params.to = to;
+      }
+      return request('attachment.text', params);
+    },
+    async attachmentLocate(id, filename, quote, partHint = null) {
+      if (typeof quote !== 'string' || quote.length > 10000) throw new Error('Invalid quote');
+      const params = { id: validId(id), filename: validAttachment(filename), quote };
+      if (partHint != null) {
+        if (!Number.isInteger(partHint) || partHint < 1) throw new Error('Invalid part hint');
+        params.part_hint = partHint;
+      }
+      return request('attachment.locate', params);
+    },
+    link: async (idA, idB) => request('fragment.link', { id_a: validId(idA), id_b: validId(idB) }),
+    inboxAttachments: () => request('inbox.attachments', {}),
+    inboxSweep: () => request('inbox.sweep', {}),
     schemas: () => request('schema.list', {}),
     // Vault settings, kept in the vault for everyone who uses it: which types are on, and what each type holds.
     vaultSettings: () => request('settings.get', {}),

@@ -221,7 +221,12 @@ export function agentChat(host, deps) {
     start.replaceChildren();
     start.hidden = !signedIn() || !empty() || !!loading;
     if (start.hidden) return;
-    const with_ = share(), ideas = [
+    const with_ = share(), ideas = with_?.type === 'source' ? [
+      `Summarize “${with_.title || 'this document'}” and its key takeaways.`,
+      `What else in my notes relates to “${with_.title || 'this document'}”?`,
+      `Are there any open questions, risks or action items in “${with_.title || 'this document'}”?`,
+      `What contradicts or builds on “${with_.title || 'this document'}” in my archive?`
+    ] : [
       'What’s still open, and what’s overdue?',
       'What did I decide this month, and why?',
       'Which risks have no mitigation yet?',
@@ -316,6 +321,10 @@ export function agentChat(host, deps) {
     const where = a.vault ? ` in ${a.vault}` : '';
     if (name === 'search') return { glyph: 'search', label: a.query ? `Searched “${a.query}”${where}` : `Listed recent fragments${where}` };
     if (name === 'get_fragment') return { glyph: 'note', label: `Read ${ref(a.id)}${where}` };
+    if (name === 'read_attachment') {
+      const span = a.from && a.to ? (a.from === a.to ? ` p. ${a.from}` : ` pp. ${a.from}–${a.to}`) : a.from ? ` from p. ${a.from}` : '';
+      return { glyph: 'source', label: `Read ${a.filename || 'attachment'}${span} of ${ref(a.id)}${where}` };
+    }
     if (name === 'recall') return { glyph: 'link', label: a.id ? `Looked for what relates to ${ref(a.id)}${where}` : `Looked for related fragments${where}` };
     if (name === 'list_types') return { glyph: 'layers', label: `Listed the types${where}` };
     if (name === 'list_tags') return { glyph: 'tag', label: `Listed the tags${where}` };
@@ -326,6 +335,10 @@ export function agentChat(host, deps) {
     if (!ok) return 'failed';
     const n = text.match(/^(\d+) fragments?/);
     if (name === 'search' || name === 'recall') return n ? `${n[1]} found` : /^No /.test(text) ? 'none found' : '';
+    if (name === 'read_attachment') {
+      const m = text.match(/\((\d+)–(\d+) of (\d+)/) || text.match(/\(part (\d+) of (\d+)/);
+      return m ? (m.length === 4 ? `${m[1]}–${m[2]} of ${m[3]}` : `${m[1]} of ${m[2]}`) : 'read';
+    }
     return '';
   }
   function step(t, { id, name, arguments: args }) {

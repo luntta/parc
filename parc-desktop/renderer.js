@@ -14,6 +14,9 @@ import { workspace, FRAGMENT } from './tabs.js';
 import { agentChat } from './agent.js';
 import { sidebarList } from './sidebar.js';
 import { renderTrashView, renderDoctorView, pulseDailySections } from './views.js';
+import { canAdoptSourceTitle } from './source-revision.mjs';
+import { renderInboxView } from './inbox.js';
+import { sourceViewer } from './source-viewer.js';
 import { initSystemTheme } from './theme.js';
 
 const $ = id => document.getElementById(id), api = window.parc;
@@ -32,7 +35,7 @@ const changedSchemas = new Set();          // vaults whose schemas or config.yml
 const outside = new Map();                 // vault path → rows, for open tabs whose vault is outside the scope
 const key = r => JSON.stringify([r.vault, r.id]);
 const name = p => vaults.find(v => v.path === p)?.name || 'All vaults';
-const labels = { search: 'Search', graph: 'Graph', agent: 'Agent', pulse: 'Pulse', history: 'History', trash: 'Trash', doctor: 'Vault health' };
+const labels = { search: 'Search', graph: 'Graph', agent: 'Agent', pulse: 'Pulse', inbox: 'Inbox', history: 'History', trash: 'Trash', doctor: 'Vault health' };
 // A type's view is named for what it holds: Todos, Risks, Ideas.
 const plural = t => { const w = typeLabel(t); return /(s|x|z|ch|sh)$/i.test(w) ? `${w}es` : /[^aeiou]y$/i.test(w) ? `${w.slice(0, -1)}ies` : `${w}s`; };
 const blocking = () => speechPhase !== 'idle';
@@ -221,6 +224,14 @@ function docTab(note = null, draftId = null) {
     link: s => { d.editor.insert(`[[${d.links.shortId(s)}]]`); status(`Linked “${s.title || 'Untitled'}”.`); },
     date: iso => { const t = new Date(iso); return t.getFullYear() === new Date().getFullYear() ? shortDate.format(t) : monthYear.format(t); }
   });
+  d.sourceViewer = sourceViewer(d, {
+    api, status, vaultToken, rowsIn,
+    onPageChange: () => d.related.changed(),
+    onAsk: askAboutSource,
+    onPromote: promoteComment,
+    onApplyAnalyze: applyAnalyze,
+    onOpenAgent: () => action(() => openView('agent'))
+  });
   ui.title.oninput = () => { const t = ui.title; if (/[\r\n]/.test(t.value)) t.value = t.value.replace(/\s*[\r\n]+\s*/g, ' '); changed(d); };
   ui.title.onkeydown = e => { if (e.key === 'Enter' && !e.isComposing && !(e.metaKey || e.ctrlKey)) { e.preventDefault(); d.editor.focus(); } };
   load(d, note);
@@ -245,7 +256,7 @@ function viewTab(view, { type = null, target = null, query = '', chat = null } =
   }
   return v;
 }
-const VIEW_ICONS = { pulse: 'pulse', search: 'search', graph: 'graph', agent: 'agent', history: 'history', trash: 'trash', doctor: 'shield' };
+const VIEW_ICONS = { pulse: 'pulse', inbox: 'inbox', search: 'search', graph: 'graph', agent: 'agent', history: 'history', trash: 'trash', doctor: 'shield' };
 function tabLabel(t) {
   if (t.kind === 'doc') {
     const type = t.opened?.type ?? t.fresh?.type, title = t.ui.title.value.trim();
@@ -316,6 +327,7 @@ function focusTab(t) {
 // A tab that never joined the layout, or left it: its editor and Related panel stop, and any draft file goes.
 function discard(t) {
   if (t.kind === 'doc') {
+    t.sourceViewer?.destroy();
     t.related.reset(); t.editor.destroy();
     if (t.draftSaved) { t.draftSaved = false; api.deleteDraft(t.draftId).catch(() => {}); }
   } else t.agent?.destroy();
@@ -461,7 +473,8 @@ function linksFor(d) {
   const links = {
     find(prefix) { const hits = linkable(d).filter(r => r.id.startsWith(prefix)); return hits.length === 1 ? hits[0] : null; },
     resolve(prefix) { const r = links.find(prefix); return r ? { title: r.title, type: r.type } : null; },
-    open(prefix, e) { const r = links.find(prefix); if (r) openRow(r, clickHow(e)); },
+    open(prefix, e, extra) { const r = links.find(prefix); if (r) openRow(r, { ...clickHow(e), ...(extra || {}) }); },
+    openQuote(lineNum) { d.sourceViewer?.jumpToQuoteLine(lineNum); },
     attachment(filename) {
       if (!d.opened) return null;
       const list = d.attachments != null ? d.attachments.map(a => a.filename) : (d.opened.attachments || []);
@@ -498,17 +511,19 @@ async function syncOutside() {
 // ── Related ──
 function recallSeed(d) {
   if (!ws.shown(d) || !vaults.length) return null;
+  const pageText = d.sourceViewer?.isActive() ? d.sourceViewer.visibleText() : '';
   return {
     vaults: d.opened ? [d.opened.vault] : scope ? [scope] : vaults.map(v => v.path),
     vault: d.opened?.vault ?? null, id: d.opened?.id ?? null,
-    text: `${d.ui.title.value}\n${d.editor.text()}`, tags: (d.opened ? d.opened.tags : d.fresh?.tags) || []
+    text: [d.ui.title.value, d.editor.text(), pageText].filter(Boolean).join('\n'),
+    tags: (d.opened ? d.opened.tags : d.fresh?.tags) || []
   };
 }
 let statsFrame = 0;
 function changed(d) {
   d.dirty = true; d.draftAt = new Date().toISOString(); ws.keep(d);
   if (d === tab) paint(); else ws.update(d);
-  rememberWorkspace(); d.related.changed();
+  rememberWorkspace(); d.related.changed(); d.sourceViewer?.onNotesChanged();
 }
 function stats() {
   cancelAnimationFrame(statsFrame);
@@ -784,6 +799,28 @@ function row(r, { withSnippet = false } = {}) {
   main.append(el('span', 'row-title' + (r.title ? '' : ' untitled'), r.title || 'Untitled'), meta);
   b.append(typeIcon(r.type), main);
   if (withSnippet && r.snippet) b.append(snippet(r.snippet));
+  if (withSnippet && r.file_hits?.length) {
+    const hitsBox = el('span', 'row-file-hits');
+    for (const h of r.file_hits.slice(0, 3)) {
+      const hitBtn = el('span', 'file-hit');
+      hitBtn.setAttribute('role', 'button');
+      hitBtn.tabIndex = 0;
+      const loc = h.unit === 'slide' ? `slide ${h.part}` : h.unit === 'section' ? `§ ${h.part}` : `p. ${h.part}`;
+      hitBtn.append(icon('file', 'icon'), el('strong', 'file-hit-loc', `${h.filename} · ${loc}`));
+      if (h.snippet) {
+        const s = el('span', 'file-hit-snip');
+        prose(h.snippet).split(/(»[^«]*«)/).forEach(part => {
+          if (part.startsWith('»') && part.endsWith('«')) s.append(el('mark', '', part.slice(1, -1))); else if (part) s.append(part);
+        });
+        hitBtn.append(s);
+      }
+      const go = e => { e.preventDefault(); e.stopPropagation(); openRow(r, { ...clickHow(e), part: h.part, filename: h.filename }); };
+      hitBtn.onclick = go;
+      hitBtn.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') go(e); };
+      hitsBox.append(hitBtn);
+    }
+    b.append(hitsBox);
+  }
   if (r.archived) b.dataset.archived = '';
   if (isOpenHere(r)) b.setAttribute('aria-current', 'page');
   rowEvents(b, r);
@@ -972,6 +1009,9 @@ function list() {
   $('empty').dataset.tone = filterError ? 'error' : '';
   $('empty').hidden = !!shown.length;
   $('openOnly').setAttribute('aria-pressed', String(openOnly));
+  const inboxCount = rows.filter(r => r.type === 'source' && !r.archived && r.status !== 'processed').length;
+  const badge = $('inboxBadge');
+  if (badge) { badge.hidden = !inboxCount; badge.textContent = inboxCount > 99 ? '99+' : String(inboxCount); }
 }
 
 // ── Sidebar shape: drag its edge to resize, Ctrl+\ to hide ──
@@ -1287,9 +1327,10 @@ function load(d, note) { // puts a fragment, or a blank capture, in a tab's edit
     d.ui.docGraph.hidden = true;
     d.ui.docAttachments.hidden = true;
     d.attachments = null;
+    d.sourceViewer?.sync();
   }
   d.ui.document.toggleAttribute('data-saved', !!note);
-  d.opened = note; d.dirty = false; d.draftAt = null; d.dest = ''; d.templateBody = '';
+  d.opened = note; d.loadedTextRevision = note?.revision; d.dirty = false; d.draftAt = null; d.dest = ''; d.templateBody = '';
   d.fresh = note ? null : blankCapture(d); d.ui.title.value = note?.title || '';
   d.editor.load((note?.body || '').replace(/^\n/, ''));
   if (!note) applyTemplate(d);
@@ -1335,19 +1376,24 @@ async function openFragment(r, how = {}) {
     if (how.group && here.group !== how.group) ws.move(here, how.group, how.index);
     else if (how.side && here.group === ws.group && here.group.tabs.length > 1) ws.toNeighbour(here, 1);
     else ws.activate(here);
+    if (how.part || how.filename) here.sourceViewer?.goToPart(how.part || 1, { filename: how.filename || null });
     return here;
   }
   const full = await api.note(r.vault, r.id);
   if (!explicit && seq !== navSeq) return null; // a newer click overtook this load
   const existing = tabOf(r);
-  if (existing) { ws.activate(existing); return existing; }
+  if (existing) {
+    ws.activate(existing);
+    if (how.part || how.filename) existing.sourceViewer?.goToPart(how.part || 1, { filename: how.filename || null });
+    return existing;
+  }
   const d = docTab({ ...full, vault: r.vault });
   ws.open(d, placement(how));
   if (keepNext === k) ws.keep(d);
   keepNext = null;
   status();
   if (!inScope(r.vault)) await syncOutside();
-  await Promise.all([loadNeighbors(d), loadAttachments(d)]);
+  await Promise.all([loadNeighbors(d), loadAttachments(d, { initialPart: how.part || null, filename: how.filename || null })]);
   return d;
 }
 // Saves a tab's text; resolves true when it did. Locks only this tab while the write RPC itself runs,
@@ -1361,9 +1407,16 @@ async function commit(d) {
   try {
     for (let force = false; ; force = true) {
       const p = destination(d), f = d.opened, title = d.ui.title.value, body = d.editor.text();
-      const note = await api.save(p, f
+      let note = await api.save(p, f
         ? { id: f.id, title, body, expected: force ? null : f.revision }
         : { title, body, type: d.fresh.type, fields: d.fresh.fields, tags: d.fresh.tags });
+      if (note.conflict && f?.type === 'source' && !force) {
+        const latest = await api.note(p, f.id);
+        if (canAdoptSourceTitle(f, d.loadedTextRevision, title, latest)) {
+          // Still compare revisions on retry: another intervening write must prompt.
+          note = await api.save(p, { id: f.id, title: latest.title, body, expected: latest.revision });
+        }
+      }
       if (note.conflict) {
         const choice = await api.conflict({ title: title || f.title });
         if (choice === 'overwrite') continue;
@@ -1457,6 +1510,14 @@ async function refreshDoc(d) {
     return;
   }
   if (d.opened !== f || latest.revision === f.revision) return;
+  if (d.dirty && !d.saving && canAdoptSourceTitle(f, d.loadedTextRevision, d.ui.title.value, latest)) {
+    // Keep the editor, selection and unsaved notes in place.
+    d.opened = { ...latest, vault: f.vault };
+    d.loadedTextRevision = latest.revision;
+    d.ui.title.value = latest.title;
+    meta(d); ws.update(d); rememberWorkspace();
+    return;
+  }
   if (d.dirty || d.saving || speechPhase !== 'idle') { status(`${which} changed outside parc while you were editing. Saving will ask before overwriting.`); return; }
   load(d, { ...latest, vault: f.vault }); paint(); sidebar.markSelection({ scroll: false });
   await Promise.all([loadNeighbors(d), loadAttachments(d)]);
@@ -1466,7 +1527,21 @@ api.onVaultChanged(event => {
   const p = typeof event === 'string' ? event : event?.vault;
   const kind = typeof event === 'object' ? event?.kind : 'fragments';
   if (!p) return;
+  if (kind === 'inbox-error') { status(name(p) + ': ' + event.message); return; }
   if (kind === 'schemas') changedSchemas.add(p); else changedVaults.add(p);
+  if (kind === 'attachments') {
+    for (const d of docTabs()) {
+      if (d.opened?.vault === p && d.opened.type === 'source') loadAttachments(d, { textUpdated: true }).catch(status);
+    }
+  }
+  if (kind === 'inbox' && event?.created?.length) {
+    const n = event.created.length;
+    changedSchemas.add(p);
+    status(`Imported ${n} ${n === 1 ? 'document' : 'documents'} into Inbox.`, {
+      label: 'Open Inbox',
+      run: () => action(() => openView('inbox'))
+    });
+  }
   flushChanges();
   for (const d of docTabs()) {
     const target = d.opened?.vault;
@@ -1515,14 +1590,15 @@ function graph(seed, items) {
 // ── Attachments ──
 // Attached files live in <vault>/attachments/<id>/ and are listed in the fragment's frontmatter.
 const bytesLabel = n => typeof n !== 'number' ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
-async function loadAttachments(d) {
+async function loadAttachments(d, viewerOpts = {}) {
   const f = d.opened, section = d.ui.docAttachments;
-  if (!f) { d.attachments = null; section.hidden = true; return; }
+  if (!f) { d.attachments = null; section.hidden = true; d.sourceViewer?.sync(); return; }
   let items;
   try { items = await api.attachments(f.vault, f.id); } catch { items = []; }
   if (d.opened !== f) return;
   d.attachments = items;
   d.editor.refresh();
+  d.sourceViewer?.sync(viewerOpts);
   if (!items.length) { section.hidden = true; d.ui.docAttachmentsBody.replaceChildren(); return; }
   section.hidden = false;
   d.ui.docAttachmentsNote.textContent = `${items.length} ${items.length === 1 ? 'file' : 'files'}`;
@@ -1761,7 +1837,10 @@ function typeContext(v) {
     setLens: lens => prefer({ lens }), setSettled: settled => prefer({ settled }), rerender: () => renderTypeView(v)
   };
 }
-function openTypeView(type, how = {}) { return action(() => openView('type', { type, how })); }
+function openTypeView(type, how = {}) {
+  if (type === 'source') return action(() => openView('inbox', { how }));
+  return action(() => openView('type', { type, how }));
+}
 // Re-rendered in place when its fragments change, keeping focus on the same card (or control) and the board's scroll.
 function renderTypeView(v, focus) {
   if (!v.group) return;
@@ -1889,7 +1968,7 @@ function hints(v) {
   const tagCounts = new Map();
   for (const r of rows) for (const t of r.tags || []) tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
   const top = [...tagCounts].sort((a, b) => b[1] - a[1])[0]?.[0];
-  const tokens = ['type:decision', 'status:open', 'due:this-week', 'updated:this-week', 'has:links', top && `#${top}`].filter(Boolean);
+  const tokens = ['in:files', 'type:decision', 'status:open', 'due:this-week', 'updated:this-week', 'has:links', top && `#${top}`].filter(Boolean);
   const box = v.ui.hints;
   box.querySelectorAll('.hint').forEach(n => n.remove());
   box.append(...tokens.map(t => {
@@ -1975,7 +2054,7 @@ function refreshViews(all = false) {
   for (const v of viewTabs()) {
     if (v.view === 'type') continue;
     if (v.view === 'agent') v.agent?.relink(); // citations in answers resolve against the fragments in view
-    const live = ['pulse', 'trash'].includes(v.view) || (all && v.view !== 'history');
+    const live = ['pulse', 'trash', 'inbox'].includes(v.view) || (all && v.view !== 'history');
     if (!live) { if (v.view === 'history' || v.view === 'doctor') v.stale = true; continue; }
     if (ws.shown(v)) draw(v); else v.stale = true;
   }
@@ -2016,6 +2095,14 @@ async function renderView(v) {
   if (view === 'history') { await historyView(v); return; }
   if (view === 'type') { renderTypeView(v); return; }
   if (view === 'pulse') { await renderPulse(v); return; }
+  if (view === 'inbox') {
+    await renderInboxView(v, {
+      api, rows, allRows: rows, scope, vaults, name, age, hue, tone, key, clickHow,
+      openRow, moveFragment, status, emptyState,
+      onRefresh: async () => { rows = await collect(); await refilter(); rowsChanged(); }
+    });
+    return;
+  }
   if (view === 'agent') { await renderAgent(v); return; }
   if (view === 'trash') {
     const paths = scope ? [scope] : vaults.map(x => x.path);
@@ -2075,9 +2162,89 @@ function agentLinks(paths) {
   const find = prefix => { const hits = paths.flatMap(rowsIn).filter(r => r.id.startsWith(prefix)); return hits.length === 1 ? hits[0] : null; };
   return {
     resolve(prefix) { const r = find(prefix); return r ? { title: r.title, type: r.type } : null; },
-    open(prefix, e) { const r = find(prefix); if (r) openRow(r, clickHow(e)); },
+    open(prefix, e, extra) { const r = find(prefix); if (r) openRow(r, { ...clickHow(e), ...(extra || {}) }); },
     pool: () => [], shortId: r => r.id, describe: () => []
   };
+}
+// Open a new Agent tab with this source fragment attached as context (nothing sent until the user submits).
+function askAboutSource(d) {
+  if (!d?.opened) return;
+  recentDoc = d;
+  return newChat({ side: ws.groups.length < 2 });
+}
+// Promote a quote + comment from a source's Notes into a new todo, idea or decision linked back to the source.
+function promoteComment(d, quote, targetType) {
+  const f = d?.opened;
+  if (!f) return;
+  return action(async () => {
+    const loc = quote.anchor.kind === 'page' ? `p. ${quote.anchor.number}`
+      : quote.anchor.kind === 'slide' ? `slide ${quote.anchor.number}`
+      : `§ ${quote.anchor.heading}`;
+    const rawTitle = (quote.comment || quote.text || '').split('\n')[0].trim();
+    const title = rawTitle.length > 90 ? `${rawTitle.slice(0, 87).trimEnd()}…` : (rawTitle || `From ${f.title || 'source'}`);
+    const short = shortId(f.id, rowsIn(f.vault));
+    const bodyParts = [`> ${loc} · "${quote.text}"`];
+    if (quote.comment) bodyParts.push(quote.comment);
+    bodyParts.push(`From [[${short}]] ${quote.anchor.kind === 'page' ? `p. ${quote.anchor.number}` : quote.anchor.kind === 'slide' ? `slide ${quote.anchor.number}` : ''}`.trim());
+    const created = await api.save(f.vault, {
+      type: targetType,
+      title,
+      body: bodyParts.join('\n\n'),
+      tags: f.tags || [],
+      fields: {}
+    });
+    await api.linkFragments(f.vault, created.id, f.id);
+    rows = await collect(); await refilter(); rowsChanged();
+    if (d.opened === f) await loadNeighbors(d);
+    status(`Promoted comment to ${typeLabel(targetType).toLowerCase()} “${created.title}”.`, {
+      label: 'Open',
+      run: () => openRow({ vault: f.vault, id: created.id }, { side: true, focus: true })
+    });
+  });
+}
+// Apply only the user-checked proposals from Analyze, through normal Writer RPCs.
+async function applyAnalyze(d, selected) {
+  const f = d?.opened;
+  if (!f) return;
+  const applied = [];
+  if (selected.summary) {
+    const baseBody = (d.editor.text() || '').trimEnd();
+    const nextBody = baseBody ? `${baseBody}\n\n## Summary\n\n${selected.summary}` : `## Summary\n\n${selected.summary}`;
+    const saved = await api.save(f.vault, { id: f.id, title: d.ui.title.value || f.title, body: nextBody, expected: null });
+    if (d.opened === f && !saved?.conflict) {
+      load(d, { ...saved, vault: f.vault });
+    }
+    applied.push('summary');
+  }
+  if (selected.tags?.length) {
+    const fresh = await api.note(f.vault, f.id);
+    const merged = [...(fresh.tags || [])];
+    for (const t of selected.tags) if (!merged.some(x => x.toLowerCase() === t.toLowerCase())) merged.push(t);
+    const updated = await api.update(f.vault, f.id, { tags: merged }, null);
+    if (d.opened?.id === f.id && !updated?.conflict) {
+      d.opened = { ...updated, vault: f.vault };
+      meta(d);
+    }
+    applied.push(`${selected.tags.length} ${selected.tags.length === 1 ? 'tag' : 'tags'}`);
+  }
+  if (selected.links?.length) {
+    for (const l of selected.links) {
+      await api.linkFragments(f.vault, f.id, l.id);
+    }
+    applied.push(`${selected.links.length} ${selected.links.length === 1 ? 'link' : 'links'}`);
+  }
+  if (selected.todos?.length) {
+    const short = shortId(f.id, rowsIn(f.vault));
+    for (const t of selected.todos) {
+      const body = [t.body, `From [[${short}]]`].filter(Boolean).join('\n\n');
+      const created = await api.save(f.vault, { type: 'todo', title: t.title, body, tags: f.tags || [], fields: {} });
+      await api.linkFragments(f.vault, created.id, f.id);
+    }
+    applied.push(`${selected.todos.length} ${selected.todos.length === 1 ? 'todo' : 'todos'}`);
+  }
+  rows = await collect(); await refilter(); rowsChanged();
+  if (d.opened?.id === f.id) await Promise.all([loadNeighbors(d), loadAttachments(d)]);
+  status(applied.length ? `Applied ${applied.join(', ')}.` : 'Nothing selected to apply.');
 }
 const chatTab = id => viewTabs().find(t => t.view === 'agent' && (t.agent ? t.agent.id() === id : t.chatId === id)) || null;
 async function renderAgent(v) {
@@ -2149,7 +2316,30 @@ function renderSettings(view = settingsView) {
   $('shortcutState').textContent = view.shortcut?.error || (view.shortcut?.asked ? asked : view.shortcut?.active ? `${view.quickCaptureShortcut} opens quick capture.` : 'Leave empty for none.');
   $('shortcutState').dataset.tone = view.shortcut?.error ? 'error' : view.shortcut?.asked ? 'warn' : '';
   $('captureCommand').textContent = view.captureCommand;
-  renderLanguages(); renderModels(); renderMeaning();
+  renderLanguages(); renderModels(); renderMeaning(); renderInboxFolders();
+}
+async function renderInboxFolders() {
+  const box = $('inboxFolders');
+  if (!box) return;
+  const entries = await Promise.all(vaults.map(async v => ({
+    vault: v,
+    dir: await api.inboxPath(v.path).catch(() => `${v.path}/inbox`)
+  })));
+  box.replaceChildren();
+  for (const { vault: v, dir } of entries) {
+    const row = el('div', 'setting inbox-folder-row');
+    const txt = el('div', 'setting-text');
+    txt.append(el('strong', '', v.name), el('span', 'path', dir));
+    txt.querySelector('.path').title = dir;
+    const copy = smallButton('Copy', 'outline', () => {
+      api.copyText(dir).then(() => status(`Copied ${v.name} inbox path.`), status);
+    });
+    const open = smallButton('Open folder', 'outline', () => {
+      api.openInboxFolder(v.path).catch(status);
+    });
+    row.append(txt, copy, open);
+    box.append(row);
+  }
 }
 function renderLanguages() {
   const box = $('languageList'), chosen = pending.speechLanguages;
@@ -2412,6 +2602,7 @@ function commands() {
   add('Search inside fragments', () => goTo.open('/'), { icon: 'search', keys: `${mod} Shift F`, keywords: 'grep text find lines body content' });
   add('Graph of the vault', () => action(() => openView('graph')), { icon: 'graph', keys: 'G', keywords: 'links' });
   add('Pulse', () => action(() => openView('pulse')), { icon: 'pulse', keys: 'P', keywords: 'stats counts home' });
+  add('Inbox', () => action(() => openView('inbox')), { icon: 'inbox', keys: 'I', keywords: 'source files pdf documents triage' });
   add('Vault health', () => action(() => openView('doctor')), { icon: 'shield', keywords: 'doctor broken links check reindex orphans' });
   add('Trash', () => action(() => openView('trash')), { icon: 'trash', keywords: 'deleted restore empty bin' });
   // Each type's own view, for the types in scope that are on or that fragments still use.
@@ -2428,6 +2619,10 @@ function commands() {
     const t = schemaFor(d.opened.vault, d.opened.type)?.toggle;
     if (t) { const next = d.opened[t.field] === t.on ? t.off : t.on; add(`Mark ${next}`, () => toggleField(d), { icon: 'check', keys: 'T', keywords: t.field }); }
     add('Attach file…', () => attachFiles(d), { icon: 'paperclip', keywords: 'file image upload drop' });
+    if (d.sourceViewer?.isActive()) {
+      add('Ask about this document', () => askAboutSource(d), { icon: 'agent', keywords: 'source pdf question chat' });
+      add('Analyze document', () => d.sourceViewer.analyze(), { icon: 'sparkles', keywords: 'summary tags links todos source' });
+    }
     for (const s of enabledTypes(d.opened.vault)) if (s.name !== d.opened.type) add(`Convert to ${typeLabel(s.name)}`, () => promoteFragment(d, s.name), { glyph: typeIcon(s.name), keywords: 'promote change type' });
     add('History of this fragment', () => showHistory(d), { icon: 'history', keywords: 'versions restore' });
     add('Copy link to this fragment', () => copyLink(d), { icon: 'copy', keywords: 'wiki id' });
@@ -2492,7 +2687,7 @@ function previewLinks(r) {
   const find = prefix => { const hits = rows.filter(x => x.vault === r.vault && x.id.startsWith(prefix)); return hits.length === 1 ? hits[0] : null; };
   return {
     resolve(prefix) { const t = find(prefix); return t ? { title: t.title, type: t.type } : null; },
-    open(prefix, e) { const t = find(prefix); if (t) { goTo.close(false); openRow(t, { ...clickHow(e), focus: true }); } },
+    open(prefix, e, extra) { const t = find(prefix); if (t) { goTo.close(false); openRow(t, { ...clickHow(e), ...(extra || {}), focus: true }); } },
     pool: () => [], shortId: x => x.id, describe: () => []
   };
 }
@@ -2507,8 +2702,8 @@ const goTo = palette({
 
 // ── Wiring ──
 const DATES = ['today', 'yesterday', 'tomorrow', 'this-week', 'last-week', 'next-week', 'this-month', 'last-month', 'overdue'];
-const FILTER_HINTS = { type: 'fragment type', status: 'state', priority: 'low … critical', tag: 'a tag, or #tag', due: 'due date', created: 'date created', updated: 'date edited', has: 'links, due, attachments', is: 'archived, all', by: 'author', linked: 'links to an ID' };
-const assistValues = field => ({ type: typesIn(scope).map(s => s.name), tag: allTags(), due: DATES, created: DATES, updated: DATES, has: ['links', 'due', 'attachments'], is: ['archived', 'all'] })[field] ?? fieldValues(field);
+const FILTER_HINTS = { in: 'files (inside attachments)', type: 'fragment type', status: 'state', priority: 'low … critical', tag: 'a tag, or #tag', due: 'due date', created: 'date created', updated: 'date edited', has: 'links, due, attachments', is: 'archived, all', by: 'author', linked: 'links to an ID' };
+const assistValues = field => ({ in: ['files'], type: typesIn(scope).map(s => s.name), tag: allTags(), due: DATES, created: DATES, updated: DATES, has: ['links', 'due', 'attachments'], is: ['archived', 'all'] })[field] ?? fieldValues(field);
 searchAssist($('filter'), { id: 'filterAssist', values: assistValues, describe: f => FILTER_HINTS[f] });
 const halfTyped = q => /(^|\s)!?[a-z]+:!?$/i.test(q); // "status:" waits for its value
 // A keyboard click on a row, carrying Ctrl (⌘) so it can open beside.
@@ -2612,7 +2807,7 @@ document.addEventListener('keydown', e => {
   if (ctrl && e.shiftKey && k === 'p') { e.preventDefault(); goTo.open('>'); return; }
   if (ctrl && e.shiftKey && k === 'f') { e.preventDefault(); goTo.open('/'); return; }
   if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing || e.target.closest('input,textarea,select,[contenteditable=true],aihio-dropdown,aihio-date-picker,aihio-input')) return;
-  const next = ({ '+': 'capture', '/': 'search', g: 'graph', a: 'agent', p: 'pulse' })[k];
+  const next = ({ '+': 'capture', '/': 'search', g: 'graph', a: 'agent', p: 'pulse', i: 'inbox' })[k];
   if (next === 'capture') { e.preventDefault(); newCapture(); }
   else if (next) { e.preventDefault(); action(() => openView(next)); }
   else if (k === 't' && cur()) { e.preventDefault(); toggleField(); }

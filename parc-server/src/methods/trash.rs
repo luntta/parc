@@ -75,52 +75,24 @@ pub struct PurgeParams {
     pub id: Option<String>,
 }
 
-/// Permanently delete one trashed fragment (`id`) or empty the whole trash.
+/// Permanently delete one trashed fragment (`id`) or empty the whole trash,
+/// removing its attachments and history directories as well.
 pub fn purge(vault: &Path, params: Value) -> Result<Value, RpcError> {
     let p: PurgeParams = if params.is_null() {
         PurgeParams::default()
     } else {
         extract_params(params)?
     };
-    let trash_dir = vault.join("trash");
+    let mut writer = write::writer(vault);
 
     if let Some(id) = p.id {
-        fragment::validate_id(&id).map_err(map_parc_error)?;
-        let path = trash_dir.join(format!("{}.md", id));
-        let meta = std::fs::symlink_metadata(&path)
-            .map_err(|_| RpcError::invalid_params(&format!("fragment '{}' not found in trash", id)))?;
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            return Err(RpcError::invalid_params("refusing to purge non-file trash entry"));
-        }
-        std::fs::remove_file(&path).map_err(|e| RpcError::internal_error(&e.to_string()))?;
-        return Ok(serde_json::json!({ "purged": id }));
+        let purged = writer.purge(&id).map_err(|e| match e {
+            parc_core::ParcError::FragmentNotFound(msg) => RpcError::invalid_params(&msg),
+            other => map_parc_error(other),
+        })?;
+        return Ok(serde_json::json!({ "purged": purged }));
     }
 
-    let mut count = 0usize;
-    if trash_dir.is_dir() {
-        for entry in std::fs::read_dir(&trash_dir)
-            .map_err(|e| RpcError::internal_error(&e.to_string()))?
-        {
-            let entry = entry.map_err(|e| RpcError::internal_error(&e.to_string()))?;
-            let path = entry.path();
-            if path.extension().is_none_or(|e| e != "md") {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if fragment::validate_id(stem).is_err() {
-                continue;
-            }
-            if let Ok(meta) = std::fs::symlink_metadata(&path) {
-                if !meta.file_type().is_symlink() && meta.is_file() {
-                    std::fs::remove_file(&path)
-                        .map_err(|e| RpcError::internal_error(&e.to_string()))?;
-                    count += 1;
-                }
-            }
-        }
-    }
-
+    let count = writer.empty_trash().map_err(map_parc_error)?;
     Ok(serde_json::json!({ "purged_count": count }))
 }

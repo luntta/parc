@@ -5,7 +5,7 @@
   "private": true,
   "main": "main.cjs",
   "scripts": {
-    "build": "esbuild workspace=renderer.js capture=capture.js graph-worker=graph-worker.js --bundle --outdir=dist --format=iife --log-level=warning",
+    "build": "esbuild workspace=renderer.js capture=capture.js graph-worker=graph-worker.js --bundle --outdir=dist --format=iife --log-level=warning && node -e \"require('fs').copyFileSync('node_modules/pdfjs-dist/build/pdf.worker.min.mjs', 'dist/pdf.worker.mjs')\"",
     "prestart": "npm run build",
     "pretest:smoke": "npm run build",
     "start": "electron .",
@@ -28,6 +28,7 @@
     "@fontsource-variable/jetbrains-mono": "5.2.8",
     "@lezer/highlight": "1.2.5",
     "@luntta/aihio": "2.5.0",
-    "@microsoft/copilot-sdk": "2.0.1"
+    "@microsoft/copilot-sdk": "2.0.1",
+    "pdfjs-dist": "^6.5.438"
   }
 }

@@ -183,6 +183,12 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Sweep <vault>/inbox/ and list open sources
+    Inbox {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show today's resurfacing digest
     Today {
         /// Output as JSON
@@ -342,10 +348,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// List attachments for a fragment
+    /// List attachments for a fragment, or print an attachment's extracted text
     Attachments {
         /// Fragment ID or prefix
         id: String,
+        /// Print extracted text for this attachment filename
+        #[arg(long)]
+        text: Option<String>,
+        /// Page, slide, or section range for --text (e.g. 3 or 3-5)
+        #[arg(long)]
+        pages: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -547,6 +559,12 @@ enum UpdateCommands {
 }
 
 fn main() -> anyhow::Result<()> {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == parc_core::extract::CHILD_ARG)
+    {
+        parc_core::extract::child_main();
+    }
     let cli = parse_cli();
     let command = cli.command;
 
@@ -662,6 +680,7 @@ fn main() -> anyhow::Result<()> {
                     sort,
                     limit,
                 } => commands::search::run(&vault, query, json, sort, limit),
+                Commands::Inbox { json } => commands::inbox::run(&vault, json),
                 Commands::Today { json } => commands::today::run(&vault, json),
                 Commands::Tui => commands::tui::run(&vault),
                 Commands::Due { bucket, json } => commands::due::run(&vault, bucket, json),
@@ -711,9 +730,12 @@ fn main() -> anyhow::Result<()> {
                 Commands::Detach { id, filename, json } => {
                     commands::attach::run_detach(&vault, &id, &filename, json)
                 }
-                Commands::Attachments { id, json } => {
-                    commands::attach::run_attachments(&vault, &id, json)
-                }
+                Commands::Attachments {
+                    id,
+                    text,
+                    pages,
+                    json,
+                } => commands::attach::run_attachments(&vault, &id, text, pages, json),
                 Commands::Schema { subcommand } => match subcommand {
                     SchemaCommands::Add { path } => commands::schema::run_add(&vault, &path),
                 },

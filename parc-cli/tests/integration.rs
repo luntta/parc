@@ -3199,3 +3199,90 @@ fn test_recall_for_a_draft_from_stdin_and_for_a_saved_fragment() {
             "give a fragment ID, --text, or both",
         ));
 }
+
+#[test]
+fn test_attachment_text_cli_in_files_and_isolated_child() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+
+    let fixture_pdf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../parc-core/tests/fixtures/attachments/sample.pdf");
+    assert!(fixture_pdf.exists());
+
+    // 1. Real isolated child-process extraction via `parc --parc-internal-extract`
+    let parc_bin = std::path::PathBuf::from(env!("CARGO_BIN_EXE_parc"));
+    let outcome = parc_core::extract::isolated_with_exe(
+        &parc_bin,
+        &fixture_pdf,
+        &parc_core::extract::ExtractLimits::default(),
+    )
+    .unwrap();
+    match outcome {
+        parc_core::extract::ExtractOutcome::Extracted(ext) => {
+            assert_eq!(ext.parts.len(), 2);
+            assert!(ext.parts[0].contains("Icebreaker"));
+            assert!(ext.parts[1].contains("crew rotation"));
+        }
+        parc_core::extract::ExtractOutcome::NoText => panic!("expected extracted text"),
+    }
+
+    // 2. Child process timeout and crash are reported cleanly without crashing parent
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let slow_exe = tmp.path().join("slow-extractor.sh");
+        std::fs::write(&slow_exe, "#!/bin/sh\nsleep 5\n").unwrap();
+        std::fs::set_permissions(&slow_exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut tight = parc_core::extract::ExtractLimits::default();
+        tight.wall_timeout_secs = 1;
+        let err = parc_core::extract::isolated_with_exe(&slow_exe, &fixture_pdf, &tight)
+            .unwrap_err();
+        assert!(err.to_string().contains("took too long"), "{err}");
+
+        let crash_exe = tmp.path().join("crash-extractor.sh");
+        std::fs::write(&crash_exe, "#!/bin/sh\nkill -9 $$\n").unwrap();
+        std::fs::set_permissions(&crash_exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let err = parc_core::extract::isolated_with_exe(&crash_exe, &fixture_pdf, &tight)
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    // 3. CLI attach, `parc attachments` status, `parc attachments --text --pages`, `in:files`
+    let id = create_fragment_directly(&tmp, "note", "Winter dossier", "Short note.");
+    parc()
+        .args(["attach", &id, fixture_pdf.to_str().unwrap()])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+
+    parc()
+        .args(["attachments", &id])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sample.pdf"))
+        .stdout(predicate::str::contains("ready (2 pages)"));
+
+    parc()
+        .args(["attachments", &id, "--text", "sample.pdf", "--pages", "2"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--- p. 2 ---"))
+        .stdout(predicate::str::contains("crew rotation"))
+        .stdout(predicate::str::contains("Icebreaker").not());
+
+    let out = parc()
+        .args(["search", "in:files", "icebreaker", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let results: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(results.as_array().unwrap().len(), 1);
+    assert_eq!(results[0]["id"], id);
+    assert_eq!(results[0]["file_hits"][0]["filename"], "sample.pdf");
+    assert_eq!(results[0]["file_hits"][0]["label"], "p. 1");
+}

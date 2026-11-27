@@ -26,6 +26,14 @@ pub fn print_table(results: &[SearchResult], id_len: usize) {
             false,
             id_len,
         );
+        for hit in &result.file_hits {
+            println!(
+                "  {} ({}): {}",
+                sanitize_terminal_text(&hit.filename),
+                sanitize_terminal_text(&hit.label),
+                sanitize_terminal_text(&hit.snippet),
+            );
+        }
     }
 }
 

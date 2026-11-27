@@ -20,8 +20,8 @@ use super::command::{CommandEntry, LauncherKind};
 use super::highlight;
 use super::markdown::{self, Actionable};
 use super::{
-    CaptureField, CaptureForm, Focus, LauncherIntent, LauncherItem, LauncherPopup, Mode,
-    OverlayState, Row, Tab,
+    AttachmentPagerState, CaptureField, CaptureForm, Focus, LauncherIntent, LauncherItem,
+    LauncherPopup, Mode, OverlayState, Row, Tab,
 };
 
 const MENU_BORDER: Color = Color::DarkGray;
@@ -73,6 +73,7 @@ pub(super) fn draw(frame: &mut Frame, vault: &Path, config: &Config, app: &mut A
         }
         // Overlay labels are painted inside draw_detail.
         Mode::Overlay(_) => {}
+        Mode::AttachmentPager(pager) => draw_attachment_pager(frame, area, pager),
     }
 }
 
@@ -428,6 +429,12 @@ fn detail_lines(
             if !fragment.tags.is_empty() {
                 lines.push(Line::from(Span::styled(
                     format!("Tags: {}", fragment.tags.join(", ")),
+                    muted,
+                )));
+            }
+            if !fragment.attachments.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("Attachments: {}  (press v to read)", fragment.attachments.join(", ")),
                     muted,
                 )));
             }
@@ -937,6 +944,45 @@ fn footer_commands(focus: Focus) -> &'static str {
     }
 }
 
+fn draw_attachment_pager(frame: &mut Frame, area: Rect, pager: &mut AttachmentPagerState) {
+    let popup = centered_rect(90, 88, area);
+    frame.render_widget(Clear, popup);
+    let count_hint = if pager.attachments.len() > 1 {
+        format!(" [{}/{}  [/] switch]", pager.index + 1, pager.attachments.len())
+    } else {
+        String::new()
+    };
+    let title = format!(" {}{}  (j/k scroll  Esc close) ", pager.title, count_hint);
+    let block = Block::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(ACTIVE_TAB))
+        .title(title);
+    let lines: Vec<Line<'static>> = pager
+        .lines
+        .iter()
+        .map(|l| {
+            if l.starts_with("─── ") && l.ends_with(" ───") {
+                Line::from(Span::styled(
+                    l.clone(),
+                    Style::default()
+                        .fg(ACTIVE_TAB)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(l.clone())
+            }
+        })
+        .collect();
+    render_detail_lines(
+        frame,
+        popup,
+        block,
+        lines,
+        &mut pager.scroll,
+        &mut pager.max_scroll,
+    );
+}
+
 fn draw_help(frame: &mut Frame, area: Rect) {
     let lines: Vec<Line> = vec![
         Line::from(Span::styled(
@@ -966,6 +1012,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  a           archive (toggle)"),
         Line::from("  d           delete (with confirm)"),
         Line::from("  y           copy full id to clipboard"),
+        Line::from("  v           view attachment extracted text"),
         Line::from("  r           reload current view"),
         Line::from(""),
         Line::from("In the detail pane (Shift-Tab to focus)"),

@@ -93,49 +93,20 @@ fn run_list(vault: &Path, json: bool) -> Result<()> {
 }
 
 fn run_purge(vault: &Path, id: Option<&str>, json: bool) -> Result<()> {
-    let trash_dir = vault.join("trash");
+    let mut writer = crate::hooks::cli_writer(vault);
 
     if let Some(prefix) = id {
-        // Purge a specific fragment
-        let upper = prefix.to_uppercase();
-        let mut found = false;
-        if trash_dir.is_dir() {
-            for entry in std::fs::read_dir(&trash_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if stem.starts_with(&upper) {
-                        std::fs::remove_file(&path)?;
-                        if json {
-                            let json_val = serde_json::json!({
-                                "purged": stem,
-                            });
-                            println!("{}", serde_json::to_string_pretty(&json_val)?);
-                        } else {
-                            println!("Purged {}", &stem[..8.min(stem.len())]);
-                        }
-                        found = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if !found {
-            anyhow::bail!("fragment '{}' not found in trash", prefix);
+        let purged = writer.purge(prefix)?;
+        if json {
+            let json_val = serde_json::json!({
+                "purged": purged,
+            });
+            println!("{}", serde_json::to_string_pretty(&json_val)?);
+        } else {
+            println!("Purged {}", &purged[..8.min(purged.len())]);
         }
     } else {
-        // Purge all
-        let mut count = 0;
-        if trash_dir.is_dir() {
-            for entry in std::fs::read_dir(&trash_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "md") {
-                    std::fs::remove_file(&path)?;
-                    count += 1;
-                }
-            }
-        }
+        let count = writer.empty_trash()?;
         if json {
             let json_val = serde_json::json!({
                 "purged_count": count,

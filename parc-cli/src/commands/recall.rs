@@ -117,7 +117,17 @@ pub fn run(
         }
         println!("{indent}{}", sanitize_terminal_text(&why.join("; ")));
         for e in &s.excerpts {
-            println!("{indent}{}: {}", e.line, sanitize_terminal_text(&e.text));
+            if let Some(ref att) = e.attachment {
+                let loc = e.label.as_deref().unwrap_or("");
+                println!(
+                    "{indent}{} ({}): {}",
+                    sanitize_terminal_text(att),
+                    sanitize_terminal_text(loc),
+                    sanitize_terminal_text(&e.text)
+                );
+            } else {
+                println!("{indent}{}: {}", e.line, sanitize_terminal_text(&e.text));
+            }
         }
     }
     if ctx.truncated {

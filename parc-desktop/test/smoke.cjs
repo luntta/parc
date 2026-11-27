@@ -374,7 +374,7 @@ async function check() {
   await js('document.querySelector("#vaultMenu aihio-dropdown-item[value=\\"@settings\\"]").click()');
   await until('!!document.querySelector("#vaultSettings[open] .type-row")');
   await js(`{ const s = document.querySelector(".vs-vault select"), p = [...(s?.options || [])].find(o => o.text === "Prototype")?.value; if (p && s.value !== p) { s.value = p; s.dispatchEvent(new Event("change")); } }`);
-  await until('document.querySelector("#vsDescription").textContent.includes("Prototype") && document.querySelectorAll(".type-row").length === 5');
+  await until('document.querySelector("#vsDescription").textContent.includes("Prototype") && document.querySelectorAll(".type-row").length === 6');
   await js('document.querySelector("aihio-switch[aria-label=\\"Use risk for new fragments\\"] input").click()');
   await until('document.querySelector("#vsMessage")?.textContent.startsWith("Risk is off")');
   assert.deepEqual((await prototype.vaultSettings()).types.disabled, ['risk']);
@@ -382,13 +382,13 @@ async function check() {
   await until('document.querySelectorAll(".field-card").length === 4');
   await js('{ const i = [...document.querySelectorAll(".value-row .vs-input")].find(x => x.value === "in-progress"); i.value = "doing"; i.dispatchEvent(new Event("input")); i.dispatchEvent(new Event("change")); }');
   await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Save type")).click()');
-  await until('document.querySelector("#vsMessage")?.textContent.includes("moved") && document.querySelectorAll(".type-row").length === 5');
+  await until('document.querySelector("#vsMessage")?.textContent.includes("moved") && document.querySelectorAll(".type-row").length === 6');
   assert.equal((await prototype.get(invoice.id)).status, 'doing');
   await js('[...document.querySelectorAll("#vsBody aihio-button")].find(b => b.textContent.includes("New type")).click()');
   await until('!!document.querySelector("[data-key=type-name]")');
   await js('{ const i = document.querySelector("[data-key=type-name]"); i.value = "bug"; i.dispatchEvent(new Event("input")); }');
   await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Create type")).click()');
-  await until('document.querySelectorAll(".type-row").length === 6');
+  await until('document.querySelectorAll(".type-row").length === 7');
   const kinds = await prototype.schemas();
   assert.equal(kinds.find(k => k.name === 'risk').enabled, false);
   assert.deepEqual(kinds.find(k => k.name === 'bug').fields[0].categories, { open: 'open', done: 'done' });
@@ -702,6 +702,99 @@ async function check() {
   await js('document.querySelector("#vaultMenu aihio-dropdown-item[value=\\"@close\\"]").click()');
   await until(`document.querySelector("#vaultName").textContent === "Prototype" && document.querySelector("#status").textContent.includes("files on disk were not changed") && ${idle}`);
   assert.equal(fs.existsSync(path.join(second, 'config.yml')), true, 'removing a vault leaves its files on disk');
+
+  // Step 3 & 4 Inbox: drop a real PDF & Markdown doc into <vault>/inbox/, sweep, triage in Inbox view,
+  // verify pdfjs-dist renders canvas + textLayer under strict CSP (no wasm-unsafe-eval), verify quote
+  // highlight + promote comment to todo, verify Markdown viewer, and verify `in:files` search hits.
+  const fixturePdf = path.resolve(__dirname, '../../parc-core/tests/fixtures/attachments/sample.pdf');
+  const inboxDir = path.join(protoPath, 'inbox');
+  fs.mkdirSync(inboxDir, { recursive: true });
+  const droppedPdf = path.join(inboxDir, 'sample.pdf');
+  fs.copyFileSync(fixturePdf, droppedPdf);
+  const droppedMd = path.join(inboxDir, 'briefing.md');
+  fs.writeFileSync(droppedMd, '# Briefing\n\nSolar telemetry reached 94 percent uptime.\n\n## Follow up\n\nSchedule battery inspection.\n');
+  const pastTime = new Date(Date.now() - 3000);
+  fs.utimesSync(droppedPdf, pastTime, pastTime);
+  fs.utimesSync(droppedMd, pastTime, pastTime);
+
+  await js('document.querySelector("nav [data-view=inbox]").click()');
+  await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Inbox" && ${idle}`);
+  await js('[...document.querySelectorAll("[data-current] .inbox-bar-actions aihio-button")].find(b => b.textContent.includes("Sweep")).click()');
+  await until('document.querySelectorAll("[data-current] .inbox-row").length === 2 && document.querySelector("#inboxBadge")?.textContent === "2"');
+  assert.equal(fs.existsSync(droppedPdf), false, 'PDF moved out of inbox/');
+
+  // Open the PDF source: verify pdf.js renders real canvas + textLayer under strict CSP.
+  await js('[...document.querySelectorAll("[data-current] .inbox-row")].find(r => r.textContent.includes("PDF")).click()');
+  await until('document.querySelector("[data-current] .scroll, [data-current]")?.dataset.sourceMode === "true" && !!document.querySelector("[data-current] .pdfViewer .page canvas") && !!document.querySelector("[data-current] .pdfViewer .textLayer span")');
+  assert.equal(await js('document.querySelector("[data-current] .sv-page-total")?.textContent.trim()'), '/ 2');
+
+  // Fit, then zoom beyond the workspace reading measure. Both the PDF page
+  // and its actual canvas must grow proportionally, with the right edge reachable.
+  const geometry = () => js(`(() => {
+    const page = document.querySelector('[data-current] .pdfViewer .page');
+    const box = n => [n.getBoundingClientRect().width, n.getBoundingClientRect().height];
+    return [box(page), box(page.querySelector('canvas'))];
+  })()`);
+  const beforeZoom = await geometry();
+  await js("for (let i=0; i<18; i++) document.querySelector('[data-current] [aria-label=\"Zoom in\"]').click()");
+  await until('!!document.querySelector("[data-current] .pdfViewer .page canvas")');
+  const afterZoom = await geometry();
+  for (let i = 0; i < 2; i++) {
+    const gx = afterZoom[i][0] / beforeZoom[i][0], gy = afterZoom[i][1] / beforeZoom[i][1];
+    assert.ok(gx > 1.5 && Math.abs(gx / gy - 1) < 0.01, 'uniform PDF zoom: ' + JSON.stringify({beforeZoom, afterZoom}));
+  }
+  assert.equal(await js(`(() => {
+    const scroller = document.querySelector('[data-current] .sv-pdf-container');
+    scroller.scrollLeft = scroller.scrollWidth;
+    return scroller.scrollLeft > 0 && scroller.querySelector('.page').getBoundingClientRect().right <= scroller.getBoundingClientRect().right + 1;
+  })()`), true);
+  await js("document.querySelector('[data-current] [title=\"Fit width\"]').click()");
+
+  // Select a partial line with real left-button input, not a scripted Selection
+  // (which would bypass Chromium's hit-testing during the drag).
+  const pdfLine = `[...document.querySelectorAll('[data-current] .page[data-page-number="1"] .textLayer span')]
+    .find(s => s.textContent.startsWith('Icebreaker escort') && s.getBoundingClientRect().width)`;
+  await until(`!!(${pdfLine})`);
+  const { start, end } = await js(`(() => {
+    const line = ${pdfLine};
+    line.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const point = offset => {
+      const range = document.createRange();
+      range.setStart(line.firstChild, offset);
+      range.collapse(true);
+      const r = range.getBoundingClientRect();
+      return { x: Math.round(r.x), y: Math.round(r.y + r.height / 2) };
+    };
+    return { start: point(3), end: point('Icebreaker escort starts'.length) };
+  })()`);
+  win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...start });
+  win.webContents.sendInputEvent({ type: 'mouseMove', modifiers: ['leftbuttondown'], ...end });
+  win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...end });
+  assert.equal(await js('window.getSelection().toString()'), 'breaker escort starts', 'drag selects precisely the requested PDF text');
+
+  // Quote the actual selection and promote the comment to a todo.
+  await until('!!document.querySelector("[data-current] .sv-float-quote")');
+  await js('document.querySelector("[data-current] .sv-float-quote").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))');
+  await until('document.querySelector("[data-current] .quote-action-snip")?.textContent === "breaker escort starts" && document.querySelector("[data-current] .quote-action-loc")?.textContent === "p. 1"');
+  await win.webContents.insertText('Check ferry schedule');
+  await until('!!document.querySelector("[data-current] .quote-action-row") && !!document.querySelector("[data-current] .md-quote-jump")');
+  await js(saveKey);
+  await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
+  await js('document.querySelector("[data-current] .quote-promote-menu aihio-dropdown-item[value=todo]").click()');
+  await until(`document.querySelector("#status").textContent.includes("Promoted comment to todo") && ${idle}`);
+
+  // Open the Markdown source: verify safe DOM viewer renders sections.
+  await js('document.querySelector("nav [data-view=inbox]").click()');
+  await until('document.querySelectorAll("[data-current] .inbox-row").length === 2');
+  await until('[...document.querySelectorAll("[data-current] .inbox-row")].some(r => r.textContent.includes("Briefing"))');
+  await js('[...document.querySelectorAll("[data-current] .inbox-row")].find(r => r.textContent.includes("Briefing")).click()');
+  await until('document.querySelectorAll("[data-current] .sv-md-doc .sv-section").length === 2');
+
+  // Search inside attachments with `in:files` and verify clickable file_hits render.
+  await js('document.querySelector("nav [data-view=search]").click()');
+  await until(idle);
+  await js('{ const q = document.querySelector("[data-current] .query"); q.value = "in:files telemetry"; q.dispatchEvent(new Event("input", { bubbles: true })); }');
+  await until('document.querySelector("[data-current] .file-hit")?.textContent.includes("briefing.md")');
 
   // Omarchy System theme: switch back to System, verify Tokyo Night tokens apply, then swap
   // themes and toggle Glassy + Rounded corners live on disk and verify the window follows immediately.

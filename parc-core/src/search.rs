@@ -37,6 +37,11 @@ pub enum HasCondition {
     Due,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InScope {
+    Files,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filter {
     Type {
@@ -66,6 +71,7 @@ pub enum Filter {
     Has(HasCondition),
     Linked(String),
     Is(IsCondition),
+    In(InScope),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +112,15 @@ impl Default for SearchQuery {
     }
 }
 
+/// A matching passage inside an attachment when searching with `in:files`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FileHit {
+    pub filename: String,
+    pub part: usize,
+    pub label: String,
+    pub snippet: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
     pub id: String,
@@ -123,12 +138,24 @@ pub struct SearchResult {
     /// `archived` have their own members and are left out. Fuzzy hits don't carry them.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub fields: BTreeMap<String, serde_json::Value>,
+    /// Matching attachment parts when searching with `in:files`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_hits: Vec<FileHit>,
+}
+
+/// Whether the query explicitly searches inside attachment text (`in:files`).
+pub fn has_in_files(query: &SearchQuery) -> bool {
+    query
+        .filters
+        .iter()
+        .any(|f| matches!(f, Filter::In(InScope::Files)))
 }
 
 // ── Parser ─────────────────────────────────────────────────────────────
 
 const FILTER_FIELDS: &[&str] = &[
     "type", "status", "priority", "tag", "due", "created", "updated", "by", "has", "linked", "is",
+    "in",
 ];
 
 /// Parse a DSL query string into a SearchQuery AST.
@@ -285,6 +312,13 @@ fn parse_filter(field: &str, value: &str) -> Result<Filter, ParcError> {
             "all" => Ok(Filter::Is(IsCondition::All)),
             _ => Err(ParcError::ParseError(format!(
                 "unknown is: condition '{}'",
+                value
+            ))),
+        },
+        "in" => match value {
+            "files" => Ok(Filter::In(InScope::Files)),
+            _ => Err(ParcError::ParseError(format!(
+                "unknown in: scope '{}'",
                 value
             ))),
         },
@@ -527,6 +561,10 @@ fn apply_filters(
             Filter::Is(IsCondition::All) => {
                 *has_is_filter = true;
             }
+            Filter::In(InScope::Files) => {
+                // Handled at compile_query level (and for filter-only queries,
+                // restricts to fragments that have indexed attachment text).
+            }
             Filter::Linked(id_prefix) => {
                 let prefix = id_prefix.to_uppercase();
                 // Through resolved_id: a frontmatter link may be stored as a short prefix.
@@ -586,6 +624,7 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
     let mut tag_count: usize = 0;
     let mut has_is_filter = false;
 
+    let in_files = has_in_files(query);
     let use_fts = !query.text_terms.is_empty();
 
     // Count positive tag filters to know if we'll have extra JOINs
@@ -596,7 +635,25 @@ fn compile_query(query: &SearchQuery) -> Result<CompiledQuery, ParcError> {
         .any(|f| matches!(f, Filter::Tag { negated: false, .. }));
 
     // Base SELECT
-    let base_select = if use_fts {
+    let base_select = if in_files {
+        if use_fts {
+            let fts_expr = build_fts_expression(&query.text_terms);
+            conditions.push(format!(
+                "EXISTS (SELECT 1 FROM attachment_fts WHERE attachment_fts.fragment_id = f.id AND attachment_fts MATCH ?{})",
+                param_idx
+            ));
+            params.push(Box::new(fts_expr));
+            param_idx += 1;
+        } else {
+            conditions.push(
+                "EXISTS (SELECT 1 FROM attachment_files WHERE fragment_id = f.id AND status = 'ready')"
+                    .to_string(),
+            );
+        }
+        "SELECT f.id, f.type, f.title, f.status, f.updated_at, NULL as snippet, f.archived, f.created_at, f.extra_json \
+         FROM fragments f"
+            .to_string()
+    } else if use_fts {
         let fts_expr = build_fts_expression(&query.text_terms);
         conditions.push(format!("fragments_fts MATCH ?{}", param_idx));
         params.push(Box::new(fts_expr));
@@ -768,6 +825,12 @@ fn indexed_fields(extra_json: Option<String>) -> BTreeMap<String, serde_json::Va
 /// Execute a search query against the index.
 pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchResult>, ParcError> {
     let compiled = compile_query(query)?;
+    let in_files = has_in_files(query);
+    let fts_expr = if in_files && !query.text_terms.is_empty() {
+        Some(build_fts_expression(&query.text_terms))
+    } else {
+        None
+    };
 
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
         compiled.params.iter().map(|p| p.as_ref()).collect();
@@ -784,6 +847,7 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchResult
             snippet: row.get(5)?,
             archived: row.get::<_, i64>(6)? != 0,
             fields: indexed_fields(row.get(8)?),
+            file_hits: Vec::new(),
         })
     })?;
 
@@ -800,10 +864,60 @@ pub fn search(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchResult
             collected
         };
         result.tags = tags;
+        if let Some(ref expr) = fts_expr {
+            result.file_hits = query_file_hits(conn, &result.id, expr)?;
+        }
         results.push(result);
     }
 
     Ok(results)
+}
+
+fn query_file_hits(
+    conn: &Connection,
+    fragment_id: &str,
+    fts_expr: &str,
+) -> Result<Vec<FileHit>, ParcError> {
+    use rusqlite::OptionalExtension;
+    let mut stmt = conn.prepare_cached(
+        "SELECT filename, CAST(part AS INTEGER), text, snippet(attachment_fts, 3, '»', '«', '…', 20)
+         FROM attachment_fts
+         WHERE fragment_id = ?1 AND attachment_fts MATCH ?2
+         ORDER BY bm25(attachment_fts)
+         LIMIT 3",
+    )?;
+    let mut unit_stmt = conn.prepare_cached(
+        "SELECT unit FROM attachment_files WHERE fragment_id = ?1 AND filename = ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![fragment_id, fts_expr], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut hits = Vec::new();
+    for r in rows {
+        let (filename, part_i, text, snippet) = r?;
+        let part = part_i.max(1) as usize;
+        let unit_s: Option<String> = unit_stmt
+            .query_row(rusqlite::params![fragment_id, &filename], |r| r.get(0))
+            .optional()?
+            .flatten();
+        let unit = unit_s
+            .as_deref()
+            .and_then(crate::extract::PartUnit::parse)
+            .unwrap_or(crate::extract::PartUnit::Page);
+        let label = unit.format_ref(part, Some(&text));
+        hits.push(FileHit {
+            filename,
+            part,
+            label,
+            snippet,
+        });
+    }
+    Ok(hits)
 }
 
 // ── Fuzzy search ───────────────────────────────────────────────────────

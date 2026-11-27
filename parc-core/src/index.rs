@@ -95,14 +95,40 @@ CREATE TABLE IF NOT EXISTS fragment_files (
     error         TEXT
 );
 
+CREATE TABLE IF NOT EXISTS attachment_files (
+    fragment_id TEXT NOT NULL,
+    filename    TEXT NOT NULL,
+    sha256      TEXT NOT NULL DEFAULT '',
+    size        INTEGER NOT NULL,
+    mtime_ns    INTEGER NOT NULL,
+    unit        TEXT,
+    format      TEXT,
+    title       TEXT,
+    parts       INTEGER NOT NULL DEFAULT 0,
+    text_format INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    error       TEXT,
+    PRIMARY KEY (fragment_id, filename)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS attachment_fts USING fts5(
+    fragment_id UNINDEXED,
+    filename UNINDEXED,
+    part UNINDEXED,
+    text
+);
+
 CREATE INDEX IF NOT EXISTS idx_fragments_type ON fragments(type);
 CREATE INDEX IF NOT EXISTS idx_fragments_status ON fragments(status);
 CREATE INDEX IF NOT EXISTS idx_fragments_due ON fragments(due);
 CREATE INDEX IF NOT EXISTS idx_fragment_tags_tag ON fragment_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_fragment_links_resolved ON fragment_links(resolved_id);
+CREATE INDEX IF NOT EXISTS idx_attachment_files_status ON attachment_files(status);
 ";
 
 const DROP_SQL: &str = "
+DROP TABLE IF EXISTS attachment_fts;
+DROP TABLE IF EXISTS attachment_files;
 DROP TABLE IF EXISTS fragments_fts;
 DROP TABLE IF EXISTS fragment_tags;
 DROP TABLE IF EXISTS fragment_links;
@@ -111,6 +137,8 @@ DROP TABLE IF EXISTS fragments;
 ";
 
 const CLEAR_SQL: &str = "
+DELETE FROM attachment_fts;
+DELETE FROM attachment_files;
 DELETE FROM fragments_fts;
 DELETE FROM fragment_tags;
 DELETE FROM fragment_links;
@@ -246,13 +274,14 @@ fn is_damaged(e: &rusqlite::Error) -> bool {
 /// after a write to trust those) are read. Nothing is written when nothing
 /// changed, so the common case takes no write lock.
 pub fn sync(conn: &Connection, vault: &Path) -> Result<SyncReport, ParcError> {
-    if Plan::read(conn, vault)?.is_empty() {
+    if Plan::read(conn, vault)?.is_empty() && !crate::extract::attachments_need_sync(conn, vault)? {
         return Ok(SyncReport::default());
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     // Plan again under the lock: another process may have synced meanwhile.
     let plan = Plan::read(&tx, vault)?;
     let report = apply(&tx, vault, plan)?;
+    crate::extract::sync_attachments(&tx, vault)?;
     tx.commit()?;
     Ok(report)
 }
@@ -266,6 +295,7 @@ pub fn reindex(vault: &Path) -> Result<SyncReport, ParcError> {
     tx.execute_batch(CLEAR_SQL)?;
     let plan = Plan::read(&tx, vault)?;
     let report = apply(&tx, vault, plan)?;
+    crate::extract::sync_attachments(&tx, vault)?;
     tx.commit()?;
     Ok(report)
 }
@@ -804,6 +834,7 @@ pub fn remove_from_index(conn: &Connection, id: &str) -> Result<(), ParcError> {
 
 /// Delete a fragment's rows. Returns whether it was indexed.
 fn remove_rows(conn: &Connection, id: &str) -> Result<bool, ParcError> {
+    crate::extract::store::remove_fragment_attachments(conn, id)?;
     conn.prepare_cached("DELETE FROM fragment_tags WHERE fragment_id = ?1")?
         .execute([id])?;
     conn.prepare_cached("DELETE FROM fragment_links WHERE source_id = ?1")?

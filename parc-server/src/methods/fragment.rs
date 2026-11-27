@@ -438,7 +438,7 @@ pub fn search(vault: &Path, params: Value) -> Result<Value, RpcError> {
     let items: Vec<Value> = results
         .iter()
         .map(|r| {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "id": r.id,
                 "type": r.fragment_type,
                 "title": r.title,
@@ -449,7 +449,11 @@ pub fn search(vault: &Path, params: Value) -> Result<Value, RpcError> {
                 "snippet": r.snippet,
                 "archived": r.archived,
                 "fields": r.fields,
-            })
+            });
+            if !r.file_hits.is_empty() {
+                obj["file_hits"] = serde_json::to_value(&r.file_hits).unwrap_or(Value::Null);
+            }
+            obj
         })
         .collect();
 

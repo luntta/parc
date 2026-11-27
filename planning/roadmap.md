@@ -129,7 +129,7 @@ Where daily writing happens — turning `parc-desktop` into a fast, low-friction
 
 ### 6. Inbox: files you throw in
 
-Drop PDFs, Word files and the like into a vault, read them in parc, comment on them, link or file them, and let the Agent use them as sources. Shape agreed 2026-11-26.
+Drop PDFs, Word and PowerPoint files and the like into a vault, read them in parc, comment on them, link or file them, and let the Agent use them as sources. Shape agreed 2026-11-26; how to build it, step by step, is in [`inbox-plan.md`](inbox-plan.md).
 
 - **A file becomes a fragment when it lands.** A new built-in type, `source`: the file is its attachment, its body is your notes on it. The Inbox is the view of `source` fragments with an open status, as boards and the risk matrix are views of their types. Links, tags, backlinks, history, search, git and the Agent's tools work on it unchanged.
   - Statuses: `inbox` (open), `reading` (active), `processed` (done). No closed status: a file you don't want is discarded.
@@ -144,18 +144,19 @@ Drop PDFs, Word files and the like into a vault, read them in parc, comment on t
   - Settings shows the path with **Copy** and **Open in file manager**.
 - **Triage**, per item: keep it as a source; **Attach to…** an existing fragment (the file moves there and the source goes); **Link to…**; discard.
 - **Attachment text, for every attachment** in the vault, not just the inbox. Useful on its own, so it comes first:
-  - Extracted in `parc-core`, so the CLI, server, MCP and desktop see the same text. PDF, docx (a zip of XML), plain text, Markdown and HTML, with in-process Rust parsers and limits on size, pages and zip expansion. No outside programs, so a vault cannot choose one.
-  - Indexed in its own full-text table, page by page, so a match knows its page. A search filter for attachment text.
-  - Kept as the vault's `attachments.text` setting says: `sidecar` (the default) writes it beside the file, as `attachments/<id>/.text/<filename>.txt` for a PDF (pages split by form feeds) or `.md` for docx and HTML (headings, lists and tables kept, which the viewer shows), so it travels over git and another machine needn't extract again; `index` keeps it only in `index.db`.
-  - A sidecar records the file's hash and the extractor's version; a stale one is ignored and redone. Sidecars are written when a file is attached, or by a reindex after switching to `sidecar`, never by the index sync on open. Attachment listings leave `.text/` out.
+  - Extracted in `parc-core`, so the CLI, server, MCP and desktop see the same text. PDF, docx, pptx, plain text, Markdown and HTML, with [xberg](https://github.com/xberg-io/xberg) (pure Rust, pinned, only its `pdf`, `office` and `html` features, configured in code and never from a file or environment variable) and limits on size, pages and zip expansion.
+  - It runs in a child process of the running parc binary, with memory, CPU and time limits, so a hostile or broken file can't hang or crash `parc-server`. The program is parc itself, so a vault cannot choose one.
+  - Indexed in its own full-text table, page by page (a slide for pptx, a section between headings for docx and HTML), so a match knows its page. A search filter for attachment text.
+  - Kept as the vault's `attachments.text` setting says: `sidecar` (the default) writes it beside the file, as `attachments/<id>/.text/<filename>.txt` for a PDF (pages split by form feeds) or `.md` for docx, pptx and HTML (headings, lists and tables kept, which the viewer shows), so it travels over git and another machine needn't extract again; `index` keeps it only in `index.db`.
+  - A sidecar records the file's hash and parc's own text-format version (never the extractor crate's, so a dependency bump doesn't rewrite every sidecar in git); a stale one is ignored and redone, a newer one is left alone. Sidecars are written when a file is attached, or by a reindex after switching to `sidecar`, never by the index sync on open. Attachment listings leave `.text/` out.
 - **Reading and comments**:
   - A source opens in a tab as its document, with a rail beside it for **Notes** (the source's body, in the usual editor) and **Related**.
   - **PDF**: pdf.js (`pdfjs-dist`, Apache-2.0) with its viewer parts (lazy pages, text layer, find), not Chromium's built-in viewer, which gives no selection, current page or highlights to the page around it. The bytes come over IPC, so `parc-attach:` stays images only. In the sandboxed renderer, under a CSP without eval, with `isEvalSupported: false` and no PDF scripting; a link in a PDF goes through the narrow open-external path. `pageColors` can recolour text pages to the theme, with a toggle back to paper.
   - Your comments show as highlights on the page; a click on one goes to it in Notes, and a click on a quote in Notes goes to the page. The last page read is kept per computer, not in the vault, and the Inbox shows it ("p. 34 of 120").
-  - **docx and HTML**: shown as the Markdown that core extracts, not as HTML, so nothing in the file runs or loads from the network, and quotes match the indexed text exactly. **Open original** hands the file to the system viewer, as **Open** does today.
+  - **docx, pptx and HTML**: shown as the Markdown that core extracts (a pptx one block per slide), not as HTML, so nothing in the file runs or loads from the network, and quotes match the indexed text exactly. **Open original** hands the file to the system viewer, as **Open** does today.
   - The CLI and TUI read the extracted text.
   - Select text and press a key: the source's body gets a quote with its page (`> p. 12 · "…"`) and you write the comment under it. A click on the quote opens the page; the quoted words find the place again if the pages move.
-  - A docx has no pages until a word processor lays it out, so its quotes name the nearest heading instead, and its "pages" for recall are sections between headings.
+  - A docx has no pages until a word processor lays it out, so its quotes name the nearest heading instead, and its "pages" for recall are sections between headings. A pptx quote names its slide (`> slide 3 · "…"`).
   - **Promote a comment** to its own todo, idea or decision, linked back to the source.
 - **Related follows the page**: `recall` on the page on screen and on your comments, not the whole document, so the Related panel shows older notes about what you're reading. Local, no model.
 - **Agent**:
@@ -163,9 +164,9 @@ Drop PDFs, Word files and the like into a vault, read them in parc, comment on t
   - **Ask about this document** from the viewer.
   - **Analyze**: the Agent proposes links (and why), tags, todos found in the text, and a summary; you tick what you want and the app writes it through `Writer`. Its tools stay read-only, because a document can carry text aimed at the model.
   - A document goes to the model only when you ask, never when it arrives.
-- **Later**: OCR for scanned PDFs; "already in your archive as [[X]]" by file hash; a warning for large files, with a note on git-lfs.
+- **Later**: OCR for scanned PDFs; "already in your archive as [[X]]" by file hash; a warning for large files, with a note on git-lfs; ODT, EPUB and XLSX, which xberg also reads.
 
-Order: attachment text → the `source` type, folder and Inbox view → viewer and comments → Agent.
+Order: groundwork (attach and trash purge through `Writer`) → attachment text → the `source` type, folder and Inbox view → viewer and comments → Agent.
 
 ## Later
 

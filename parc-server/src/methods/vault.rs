@@ -37,6 +37,8 @@ pub fn links(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
 /// that could not be indexed.
 pub fn reindex(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
     let report = index::reindex(vault_path).map_err(map_parc_error)?;
+    let conn = index::open_index(vault_path).map_err(map_parc_error)?;
+    let extract_report = parc_core::extract::fill(vault_path, &conn).map_err(map_parc_error)?;
     let problems: Vec<Value> = report
         .problems
         .iter()
@@ -45,6 +47,8 @@ pub fn reindex(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
 
     Ok(serde_json::json!({
         "indexed": report.added,
+        "attachments_extracted": extract_report.extracted,
+        "attachments_errors": extract_report.errors,
         "problems": problems,
     }))
 }

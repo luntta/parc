@@ -111,7 +111,7 @@ test('a Copilot chat runs only parc’s read-only tools in an empty session, is 
   assert.equal(session.options.model, 'gpt-y');
   // Nothing but parc's tools, each read-only and named for parc; permission asks are refused.
   assert.deepEqual(session.options.tools.availableTools, ['custom:*']);
-  assert.deepEqual(session.options.tools.definitions.map(d => d.name).sort(), ['parc_get_fragment', 'parc_list_tags', 'parc_list_types', 'parc_recall', 'parc_search']);
+  assert.deepEqual(session.options.tools.definitions.map(d => d.name).sort(), ['parc_get_fragment', 'parc_list_tags', 'parc_list_types', 'parc_read_attachment', 'parc_recall', 'parc_search']);
   assert.ok(session.options.tools.definitions.every(d => d.skipPermission === true));
   assert.equal(session.options.permissions.onRequest({ kind: 'shell' }).kind, 'reject');
   assert.equal(session.options.systemMessage.mode, 'replace');

@@ -73,11 +73,11 @@ impl StatusCategory {
 /// keep working. Unknown words are open.
 pub fn fallback_category(status: &str) -> StatusCategory {
     match status {
-        "done" | "accepted" | "resolved" | "promoted" => StatusCategory::Done,
+        "done" | "accepted" | "resolved" | "promoted" | "processed" => StatusCategory::Done,
         "cancelled" | "superseded" | "deprecated" | "parked" | "discarded" => {
             StatusCategory::Closed
         }
-        "in-progress" | "mitigating" | "exploring" => StatusCategory::Active,
+        "in-progress" | "mitigating" | "exploring" | "reading" => StatusCategory::Active,
         _ => StatusCategory::Open,
     }
 }
@@ -88,6 +88,7 @@ const FALLBACK_SETTLED: &[&str] = &[
     "accepted",
     "resolved",
     "promoted",
+    "processed",
     "cancelled",
     "superseded",
     "deprecated",
@@ -490,7 +491,7 @@ pub fn is_builtin(name: &str) -> bool {
 }
 
 /// The built-in types, in the order `parc init` offers them.
-pub const BUILTIN_TYPES: &[&str] = &["note", "todo", "decision", "risk", "idea"];
+pub const BUILTIN_TYPES: &[&str] = &["note", "todo", "decision", "risk", "idea", "source"];
 
 /// Get the built-in template content for a type.
 pub fn get_builtin_template(type_name: &str) -> Option<&'static str> {
@@ -500,6 +501,7 @@ pub fn get_builtin_template(type_name: &str) -> Option<&'static str> {
         "decision" => Some(include_str!("builtin/templates/decision.md")),
         "risk" => Some(include_str!("builtin/templates/risk.md")),
         "idea" => Some(include_str!("builtin/templates/idea.md")),
+        "source" => Some(include_str!("builtin/templates/source.md")),
         _ => None,
     }
 }
@@ -1021,7 +1023,7 @@ mod tests {
             registry.resolve("t").unwrap().name
         );
         assert!(registry.resolve("nonexistent").is_none());
-        assert_eq!(registry.list().len(), 5);
+        assert_eq!(registry.list().len(), 6);
     }
 
     #[test]

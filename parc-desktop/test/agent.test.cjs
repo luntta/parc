@@ -126,7 +126,7 @@ test('a question runs the vault’s read-only tools, cites what they found and k
     assert.match(r.instructions, /\[\[ID\]\]/);
   }
   // Only the read tools, as the server lists them.
-  assert.deepEqual(one.tools.map(x => x.name).sort(), ['get_fragment', 'list_tags', 'list_types', 'recall', 'search']);
+  assert.deepEqual(one.tools.map(x => x.name).sort(), ['get_fragment', 'list_tags', 'list_types', 'read_attachment', 'recall', 'search']);
   // The fragment the user has open goes along as a developer message, once.
   assert.match(one.input[0].content[0].text, /Ferry desk/); assert.equal(one.input[0].role, 'developer');
   // The second request carries the whole first round back: reasoning (encrypted), the call and its output.
@@ -242,4 +242,45 @@ test('chats are saved after each answer, listed, reopened after a restart and co
   await assert.rejects(later.restore('c-2'), 'gone for good after a restart');
   // Chat IDs name files: nothing else gets through.
   await assert.rejects(later.remove('../config'), /Invalid chat/);
+});
+
+test('analyze reads attachment via read-only read_attachment and returns sanitized proposals without writing', async t => {
+  const { fake, auth, bot, vault, store, dir } = await setup(t);
+  const existing = await store.save({ title: 'Autumn ferry schedule', body: 'Check timetable updates before October.' });
+  const src = await store.save({ title: 'Quarterly report', body: '', type: 'source', tags: ['existing'] });
+  const docPath = path.join(dir, 'report.txt');
+  await fs.writeFile(docPath, 'Page one findings.\n\nAction: review ferry timetable before Q4 launch.');
+  await store.attach(src.id, docPath);
+  await auth.signIn();
+
+  fake.respond.push(
+    () => [completed([
+      { type: 'function_call', id: 'fc_1', call_id: 'a1', name: 'read_attachment', arguments: JSON.stringify({ id: src.id, filename: 'report.txt', from: 1, to: 2 }) }
+    ])],
+    request => {
+      const out = request.input.find(i => i.type === 'function_call_output');
+      assert.match(out.output, /ferry timetable/);
+      const json = JSON.stringify({
+        summary: 'Reports Q4 launch readiness and highlights ferry timetable review.',
+        tags: ['existing', 'q4-launch', '#ferry'],
+        links: [
+          { id: existing.id, reason: 'Discusses autumn ferry schedule.' },
+          { id: src.id, reason: 'Self link should be stripped.' },
+          { id: 'not-a-ulid', reason: 'Invalid ID should be stripped.' }
+        ],
+        todos: [{ title: 'Review ferry timetable before Q4 launch', body: 'See p. 1 of report.txt.' }]
+      });
+      return [completed([message(`\`\`\`json\n${json}\n\`\`\``)])];
+    }
+  );
+
+  const res = await bot.analyze({ vault: { path: vault, name: 'Test' }, id: src.id, filename: 'report.txt', provider: 'chatgpt' });
+  assert.equal(res.ok, true);
+  assert.match(res.proposal.summary, /Q4 launch/);
+  assert.deepEqual(res.proposal.tags, ['q4-launch', 'ferry']);
+  assert.deepEqual(res.proposal.links, [{ id: existing.id, reason: 'Discusses autumn ferry schedule.' }]);
+  assert.deepEqual(res.proposal.todos, [{ title: 'Review ferry timetable before Q4 launch', body: 'See p. 1 of report.txt.' }]);
+  // Read-only guarantee: analyze never wrote to the vault.
+  assert.equal((await store.list()).length, 2);
+  assert.deepEqual((await store.get(src.id)).tags, ['existing']);
 });

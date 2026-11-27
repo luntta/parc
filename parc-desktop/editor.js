@@ -32,18 +32,33 @@ class TaskBox extends WidgetType {
   }
   ignoreEvent() { return true; }
 }
-// [[id-prefix]] or [[id-prefix|label]] shown as the fragment it points at.
+// [[id-prefix]] or [[id-prefix|label]] (optionally followed by `p. 12` or `slide 3`) shown as the fragment it points at.
 class WikiLink extends WidgetType {
-  constructor(prefix, label, target, open) { super(); Object.assign(this, { prefix, label, target, open }); }
-  eq(o) { return o.prefix === this.prefix && o.label === this.label && o.target?.title === this.target?.title && o.target?.type === this.target?.type; }
+  constructor(prefix, label, target, open, part = null, partLabel = '') {
+    super();
+    Object.assign(this, { prefix, label, target, open, part, partLabel });
+  }
+  eq(o) {
+    return o.prefix === this.prefix && o.label === this.label && o.part === this.part && o.partLabel === this.partLabel
+      && o.target?.title === this.target?.title && o.target?.type === this.target?.type;
+  }
   toDOM() {
     const chip = document.createElement('span');
     chip.className = 'md-wiki';
     if (this.target) {
       chip.append(typeIcon(this.target.type));
       chip.append(this.label || this.target.title || 'Untitled');
-      chip.title = `Open ${this.target.title || 'fragment'}`;
-      chip.addEventListener('mousedown', e => { e.preventDefault(); this.open(this.prefix, e); });
+      if (this.partLabel) {
+        const loc = document.createElement('span');
+        loc.className = 'md-wiki-loc';
+        loc.textContent = this.partLabel;
+        chip.append(loc);
+      }
+      chip.title = `Open ${this.target.title || 'fragment'}${this.partLabel ? ` (${this.partLabel})` : ''}`;
+      chip.addEventListener('mousedown', e => {
+        e.preventDefault();
+        this.open(this.prefix, e, this.part ? { part: this.part } : undefined);
+      });
     } else {
       chip.dataset.missing = ''; chip.textContent = this.label || this.prefix;
       chip.title = `No fragment ${this.prefix} in this vault`;
@@ -51,6 +66,21 @@ class WikiLink extends WidgetType {
     return chip;
   }
   ignoreEvent() { return !!this.target; }
+}
+// Jump badge at the end of a document quote line (`> p. 12 · "…"`), clicking jumps the viewer to that passage.
+class QuoteJump extends WidgetType {
+  constructor(line, label, onOpen) { super(); Object.assign(this, { line, label, onOpen }); }
+  eq(o) { return o.line === this.line && o.label === this.label; }
+  toDOM() {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'md-quote-jump';
+    btn.textContent = `↗ ${this.label}`;
+    btn.title = `Show ${this.label} in document`;
+    btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); this.onOpen?.(this.line); });
+    return btn;
+  }
+  ignoreEvent() { return true; }
 }
 // On the line being edited, a link shows its source plus a faint note of what it resolves to.
 class WikiHint extends WidgetType {
@@ -101,6 +131,8 @@ class AttachWidget extends WidgetType {
 const refresh = StateEffect.define();
 const CODE = new Set(['InlineCode', 'CodeText', 'FencedCode', 'CodeBlock', 'URL', 'Autolink', 'HTMLTag', 'Comment']);
 const WIKI = /\[\[([0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{4,26})(?:\|([^\]\n]*))?\]\]/g;
+const WIKI_LOC = /^[ \t]+(?:(p\.\s*(\d+))|(slide\s+(\d+)))(?=$|[\s.,;:!?)\]])/i;
+const DOC_QUOTE = /^\s*>\s*(?:([^\s/\\]+?\.[A-Za-z0-9]{1,8})\s+)?(?:(p\.\s*\d+)|(slide\s+\d+)|(§\s*[^·\n]+?))\s*·\s*["“](.+?)["”]\s*$/;
 const ATTACH = /!\[\[attach:([^\]\n|]+?)(?:\|([^\]\n]*))?\]\]/g;
 const TAG = /(^|[\s(])(#[\p{L}\p{N}][\p{L}\p{N}_/-]*)/gu;
 
@@ -232,13 +264,34 @@ function liveMarks(view, links) {
     const text = doc.sliceString(from, to);
     const inCode = pos => { for (let n = tree.resolveInner(pos, 1); n; n = n.parent) if (CODE.has(n.name)) return true; return false; };
     for (const m of text.matchAll(WIKI)) {
-      const start = from + m.index, end = start + m[0].length;
+      const start = from + m.index;
+      let end = start + m[0].length;
       if (inCode(start)) continue;
       if (active(doc.lineAt(start).number)) {
         ranges.push(Decoration.mark({ class: 'md-wikisrc' }).range(start, end));
         ranges.push(Decoration.widget({ widget: new WikiHint(links.resolve(m[1].toUpperCase())), side: 1 }).range(end));
+      } else {
+        let part = null, partLabel = '';
+        const tail = WIKI_LOC.exec(doc.sliceString(end, Math.min(doc.length, end + 32)));
+        if (tail) {
+          part = Number.parseInt(tail[2] || tail[4], 10) || null;
+          partLabel = (tail[1] || tail[3] || '').replace(/\s+/g, ' ');
+          if (part) end += tail[0].length;
+        }
+        ranges.push(Decoration.replace({ widget: new WikiLink(m[1].toUpperCase(), m[2]?.trim(), links.resolve(m[1].toUpperCase()), links.open, part, partLabel) }).range(start, end));
       }
-      else ranges.push(Decoration.replace({ widget: new WikiLink(m[1].toUpperCase(), m[2]?.trim(), links.resolve(m[1].toUpperCase()), links.open) }).range(start, end));
+    }
+    if (links.openQuote) {
+      const firstLine = doc.lineAt(from).number, lastLine = doc.lineAt(to).number;
+      for (let ln = firstLine; ln <= lastLine; ln++) {
+        const lineObj = doc.line(ln);
+        if (inCode(lineObj.from)) continue;
+        const qm = DOC_QUOTE.exec(lineObj.text);
+        if (!qm) continue;
+        const locLabel = (qm[2] || qm[3] || qm[4] || '').trim().replace(/\s+/g, ' ');
+        ranges.push(Decoration.line({ class: 'md-doc-quote' }).range(lineObj.from));
+        ranges.push(Decoration.widget({ widget: new QuoteJump(ln, locLabel, links.openQuote), side: 1 }).range(lineObj.to));
+      }
     }
     for (const m of text.matchAll(ATTACH)) {
       const start = from + m.index, end = start + m[0].length;
@@ -351,6 +404,29 @@ export function markdownEditor(parent, onChange, links = NO_LINKS) {
       view.focus();
     },
     append(text) { const end = view.state.doc.length; view.dispatch({ changes: { from: end, insert: (end ? '\n' : '') + text } }); view.focus(); },
+    // Append a document quote with blank-line spacing and place the caret on the comment line below it.
+    insertQuote(quoteLine) {
+      const doc = view.state.doc, end = doc.length;
+      const tail = end ? doc.sliceString(Math.max(0, end - 2), end) : '';
+      const prefix = !end ? '' : tail === '\n\n' ? '' : tail.endsWith('\n') ? '\n' : '\n\n';
+      const insert = `${prefix}${quoteLine}\n`;
+      view.dispatch({
+        changes: { from: end, insert },
+        selection: { anchor: end + insert.length },
+        effects: EditorView.scrollIntoView(end + insert.length, { y: 'center' })
+      });
+      view.focus();
+    },
+    goToLine(lineNum) {
+      if (lineNum < 1 || lineNum > view.state.doc.lines) return false;
+      const line = view.state.doc.line(lineNum);
+      view.dispatch({
+        selection: { anchor: line.from, head: line.to },
+        effects: EditorView.scrollIntoView(line.from, { y: 'center' })
+      });
+      view.focus();
+      return true;
+    },
     lock(value) { view.dispatch({ effects: lock.reconfigure(EditorView.editable.of(!value)) }); },
     destroy() { view.destroy(); },
     refresh() { view.dispatch({ effects: refresh.of(null) }); },
