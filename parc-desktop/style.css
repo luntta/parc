@@ -89,7 +89,6 @@ kbd {
 html[data-omarchy] .cm-editor .cm-selectionBackground,
 html[data-omarchy] .cm-editor.cm-focused .cm-selectionBackground { background: var(--omarchy-selection) !important; }
 html:is([data-omarchy-opacity="glassy"], [data-omarchy-opacity="transparent"]) { background: transparent; }
-html:is([data-omarchy-opacity="glassy"], [data-omarchy-opacity="transparent"]) .group-bar { backdrop-filter: blur(12px); }
 html:is([data-omarchy-opacity="glassy"], [data-omarchy-opacity="transparent"]) .agent-compose { box-shadow: none; }
 html:is([data-omarchy-opacity="glassy"], [data-omarchy-opacity="transparent"]) body.quick { background: var(--quick-bg, var(--aihio-color-page-bg)); }
 ::-webkit-scrollbar { width: 10px; height: 10px; background: transparent; }
@@ -225,10 +224,18 @@ nav button[aria-current] .icon { color: var(--aihio-color-page-fg); }
 #recent::-webkit-scrollbar-thumb { border-width: 2px 3px 2px 1px; }
 #sidebar:not(:hover) #recent::-webkit-scrollbar-thumb { background-color: transparent; } /* shows while the sidebar is pointed at */
 #recent .group + .group { margin-top: .5rem; }
-/* A group's bar: the header (a type's opens its view, a tag's folds) and its fold mark. It sticks, opaque, over the rows. */
-.group-bar {
-  position: sticky; top: 0; z-index: 1; display: flex; align-items: center;
-  border-radius: var(--aihio-radius-interactive); background-color: var(--aihio-color-surface-bg);
+/* A group's bar: the header (a type's opens its view, a tag's folds) and its fold mark. It sticks to the top with no
+   background: rows are cut away as they pass under it instead. A background would stack on a translucent desk
+   (Omarchy's transparent and glassy windows) and show as a darker bar. The cut tracks each row through the list's
+   top --side-line, the band a stuck header fills, and applies only once the row reaches it, so a focus ring below
+   is never clipped. */
+.group-bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; }
+.group-rows > li {
+  animation: under-head linear forwards; animation-timeline: view(block var(--side-line) 0); animation-range: exit;
+}
+@keyframes under-head {
+  from { clip-path: inset(0 -.25rem -.25rem); }
+  to { clip-path: inset(100% -.25rem -.25rem); }
 }
 .group-head {
   display: flex; align-items: center; gap: .625rem; flex: 1; min-width: 0; height: var(--side-line); padding: 0 1.75rem 0 .5rem;
@@ -1239,15 +1246,21 @@ body:is([data-phase="recording"], [data-phase="transcribing"], [data-phase="star
 .palette-label.untitled { color: var(--muted); font-style: italic; }
 .palette-meta { color: var(--muted); font-size: var(--aihio-font-size-badge); white-space: nowrap; }
 .palette-none { padding: 1rem .625rem; color: var(--muted); }
-/* Grep: a fragment's heading, then its lines as line:column and the text around the match. */
+/* Grep: a fragment's heading, then its lines as line:column and the text around the match; an attached file's lines
+   follow under the file's name, each with its page (slide, section). */
 .palette-file {
   display: grid; grid-template-columns: 1rem minmax(0, 1fr) auto; align-items: center; column-gap: .75rem; padding: .625rem .625rem .25rem;
   font-weight: var(--aihio-font-weight-control);
 }
 .palette-file > .icon { color: var(--muted); }
 .palette-file:not(:first-child) { margin-top: .25rem; border-top: 1px solid var(--rule); }
-.palette-hit { grid-template-columns: 3.25rem minmax(0, 1fr); min-height: 1.875rem; }
-.palette-pos { color: var(--muted); font: .75rem var(--aihio-font-family-code); font-variant-numeric: tabular-nums; text-align: end; }
+.palette-attachment {
+  display: grid; grid-template-columns: .875rem minmax(0, 1fr); align-items: center; column-gap: .5rem; padding: .375rem .625rem .125rem 1.75rem;
+  color: var(--muted); font-size: var(--aihio-font-size-badge);
+}
+.palette-attachment > .icon { width: .875rem; height: .875rem; }
+.palette-hit { grid-template-columns: 3.75rem minmax(0, 1fr); min-height: 1.875rem; }
+.palette-pos { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: .75rem var(--aihio-font-family-code); font-variant-numeric: tabular-nums; text-align: end; }
 .palette-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: .8125rem/1.5 var(--aihio-font-family-code); }
 .palette-text mark, .md-hit { border-radius: 2px; background: color-mix(in oklch, var(--aihio-color-warning-bg) 35%, transparent); color: inherit; }
 .palette-foot { display: flex; flex-wrap: wrap; align-items: center; gap: .375rem; padding: .5rem 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: var(--aihio-font-size-badge); }

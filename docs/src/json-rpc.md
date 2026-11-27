@@ -199,14 +199,14 @@ Words are matched as text even when they contain punctuation (`half-baked`, `par
 
 ### fragment.grep
 
-Find the lines of fragment bodies that contain some text, like `grep`. The desktop's Go to… uses it for its `/` mode.
+Find the lines of fragment bodies, and of their attachments' extracted text (PDF pages, slides, document sections: what the sidecars hold), that contain some text, like `grep`. The desktop's Go to… uses it for its `/` mode.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `pattern` | string | yes | Text to find, at most 1000 characters. It is matched literally (no regular expressions), ignoring case unless it contains an uppercase letter |
 | `limit` | number | no | Most matching lines to return (default 200, at most 1000) |
 
-**Result:** `{ "matches": [...], "truncated": <bool> }`. Each match is a fragment, most recently edited first, archived ones included: `{ "id", "type", "title", "status", "archived", "updated_at", "lines": [...] }`. Each line is `{ "line", "column", "text", "ranges" }`: `line` is 1-based within the body as an editor shows it (the blank line after the frontmatter isn't counted), `column` is the 1-based character column of the line's first match, `text` is the whole line, and `ranges` lists every match in it as `[start, end)` character offsets. `truncated` is true when more lines matched than were returned.
+**Result:** `{ "matches": [...], "truncated": <bool> }`. Each match is a fragment, most recently edited first, archived ones included: `{ "id", "type", "title", "status", "archived", "updated_at", "lines": [...] }`. Each line is `{ "line", "column", "text", "ranges" }`: `line` is 1-based within the body as an editor shows it (the blank line after the frontmatter isn't counted), `column` is the 1-based character column of the line's first match, `text` is the whole line, and `ranges` lists every match in it as `[start, end)` character offsets. A fragment's body lines come first, then its attachments' lines by filename and part; an attachment line also has `attachment` (the filename), `part` (the 1-based page, slide or section) and `label` (`p. 12`, `slide 3`, `§ Heading`), and its `line` counts within that part. Body lines have none of the three. Attachments whose text hasn't been extracted yet aren't searched. `truncated` is true when more lines matched than were returned.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"fragment.grep","params":{"pattern":"ferry","limit":50}}

@@ -3,8 +3,9 @@
 //   anything   fragments and commands ranked together, like the TUI's launcher (the [[ picker's ranking);
 //   >          commands only;
 //   /          grep, as in Vim: the lines of fragment bodies that contain the text, under their fragment with
-//              line:column. The preview marks every match and centres the selected one; Enter opens the
-//              fragment with that match selected.
+//              line:column, then the lines of its attached documents' text under the file's name, with the page
+//              (slide, section). The preview marks every match and centres the selected one; Enter opens the
+//              fragment with that match selected, or the document at that page with the text found.
 import { rank, fold, markdownPreview } from './editor.js';
 import { icon, typeIcon } from './icons.js';
 
@@ -48,15 +49,19 @@ function lineText({ text, ranges }) {
   out.append(chars.slice(at).join(''));
   return out;
 }
+// Where an attachment line is, short enough for the list: `p. 12`, `slide 3`, `§ 4` (the heading is in the preview).
+const partRef = l => l.label?.startsWith('§') ? `§ ${l.part}` : l.label || `${l.part}`;
 
 /**
  * fragments(): rows to rank. commands(): [{ label, run, icon?, glyph?, keys?, keywords? }].
  * describe(row): short facts for a list row; facts(row): the preview's facts, as strings.
- * open(row, at?, how?): open a fragment, at = { line, column, pattern } to select a grep match; how.side opens it beside.
- * load(row): the saved fragment, with its body. grep(text): { hits: rows with `lines`, truncated }.
+ * open(row, at?, how?): open a fragment, at = { line, column, pattern, attachment?, part? } to show a grep match
+ * (in the body, or in that attachment's part); how.side opens it beside.
+ * load(row): the saved fragment, with its body. loadPart(row, filename, part): the text of an attachment's part.
+ * grep(text): { hits: rows with `lines`, truncated }; a line with `attachment` is in that file's `part` (`label`).
  * linksFor(row): how the preview resolves and opens that fragment's [[links]].
  */
-export function palette({ fragments, commands, describe, facts = r => [describe(r)], open, load, grep, linksFor }) {
+export function palette({ fragments, commands, describe, facts = r => [describe(r)], open, load, loadPart, grep, linksFor }) {
   const root = el('div', 'palette'), box = el('div', 'palette-box'), bar = el('div', 'palette-bar');
   const chip = el('span', 'palette-mode'), input = el('input', 'palette-input');
   const panes = el('div', 'palette-panes'), list = el('ul', 'palette-list'), pane = el('section', 'palette-preview');
@@ -116,16 +121,23 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
 
   function render(sections = false) {
     list.replaceChildren();
-    let section = '';
+    let section = '', file = '';
     const heading = node => { node.setAttribute('role', 'presentation'); list.append(node); };
     items.forEach((item, i) => {
       if (item.kind === 'line') {
         const k = fragmentKey(item.r);
         if (k !== section) { // the fragment, once, above its lines
-          section = k;
+          section = k; file = '';
           const h = el('li', 'palette-file');
           h.append(typeIcon(item.r.type), el('span', 'palette-label' + (item.r.title ? '' : ' untitled'), item.r.title || 'Untitled'),
             el('span', 'palette-meta', `${item.count} ${item.count === 1 ? 'line' : 'lines'}`));
+          heading(h);
+        }
+        const where = item.l.attachment || '';
+        if (where !== file) { // an attached file, once, above the lines of its text
+          file = where;
+          const h = el('li', 'palette-attachment');
+          h.append(icon('paperclip'), el('span', 'palette-label', where));
           heading(h);
         }
       } else if (sections) {
@@ -139,9 +151,11 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
       } else if (item.kind === 'fragment') {
         li.append(typeIcon(item.r.type), el('span', 'palette-label' + (item.r.title ? '' : ' untitled'), item.r.title || 'Untitled'), el('span', 'palette-meta', describe(item.r)));
       } else {
+        const l = item.l, pos = el('span', 'palette-pos', l.attachment ? partRef(l) : `${l.line}:${l.column}`);
         li.classList.add('palette-hit');
-        li.setAttribute('aria-label', `${item.r.title || 'Untitled'}, line ${item.l.line}, column ${item.l.column}: ${item.l.text.trim()}`);
-        li.append(el('span', 'palette-pos', `${item.l.line}:${item.l.column}`), lineText(item.l));
+        li.setAttribute('aria-label', `${item.r.title || 'Untitled'}, ${l.attachment ? `${l.attachment}, ${l.label}, line ${l.line}` : `line ${l.line}, column ${l.column}`}: ${l.text.trim()}`);
+        if (l.attachment) pos.title = l.label;
+        li.append(pos, lineText(l));
       }
       li.onpointermove = () => { if (active !== i) { active = i; mark(); } };
       li.onclick = e => choose(i, e.ctrlKey || e.metaKey);
@@ -156,9 +170,10 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
     const current = list.querySelector(`#palette-${active}`);
     if (current) {
       input.setAttribute('aria-activedescendant', current.id);
-      // The first row under a heading (a fragment's, or Recent) brings the heading into view with it.
-      const above = current.previousElementSibling;
-      if (above?.getAttribute('role') === 'presentation') above.scrollIntoView({ block: 'nearest' });
+      // The first row under a heading (a fragment's and its file's, or Recent) brings the headings into view with it.
+      let above = current.previousElementSibling, top = null;
+      while (above?.getAttribute('role') === 'presentation') { top = above; above = above.previousElementSibling; }
+      top?.scrollIntoView({ block: 'nearest' });
       current.scrollIntoView({ block: 'nearest' });
     } else input.removeAttribute('aria-activedescendant');
     preview();
@@ -171,7 +186,7 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
   function preview() {
     const item = items[active];
     const id = !item ? `none:${mode}:${!!pattern.trim()}` : item.kind === 'command' ? `command:${item.c.label}`
-      : `${fragmentKey(item.r)}:${item.kind === 'line' ? `${item.l.line}:${item.l.column}:${item.pattern}` : ''}`;
+      : `${fragmentKey(item.r)}:${item.kind === 'line' ? `${item.l.attachment ?? ''}:${item.l.part ?? ''}:${item.l.line}:${item.l.column}:${item.pattern}` : ''}`;
     if (id === shown) return;
     shown = id;
     const run = ++previewRun;
@@ -179,7 +194,7 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
     if (!item) {
       if (mode === 'grep' && !pattern.trim()) {
         showBlank(el('strong', '', 'Search inside fragments'),
-          el('p', '', 'Type after / to list every line that contains the text, with its line and column. Matching is exact text, ignoring case unless you type an uppercase letter.'));
+          el('p', '', 'Type after / to list every line that contains the text, in fragments and in the documents attached to them, with where it is: line and column, or the page. Matching is exact text, ignoring case unless you type an uppercase letter.'));
       } else showBlank();
       return;
     }
@@ -194,17 +209,22 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
     }
     const r = item.r, at = item.kind === 'line' ? item.l : null, fact = el('p', 'pv-facts');
     fact.append(typeIcon(r.type), ...facts(r).flatMap((f, i) => i ? [el('span', 'pv-dot', '·'), f] : [f]));
-    if (at) fact.append(el('span', 'pv-dot', '·'), el('span', 'pv-pos', `Line ${at.line}, column ${at.column}`));
+    if (at) fact.append(el('span', 'pv-dot', '·'), el('span', 'pv-pos', at.attachment ? `${at.attachment}, ${at.label}, line ${at.line}` : `Line ${at.line}, column ${at.column}`));
     head.replaceChildren(fact, el('h2', 'pv-title' + (r.title ? '' : ' untitled'), r.title || 'Untitled'));
     blank.hidden = true; body.hidden = false;
-    const same = loaded === fragmentKey(r);
+    // An attachment line shows the text of its part (page, slide, section), not the fragment's body.
+    const source = at?.attachment ? `${fragmentKey(r)}\u0000${at.attachment}\u0000${at.part}` : fragmentKey(r);
+    const same = loaded === source;
     if (!same) body.dataset.loading = '';
     previewTimer = setTimeout(async () => {
-      let note;
-      try { note = await load(r); } catch (err) { if (run === previewRun) { loaded = ''; showBlank(el('p', '', `Can’t show this fragment: ${message(err)}`)); } return; }
+      let text;
+      try { text = at?.attachment ? await loadPart(r, at.attachment, at.part) : (await load(r)).body; } catch (err) {
+        if (run === previewRun) { loaded = ''; showBlank(el('p', '', `Can’t show this ${at?.attachment ? 'part of the file' : 'fragment'}: ${message(err)}`)); }
+        return;
+      }
       if (run !== previewRun) return;
-      const current = viewer.show((note.body || '').replace(/^\n/, ''), { links: linksFor(r), pattern: at ? item.pattern : '', line: at?.line, column: at?.column });
-      loaded = fragmentKey(r); delete body.dataset.loading;
+      const current = viewer.show((text || '').replace(/^\n/, ''), { links: linksFor(r), pattern: at ? item.pattern : '', line: at?.line, column: at?.column });
+      loaded = source; delete body.dataset.loading;
       if (current) viewer.scrollTo(current.from); else if (!same) pane.scrollTop = 0;
     }, same ? 0 : 70);
   }
@@ -214,7 +234,7 @@ export function palette({ fragments, commands, describe, facts = r => [describe(
     if (!item) return;
     close(false);
     if (item.kind === 'command') item.c.run();
-    else open(item.r, item.kind === 'line' ? { line: item.l.line, column: item.l.column, pattern: item.pattern } : undefined, { side });
+    else open(item.r, item.kind === 'line' ? { line: item.l.line, column: item.l.column, pattern: item.pattern, attachment: item.l.attachment, part: item.l.part } : undefined, { side });
   }
   function close(restore = true) {
     if (root.hidden) return;

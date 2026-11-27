@@ -2675,6 +2675,18 @@ function loadNote(r) {
   if (previewCache.size > 40) previewCache.delete(previewCache.keys().next().value);
   return note;
 }
+// The text of an attachment's page (slide, section), for a grep match's preview; a few kept, like fragments.
+const partCache = new Map();
+function loadPart(r, filename, part) {
+  const k = JSON.stringify([r.vault, r.id, filename, part]), cached = partCache.get(k);
+  if (cached?.updated_at === r.updated_at) return cached.text;
+  const text = api.attachmentText(r.vault, r.id, filename, { from: part, to: part, readyOnly: true })
+    .then(res => res.parts?.find(p => p.part === part)?.text ?? '');
+  partCache.delete(k); partCache.set(k, { updated_at: r.updated_at, text });
+  text.catch(() => { if (partCache.get(k)?.text === text) partCache.delete(k); });
+  if (partCache.size > 40) partCache.delete(partCache.keys().next().value);
+  return text;
+}
 // "/" in Go to…: every vault in view, merged, most recently edited first.
 async function grepScope(text) {
   const paths = scope ? [scope] : vaults.map(v => v.path);
@@ -2695,9 +2707,15 @@ const goTo = palette({
   fragments: () => rows, commands,
   describe: r => [typeLabel(r.type), !scope && name(r.vault), age(r.updated_at)].filter(Boolean).join(' · '),
   facts: r => [typeLabel(r.type), r.status && capital(r.status), r.archived && 'Archived', !scope && name(r.vault), edited(r.updated_at)].filter(Boolean),
-  // A grep match opens with the match selected, the caret ready to edit there. Ctrl+Enter opens it beside.
-  open: (r, at, how = {}) => openRow(r, { focus: true, side: !!how.side }).then(() => { const d = tabOf(r); if (at && d && d === tab) d.editor.reveal(at); }),
-  load: loadNote, grep: grepScope, linksFor: previewLinks
+  // A grep match opens with the match selected, the caret ready to edit there; one in an attached document opens
+  // it at that page with the text found. Ctrl+Enter opens it beside.
+  open: (r, at, how = {}) => openRow(r, { focus: true, side: !!how.side, ...(at?.attachment ? { part: at.part, filename: at.attachment } : {}) }).then(() => {
+    const d = tabOf(r);
+    if (!at || !d || d !== tab) return;
+    if (at.attachment) d.sourceViewer?.find(at.pattern, { filename: at.attachment, part: at.part });
+    else d.editor.reveal(at);
+  }),
+  load: loadNote, loadPart, grep: grepScope, linksFor: previewLinks
 });
 
 // ── Wiring ──

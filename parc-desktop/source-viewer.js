@@ -165,6 +165,8 @@ export function sourceViewer(d, deps) {
   let loadSeq = 0;
   let findMatches = [];
   let findIndex = -1;
+  let docReady = false; // the current file is showing and its find bar can search it
+  let pendingFind = null; // { query, filename, part }: a find to run once that file is showing
   let pendingSelection = null; // { text, part, heading }
   let railMode = 'notes';
   let floatBtn = null;
@@ -205,6 +207,7 @@ export function sourceViewer(d, deps) {
     totalParts = 0;
     findMatches = [];
     findIndex = -1;
+    docReady = false;
     pendingSelection = null;
     hideFloatQuote();
     pane.replaceChildren();
@@ -218,6 +221,7 @@ export function sourceViewer(d, deps) {
     if (!active) return;
     active = false;
     currentFile = null;
+    pendingFind = null;
     teardownViewer();
     delete d.ui.scroller.dataset.sourceMode;
     delete d.ui.scroller.dataset.rail;
@@ -834,7 +838,23 @@ export function sourceViewer(d, deps) {
     next.onclick = () => onStep(1, input.value, count);
     close.onclick = () => { bar.hidden = true; onClear(count); };
     bar.append(input, count, prev, next, close);
+    // Open with `query` searched, its first match from part `from` on selected.
+    bar.find = (query, from) => { clearTimeout(timer); bar.hidden = false; input.value = query; onSearch(query, count, from); };
     return bar;
+  }
+
+  // Search the document for `query` once `filename` is showing (now, if it is), from `part` on: a grep match
+  // opened from Go to… lands on its page with the text found.
+  function find(query, { filename = null, part = null } = {}) {
+    if (!active || !query) return;
+    pendingFind = { query, filename: filename || currentFile, part };
+    runPendingFind();
+  }
+  function runPendingFind() {
+    const want = pendingFind;
+    if (!want || !docReady || want.filename !== currentFile) return;
+    pendingFind = null;
+    pane.querySelector('.sv-findbar')?.find(want.query, want.part);
   }
 
   // ── Open PDF attachment ──
@@ -922,6 +942,7 @@ export function sourceViewer(d, deps) {
       }
       setCurrentPart(viewer.currentPageNumber, { persist: false });
       notifyPageChanged();
+      docReady = true; runPendingFind(); // pdf.js finds from the page now showing
     });
     eventBus.on('pagechanging', ({ pageNumber }) => {
       if (seq !== loadSeq) return;
@@ -994,7 +1015,7 @@ export function sourceViewer(d, deps) {
 
     let docBox;
     const findBar = buildFindBar({
-      onSearch(query, countEl) {
+      onSearch(query, countEl, fromPart = 0) {
         if (!docBox) return;
         clearHighlights(docBox, 'mark.sv-find-hl');
         findMatches = []; findIndex = -1;
@@ -1023,10 +1044,11 @@ export function sourceViewer(d, deps) {
           tn.replaceWith(frag);
         }
         if (findMatches.length) {
-          findIndex = 0;
-          findMatches[0].dataset.current = '';
-          findMatches[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
-          countEl.textContent = `1 / ${findMatches.length}`;
+          const from = fromPart ? findMatches.findIndex(m => Number(m.closest('.sv-part')?.dataset.part) >= fromPart) : 0;
+          findIndex = Math.max(0, from);
+          findMatches[findIndex].dataset.current = '';
+          findMatches[findIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+          countEl.textContent = `${findIndex + 1} / ${findMatches.length}`;
         } else {
           countEl.textContent = '0 / 0';
         }
@@ -1120,6 +1142,7 @@ export function sourceViewer(d, deps) {
     }
     applyAllHighlights();
     notifyPageChanged();
+    docReady = true; runPendingFind();
   }
 
   // ── Fallback / Image viewer ──
@@ -1163,6 +1186,7 @@ export function sourceViewer(d, deps) {
     const seq = ++loadSeq;
     teardownViewer();
     currentFile = filename;
+    if (pendingFind && pendingFind.filename !== filename) pendingFind = null;
     const f = d.opened;
     if (!f) return;
 
@@ -1267,6 +1291,7 @@ export function sourceViewer(d, deps) {
     },
     onNotesChanged: scheduleHighlights,
     goToPart,
+    find,
     jumpToQuoteLine,
     quoteSelection: quoteCurrentSelection,
     analyze: runAnalyze,

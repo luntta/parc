@@ -790,6 +790,21 @@ async function check() {
   await js('[...document.querySelectorAll("[data-current] .inbox-row")].find(r => r.textContent.includes("Briefing")).click()');
   await until('document.querySelectorAll("[data-current] .sv-md-doc .sv-section").length === 2');
 
+  // "/" in Go to… greps the documents' text too: a PDF line under the file's name with its page, previewed from that
+  // page's text, opening the PDF at that page with the text found.
+  await goTo('/crew rotation');
+  await until('document.querySelector(".palette-attachment")?.textContent === "sample.pdf" && document.querySelector(".palette-hit[aria-selected=true] .palette-pos")?.textContent === "p. 2"');
+  assert.equal(await js('document.querySelector(".palette-hit[aria-selected=true] mark").textContent'), 'crew rotation');
+  await until('document.querySelector(".pv-pos")?.textContent === "sample.pdf, p. 2, line 1" && document.querySelector(".palette-preview .md-hit-current")?.textContent === "crew rotation"');
+  await paletteKey('Enter');
+  await until('document.querySelector(".palette").hidden && document.querySelector("[data-current] .sv-page-input")?.value === "2"');
+  await until('document.querySelector("[data-current] .sv-findbar")?.hidden === false && document.querySelector("[data-current] .sv-find-input").value === "crew rotation" && document.querySelector("[data-current] .sv-find-count").textContent === "1 / 1"');
+  // A section of a Markdown document: § and its number, and the viewer's find lands in that section.
+  await goTo('/battery');
+  await until('document.querySelector(".palette-attachment")?.textContent === "briefing.md" && document.querySelector(".palette-hit[aria-selected=true] .palette-pos")?.textContent === "§ 2"');
+  await paletteKey('Enter');
+  await until('document.querySelector("[data-current] mark.sv-find-hl[data-current]")?.closest(".sv-part")?.dataset.part === "2"');
+
   // Search inside attachments with `in:files` and verify clickable file_hits render.
   await js('document.querySelector("nav [data-view=search]").click()');
   await until(idle);
@@ -818,7 +833,7 @@ async function check() {
   assert.equal(await js('matchMedia("(prefers-color-scheme: dark)").matches'), false);
   assert.match(await js('document.documentElement.style.getPropertyValue("--desk")'), /^rgba\(227, 228, 232, 0\.65\)$/);
 
-  console.log('PASS: Pulse as home (with daily review), dictation, live Markdown, [[ link picker, search, typed capture (templates, string & list fields, toggle, promote), attachments (drop, strip, inline parc-attach:// preview, detach), external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep, sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash view with undo/restore, vault health and reindex, remove vault, Omarchy live System theme (colors, mode, rounding, glass), live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs and the layout and drafts across a reload, and the Agent (ChatGPT + GitHub Copilot)');
+  console.log('PASS: Pulse as home (with daily review), dictation, live Markdown, [[ link picker, search, typed capture (templates, string & list fields, toggle, promote), attachments (drop, strip, inline parc-attach:// preview, detach), external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep (fragments and their documents), sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash view with undo/restore, vault health and reindex, remove vault, Omarchy live System theme (colors, mode, rounding, glass), live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs and the layout and drafts across a reload, and the Agent (ChatGPT + GitHub Copilot)');
 }
 check().then(() => finish(0), err => { console.error(err); finish(1); });
 function finish(code) {

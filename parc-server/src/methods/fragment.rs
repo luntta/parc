@@ -408,7 +408,8 @@ pub struct GrepParams {
     pub limit: Option<usize>,
 }
 
-/// Lines of fragment bodies that contain `pattern` (literal text, smart case).
+/// Lines of fragment bodies, and of their attachments' extracted text, that
+/// contain `pattern` (literal text, smart case).
 pub fn grep(vault: &Path, params: Value) -> Result<Value, RpcError> {
     let p: GrepParams = extract_params(params)?;
     let limit = p.limit.unwrap_or(200).min(1000);

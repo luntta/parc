@@ -1,12 +1,17 @@
-//! Find text inside fragment bodies line by line, like grep: what `/` searches
-//! in the desktop's Go to…. Literal text with smart case (case-insensitive
-//! unless the pattern has an uppercase letter), read from the index, which
-//! holds every fragment's body.
+//! Find text inside fragment bodies and their attachments line by line, like
+//! grep: what `/` searches in the desktop's Go to…. Literal text with smart
+//! case (case-insensitive unless the pattern has an uppercase letter), read
+//! from the index, which holds every fragment's body and the extracted text of
+//! its attachments (PDF pages, slides, sections: the sidecars' text).
 
+use std::collections::HashMap;
+
+use regex::Regex;
 use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::error::ParcError;
+use crate::extract::PartUnit;
 
 /// The longest pattern [`grep`] accepts, in characters.
 pub const MAX_PATTERN: usize = 1000;
@@ -14,11 +19,12 @@ pub const MAX_PATTERN: usize = 1000;
 /// they are: a body can be one very long line.
 const MAX_TEXT_BYTES: usize = 1 << 20;
 
-/// One body line that matches.
+/// One line that matches: of the body, or of an attachment's extracted text.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GrepLine {
     /// 1-based line of the body as it is edited: the blank line that
-    /// separates the body from the frontmatter is not counted.
+    /// separates the body from the frontmatter is not counted. For an
+    /// attachment line, the line within its part (counted the same way).
     pub line: usize,
     /// 1-based column of the line's first match, in characters.
     pub column: usize,
@@ -26,9 +32,20 @@ pub struct GrepLine {
     pub text: String,
     /// Every match in the line, as `[start, end)` character offsets into `text`.
     pub ranges: Vec<(usize, usize)>,
+    /// The attachment's filename when the line is from its extracted text
+    /// rather than the body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<String>,
+    /// 1-based page, slide or section of `attachment` that holds the line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part: Option<usize>,
+    /// Where in `attachment`, for people: `p. 12`, `slide 3`, `§ Heading`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
-/// A fragment with the lines of its body that match.
+/// A fragment with the lines that match: its body's, then its attachments'
+/// (by filename, then part).
 #[derive(Debug, Clone, Serialize)]
 pub struct GrepHit {
     pub id: String,
@@ -43,14 +60,16 @@ pub struct GrepHit {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GrepResult {
-    /// Fragments most recently edited first; lines in body order.
+    /// Fragments most recently edited first; each one's body lines in order,
+    /// then its attachment lines.
     pub matches: Vec<GrepHit>,
     /// True when more lines matched than `limit` (or the text cap) allowed.
     pub truncated: bool,
 }
 
-/// Search every indexed fragment's body for `pattern`, returning up to
-/// `limit` matching lines. Archived fragments are included and marked.
+/// Search every indexed fragment's body, and its attachments' extracted text,
+/// for `pattern`, returning up to `limit` matching lines. Archived fragments
+/// are included and marked.
 pub fn grep(conn: &Connection, pattern: &str, limit: usize) -> Result<GrepResult, ParcError> {
     let mut result = GrepResult {
         matches: Vec::new(),
@@ -72,52 +91,146 @@ pub fn grep(conn: &Connection, pattern: &str, limit: usize) -> Result<GrepResult
         .build()
         .map_err(|e| ParcError::ValidationError(e.to_string()))?;
 
+    let mut parts = matching_parts(conn, &re)?;
+    let mut part_text = conn.prepare("SELECT text FROM attachment_fts WHERE rowid = ?1")?;
     let mut stmt = conn.prepare(
         "SELECT id, type, title, status, archived, updated_at, body FROM fragments \
          ORDER BY updated_at DESC, id",
     )?;
     let mut rows = stmt.query([])?;
-    let (mut lines_left, mut bytes) = (limit, 0usize);
-    'fragments: while let Some(row) = rows.next()? {
+    let mut budget = Budget {
+        lines_left: limit,
+        bytes: 0,
+    };
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
         let body: String = row.get(6)?;
-        let body = body.strip_prefix('\n').unwrap_or(&body);
-        if !re.is_match(body) {
+        let in_body = re.is_match(&body);
+        let in_parts = parts.remove(&id);
+        if !in_body && in_parts.is_none() {
             continue;
         }
         let mut lines = Vec::new();
-        for (i, raw) in body.split('\n').enumerate() {
-            let text = raw.strip_suffix('\r').unwrap_or(raw);
-            let ranges: Vec<(usize, usize)> = re
-                .find_iter(text)
-                .map(|m| {
-                    let start = text[..m.start()].chars().count();
-                    (start, start + m.as_str().chars().count())
-                })
-                .collect();
-            let Some(&(first, _)) = ranges.first() else {
-                continue;
-            };
-            if lines_left == 0 || bytes + text.len() > MAX_TEXT_BYTES {
-                result.truncated = true;
-                if !lines.is_empty() {
-                    result.matches.push(hit(row, lines)?);
-                }
-                break 'fragments;
+        let mut room = !in_body || push_lines(&body, &re, None, &mut budget, &mut lines);
+        for p in in_parts.unwrap_or_default() {
+            if !room {
+                break;
             }
-            lines_left -= 1;
-            bytes += text.len();
-            lines.push(GrepLine {
-                line: i + 1,
-                column: first + 1,
-                text: text.to_string(),
-                ranges,
-            });
+            let text: String = part_text.query_row([p.rowid], |r| r.get(0))?;
+            let at = Place {
+                label: p.unit.format_ref(p.part, Some(&text)),
+                filename: p.filename,
+                part: p.part,
+            };
+            room = push_lines(&text, &re, Some(&at), &mut budget, &mut lines);
         }
         if !lines.is_empty() {
             result.matches.push(hit(row, lines)?);
         }
+        if !room {
+            result.truncated = true;
+            break;
+        }
     }
     Ok(result)
+}
+
+/// An attachment part whose text matches, found before its text is read again
+/// line by line.
+struct PartRef {
+    rowid: i64,
+    filename: String,
+    part: usize,
+    unit: PartUnit,
+}
+
+/// Where an attachment line is, as [`GrepLine`] reports it.
+struct Place {
+    filename: String,
+    part: usize,
+    label: String,
+}
+
+struct Budget {
+    lines_left: usize,
+    bytes: usize,
+}
+
+/// The attachment parts that contain `re`, by fragment ID, in filename and
+/// part order. Only row IDs are kept: the matching lines are read when their
+/// fragment's turn comes, so the limit bounds what is held.
+fn matching_parts(
+    conn: &Connection,
+    re: &Regex,
+) -> Result<HashMap<String, Vec<PartRef>>, ParcError> {
+    let mut stmt = conn.prepare(
+        "SELECT a.rowid, a.fragment_id, a.filename, CAST(a.part AS INTEGER), af.unit, a.text
+         FROM attachment_fts a
+         LEFT JOIN attachment_files af ON af.fragment_id = a.fragment_id AND af.filename = a.filename",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut found: HashMap<String, Vec<PartRef>> = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let text: String = row.get(5)?;
+        if !re.is_match(&text) {
+            continue;
+        }
+        let unit: Option<String> = row.get(4)?;
+        found.entry(row.get(1)?).or_default().push(PartRef {
+            rowid: row.get(0)?,
+            filename: row.get(2)?,
+            part: row.get::<_, i64>(3)?.max(1) as usize,
+            unit: unit
+                .as_deref()
+                .and_then(PartUnit::parse)
+                .unwrap_or(PartUnit::Page),
+        });
+    }
+    for refs in found.values_mut() {
+        refs.sort_by(|a, b| a.filename.cmp(&b.filename).then(a.part.cmp(&b.part)));
+    }
+    Ok(found)
+}
+
+/// Add `text`'s matching lines to `lines`, as lines of the body or, with
+/// `at`, of that attachment part. False when `budget` ran out first: the
+/// result is truncated.
+fn push_lines(
+    text: &str,
+    re: &Regex,
+    at: Option<&Place>,
+    budget: &mut Budget,
+    lines: &mut Vec<GrepLine>,
+) -> bool {
+    let text = text.strip_prefix('\n').unwrap_or(text);
+    for (i, raw) in text.split('\n').enumerate() {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let ranges: Vec<(usize, usize)> = re
+            .find_iter(line)
+            .map(|m| {
+                let start = line[..m.start()].chars().count();
+                (start, start + m.as_str().chars().count())
+            })
+            .collect();
+        let Some(&(first, _)) = ranges.first() else {
+            continue;
+        };
+        if budget.lines_left == 0 || budget.bytes + line.len() > MAX_TEXT_BYTES {
+            return false;
+        }
+        budget.lines_left -= 1;
+        budget.bytes += line.len();
+        lines.push(GrepLine {
+            line: i + 1,
+            column: first + 1,
+            text: line.to_string(),
+            ranges,
+            attachment: at.map(|p| p.filename.clone()),
+            part: at.map(|p| p.part),
+            label: at.map(|p| p.label.clone()),
+        });
+    }
+    true
 }
 
 fn hit(row: &rusqlite::Row, lines: Vec<GrepLine>) -> Result<GrepHit, ParcError> {
@@ -230,5 +343,103 @@ mod tests {
         assert_eq!(r.matches[1].lines.len(), 1);
         assert!(grep(&conn, "", 10).unwrap().matches.is_empty());
         assert!(grep(&conn, &"x".repeat(MAX_PATTERN + 1), 10).is_err());
+    }
+
+    /// Index an attachment's extracted parts as `extract::store` does.
+    fn attach(conn: &Connection, id: &str, filename: &str, unit: &str, parts: &[&str]) {
+        conn.execute(
+            "INSERT INTO attachment_files (fragment_id, filename, sha256, size, mtime_ns, unit, format, parts, status)
+             VALUES (?1, ?2, '', 0, 0, ?3, 'text', ?4, 'ready')",
+            rusqlite::params![id, filename, unit, parts.len() as i64],
+        )
+        .unwrap();
+        for (i, text) in parts.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO attachment_fts (fragment_id, filename, part, text) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![id, filename, (i + 1) as i64, text],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn attachment_lines_follow_the_body_with_their_page() {
+        let (_tmp, conn) = vault();
+        let id = add(&conn, "Harbour", "the ferry timetable", 0, false);
+        attach(
+            &conn,
+            &id,
+            "b.pdf",
+            "page",
+            &["Nothing here", "Line one\nThe Ferry leaves at 9"],
+        );
+        attach(
+            &conn,
+            &id,
+            "a.docx",
+            "section",
+            &["## Routes\nferry routes"],
+        );
+        let r = grep(&conn, "ferry", 10).unwrap();
+        assert_eq!(r.matches.len(), 1);
+        let lines = &r.matches[0].lines;
+        let places: Vec<_> = lines
+            .iter()
+            .map(|l| {
+                (
+                    l.attachment.as_deref(),
+                    l.part,
+                    l.label.as_deref(),
+                    l.line,
+                    l.column,
+                )
+            })
+            .collect();
+        assert_eq!(
+            places,
+            vec![
+                (None, None, None, 1, 5),
+                (Some("a.docx"), Some(1), Some("§ Routes"), 2, 1),
+                (Some("b.pdf"), Some(2), Some("p. 2"), 2, 5),
+            ]
+        );
+        assert_eq!(lines[2].text, "The Ferry leaves at 9");
+        assert_eq!(lines[2].ranges, vec![(4, 9)]);
+    }
+
+    #[test]
+    fn a_fragment_found_only_by_its_attachment_and_the_limit_counts_both() {
+        let (_tmp, conn) = vault();
+        let doc = add(&conn, "Report", "my notes", 0, false);
+        attach(&conn, &doc, "report.pdf", "page", &["dock\ndock", "dock"]);
+        let note = add(&conn, "Older", "dock", 5, false);
+        let r = grep(&conn, "dock", 10).unwrap();
+        let ids: Vec<_> = r.matches.iter().map(|h| h.id.clone()).collect();
+        assert_eq!(ids, vec![doc.clone(), note]);
+        assert_eq!(r.matches[0].lines.len(), 3);
+        assert!(r.matches[0]
+            .lines
+            .iter()
+            .all(|l| l.attachment.as_deref() == Some("report.pdf")));
+
+        let r = grep(&conn, "dock", 2).unwrap();
+        assert!(r.truncated);
+        assert_eq!(r.matches.len(), 1);
+        assert_eq!(r.matches[0].lines.len(), 2);
+        // An uppercase letter is case-sensitive in attachments too.
+        assert!(grep(&conn, "Dock", 10).unwrap().matches.is_empty());
+    }
+
+    #[test]
+    fn body_lines_say_nothing_about_attachments() {
+        let (_tmp, conn) = vault();
+        add(&conn, "A", "plain", 0, false);
+        let json = serde_json::to_value(grep(&conn, "plain", 10).unwrap()).unwrap();
+        let line = &json["matches"][0]["lines"][0];
+        assert!(
+            line.get("attachment").is_none()
+                && line.get("part").is_none()
+                && line.get("label").is_none()
+        );
     }
 }
