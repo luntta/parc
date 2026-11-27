@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { rpcClient, whileBusy } = require('../backend.cjs');
+const { archive, rpcClient, whileBusy } = require('../backend.cjs');
 
 const fake = [process.execPath, path.join(__dirname, 'fake-server.cjs')];
 const VAULT = '/nowhere/.parc';
@@ -24,13 +24,13 @@ test('requests queued behind a slow one wait without a clock, and the slow one h
   } finally { c.close(); }
 }));
 
-test('a request that never finishes times out alone; the ones behind it are asked to try again on a fresh server', async () => {
+test('a hung read times out alone; undispatched requests continue on a fresh server', async () => {
   const c = rpcClient(VAULT, { command: fake, timeout: 150, idleMs: 0 });
   try {
     const hung = c.send('hang', {}), behind = c.send('fragment.get', {});
     const first = c.pid();
     await assert.rejects(hung, /timeout: hang/);
-    await assert.rejects(behind, /restarted .* Try again/);
+    assert.notEqual((await behind).result.pid, first);
     const again = await c.send('fragment.get', {});
     assert.notEqual(again.result.pid, first);
   } finally { c.close(); }
@@ -65,5 +65,31 @@ test('background work that stops moving no longer keeps an idle server', withEnv
     await c.send('fragment.get', {});
     await until(() => c.pid() === null);
     assert.equal(checks, 3, 'kept on the first look and one unchanged one, closed on the second unchanged one');
+  } finally { c.close(); }
+}));
+
+test('a timed-out document read cannot abort or delay a save on the writer', withEnv({ FAKE_SLOW_MS: '1200' }, async () => {
+  const db = archive(VAULT, { command: fake, slowTimeout: 600, idleMs: 0 });
+  try {
+    let done = false;
+    const hung = assert.rejects(db.grep('x'), /timeout/).then(() => { done = true; });
+    assert.equal((await db.save({ title: 'new', body: '' })).method, 'fragment.create');
+    assert.equal(done, false);
+    await hung;
+  } finally { db.close(); }
+}));
+
+test('a write with a lost acknowledgement is never replayed; unsent requests are identified', withEnv({ FAKE_SLOW_WRITE: '1', FAKE_SLOW_MS: '450' }, async () => {
+  const c = rpcClient(VAULT, { command: fake, timeout: 200, idleMs: 0 });
+  try {
+    await c.send('ready', {});
+    await Promise.all([
+      assert.rejects(c.send('fragment.create', {}), /may already have been applied/),
+      assert.rejects(c.send('fragment.update', {}), /not sent/i)
+    ]);
+    await assert.rejects(c.send('fragment.get', {}), /not sent/i);
+    const pid = c.pid();
+    await new Promise(r => setTimeout(r, 350));
+    assert.equal((await c.send('fragment.get', {})).result.pid, pid);
   } finally { c.close(); }
 }));

@@ -13,7 +13,7 @@ const remember = {
 const capital = s => s ? s[0].toUpperCase() + s.slice(1).replace(/[-_]/g, ' ') : '';
 const isMac = /Mac/.test(navigator.platform);
 $('qSaveKey').textContent = isMac ? '⌘S' : 'Ctrl S';
-let busy = false;
+let busy = false, finished = false, initialized = false;
 
 const empty = () => !$('qTitle').value.trim() && !$('qBody').value.trim();
 function status(message, error = false) {
@@ -21,6 +21,7 @@ function status(message, error = false) {
   $('qStatus').dataset.tone = error ? 'error' : '';
 }
 function keep() {
+  if (finished || !initialized) return;
   remember.set(DRAFT, empty() ? null : { vault: $('qVault').value, type: $('qType').value, title: $('qTitle').value, body: $('qBody').value });
 }
 // The vault's types that are on; a capture starts as the vault's default unless a draft chose another.
@@ -33,21 +34,29 @@ async function types(vault, chosen) {
   $('qType').value = names.includes(chosen) ? chosen : start;
 }
 async function save() {
+  if (!initialized || finished) return;
   if (busy || empty()) { if (empty()) status('Write something first.', true); return; }
-  busy = true; $('qSave').setAttribute('loading', '');
+  busy = true; $('qTitle').readOnly = $('qBody').readOnly = true;
+  $('qType').disabled = $('qVault').disabled = true; $('qSave').setAttribute('loading', '');
   try {
     const note = await api.save($('qVault').value, { title: $('qTitle').value, body: $('qBody').value, type: $('qType').value, fields: {}, tags: [] });
-    remember.set(DRAFT, null);
+    finished = true; remember.set(DRAFT, null);
     status(`Saved “${note.title}”.`);
-    setTimeout(() => window.close(), 250);
+    window.close();
   } catch (err) { status(err, true); }
-  finally { busy = false; $('qSave').removeAttribute('loading'); }
+  finally {
+    if (!finished) {
+      busy = false; $('qTitle').readOnly = $('qBody').readOnly = false;
+      $('qType').disabled = $('qVault').disabled = false; $('qSave').removeAttribute('loading');
+    }
+  }
 }
 async function close() {
+  if (busy || !initialized) return;
   if (empty()) { remember.set(DRAFT, null); return window.close(); }
   const choice = await api.discard({ title: $('qTitle').value || $('qBody').value.split('\n')[0], canSave: true });
   if (choice === 'save') return save();
-  if (choice === 'discard') { remember.set(DRAFT, null); window.close(); }
+  if (choice === 'discard') { finished = true; remember.set(DRAFT, null); window.close(); }
 }
 
 $('quick').addEventListener('submit', e => { e.preventDefault(); save(); });
@@ -69,6 +78,7 @@ window.addEventListener('beforeunload', keep);
     $('qVault').value = known(draft?.vault) ? draft.vault : known(last) ? last : vaults[0].path;
     await types($('qVault').value, draft?.type);
     if (draft) { $('qTitle').value = draft.title || ''; $('qBody').value = draft.body || ''; status('Restored what you were writing.'); }
+    initialized = true;
   } catch (err) { status(err, true); }
   $('qBody').focus();
 })();

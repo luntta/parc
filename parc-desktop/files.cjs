@@ -9,12 +9,16 @@ const TMP = /\.tmp$/;
 const temp = file => `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
 const queues = new Map(); // file → the last write asked for
 
-function writeAtomic(file, data, { mode = 0o600 } = {}) {
+function writeAtomic(file, data, { mode = 0o600, publish = null } = {}) {
   const write = async () => {
     const tmp = temp(file);
     try {
       await fs.writeFile(tmp, data, { mode });
-      await fs.rename(tmp, file);
+      // Drafts can be superseded by a synchronous close flush. Check and publish in
+      // one turn: an async rename already submitted to the OS cannot be cancelled.
+      if (!publish) await fs.rename(tmp, file);
+      else if (publish()) fss.renameSync(tmp, file);
+      else await fs.rm(tmp, { force: true });
     } catch (err) {
       await fs.rm(tmp, { force: true }).catch(() => {});
       throw err;

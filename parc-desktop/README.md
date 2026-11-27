@@ -26,6 +26,10 @@ Beside the text (under it in a narrow window), **Related** lists the fragments t
 
 Unsaved text is kept locally as you type, in every tab, so closing the window or a crash doesn't lose it: the next launch reopens your tabs as you left them, drafts included. Closing a tab with unsaved changes asks whether to save them. Each opened vault is watched: a save from the CLI, the TUI, another app or a `git pull` refreshes the list (and search), and reloads each open fragment you haven't edited. If you have, Save asks before overwriting the newer version (it stays in the fragment's history either way). The check compares the file's exact contents, so it also catches a save made in the same second. The app reopens the vault you used last.
 
+A failed startup leaves the last saved workspace alone. If a layout is missing a draft, the next successful launch opens that draft as a new capture; unreadable draft files stay in the local `drafts/` directory. Applying an Analyze summary uses the same revision check as Save. Attaching or detaching a file does not acknowledge edits to the fragment’s text.
+
+Slow document lookups use a separate, on-demand server without background indexers. If a write receives no confirmation, check the fragment or vault before retrying: it may already have been saved. The app does not replay that write automatically.
+
 ## Start
 
 From the repository root, with Rust and Node 22.12+:

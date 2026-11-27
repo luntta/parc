@@ -22,6 +22,10 @@ struct Args {
     #[arg(long, conflicts_with_all = ["socket", "socket_path"])]
     mcp: bool,
 
+    /// Run stdio RPC without starting duplicate indexing/extraction workers.
+    #[arg(long, conflicts_with_all = ["socket", "socket_path", "mcp"])]
+    no_background: bool,
+
     /// With --mcp: offer only the tools that read the vault
     #[arg(long, requires = "mcp")]
     read_only: bool,
@@ -40,6 +44,11 @@ fn main() -> anyhow::Result<()> {
             if args.read_only { " read-only" } else { "" }
         );
         return parc_server::mcp::run_stdio(vault_path, args.read_only);
+    }
+
+    if args.no_background {
+        let router = std::sync::Arc::new(parc_server::router::Router::new(vault_path));
+        return tokio::runtime::Runtime::new()?.block_on(parc_server::transport::run_stdio(router));
     }
 
     let use_socket = args.socket || args.socket_path.is_some();

@@ -15,10 +15,10 @@ contextBridge.exposeInMainWorld('parc', {
   doctor: invoke('doctor'), reindex: invoke('reindex'),
   history: invoke('history'), version: invoke('version'), restoreVersion: invoke('restore-version'),
   schemas: invoke('schemas'), links: invoke('links'),
-  saveDraft: invoke('save-draft'), loadDraft: invoke('load-draft'), deleteDraft: invoke('delete-draft'), pruneDrafts: invoke('prune-drafts'),
+  saveDraft: invoke('save-draft'), loadDraft: invoke('load-draft'), deleteDraft: invoke('delete-draft'), recoverableDrafts: invoke('recoverable-drafts'),
   flushDrafts: entries => ipcRenderer.sendSync('flush-drafts', entries),
   vaultSettings: invoke('vault-settings'), updateVaultSettings: invoke('update-vault-settings'),
-  schemaUsage: invoke('schema-usage'), builtinSchema: invoke('builtin-schema'), saveSchema: invoke('save-schema'), deleteSchema: invoke('delete-schema'), copyText: invoke('copy-text'), openCapture: invoke('open-capture'),
+  schemaUsage: invoke('schema-usage'), builtinSchema: invoke('builtin-schema'), saveSchema: invoke('save-schema'), deleteSchema: invoke('delete-schema'), copyText: invoke('copy-text'), openCapture: invoke('open-capture'), retryWorkspace: invoke('retry-workspace'),
   settings: invoke('settings'), saveSettings: invoke('save-settings'), previewTheme: invoke('preview-theme'), systemTheme: invoke('system-theme'), pickFile: invoke('pick-file'),
   // Active Omarchy system theme payload ({ name, mode, glass, rounding, tokens }) or null.
   onSystemTheme(callback) {

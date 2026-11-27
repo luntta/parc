@@ -27,7 +27,13 @@ const lastArgs = () => fs.readFileSync(whisperArgs, 'utf8').trim().split('\n');
 const argAfter = flag => { const args = lastArgs(); return args[args.indexOf(flag) + 1]; };
 const second = path.join(dir, 'Research', '.parc');
 fs.writeFileSync(path.join(dir, 'vaults.json'), JSON.stringify([second]));
-const { archive } = require('../backend.cjs');
+const backend = require('../backend.cjs'), { archive } = backend;
+let unavailable = false;
+backend.archive = (...args) => {
+  const db = archive(...args), list = db.list;
+  db.list = (...params) => unavailable ? Promise.reject(new Error('Simulated temporary vault failure')) : list(...params);
+  return db;
+};
 // Native dialogs would block the run: each one must be expected, with the button index to press.
 const answers = [];
 require('electron').dialog.showMessageBox = async (_win, options) => {
@@ -153,7 +159,12 @@ async function check() {
   await delay(500);
   assert.equal(await js('localStorage.getItem("parc.workspace").includes("Unsent thought")'), false, 'draft body lives on disk, not in localStorage');
   assert.ok(fs.readdirSync(path.join(dir, 'drafts')).some(f => f.endsWith('.json')), 'draft written to userData/drafts');
-  win.webContents.reload();
+  const manifest = await js('localStorage.getItem("parc.workspace")');
+  unavailable = true; win.webContents.reload();
+  await until('document.querySelector("#empty")?.textContent === "Unable to load fragments."');
+  assert.equal(await js('localStorage.getItem("parc.workspace")'), manifest, 'a failed startup preserves the last good layout');
+  unavailable = false;
+  await js('document.querySelector("#status .status-action").click()');
   await until(`document.querySelector("[data-current] .cm-content")?.textContent.includes("Unsent thought") && document.querySelector("#status").textContent.startsWith("Restored") && ${idle}`);
   assert.equal(await js('document.querySelector("[data-current] .doc-title")?.value'), 'Call the ferry office');
   const tabNames = 'JSON.stringify([...document.querySelectorAll(".pane")].map(p => [...p.querySelectorAll(".tab")].map(t => t.getAttribute("aria-label"))))';
@@ -361,6 +372,17 @@ async function check() {
   await eventually(async () => quick.isDestroyed());
   const idea = (await prototype.list()).find(r => r.title === 'Ferry timetable as a widget');
   assert.equal(idea?.type, 'idea');
+  const reopenQuick = async () => {
+    await js('document.querySelector("#quickCapture").click()');
+    await eventually(() => !!(quick = BrowserWindow.getAllWindows().find(w => w !== win)));
+    await eventually(() => quick.webContents.executeJavaScript('document.querySelector("#qType")?.options.length > 1'));
+    assert.equal(await quick.webContents.executeJavaScript('document.querySelector("#qBody").value'), '');
+  };
+  await reopenQuick(); // the saved capture must not be restored
+  answers.push(1); // Don’t save
+  await quick.webContents.executeJavaScript('const q = document.querySelector("#qBody"); q.value = "discard this"; q.dispatchEvent(new Event("input")); q.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))');
+  await eventually(() => quick.isDestroyed());
+  await reopenQuick(); quick.close(); // the discarded capture must not be restored either
   section('Settings: theme, meaning model, capture command, dictation');
   // Settings: a theme shows as soon as it is picked; Cancel puts the saved one back.
   await js('document.querySelector("[data-view=capture]").click()'); await until(idle);
@@ -712,10 +734,16 @@ async function check() {
   await until(`document.querySelector("[data-current] .doc-attachments:not([hidden]) .attach-name")?.textContent === "dot.png" && ${idle}`);
   await js('document.activeElement?.blur(); document.querySelector("[data-current] .doc-title").focus()');
   await until('(() => { const img = document.querySelector("[data-current] .cm-content .md-attach-img"); return !!img && img.src.startsWith("parc-attach://") && img.complete && img.naturalWidth === 1; })()');
+  await prototype.save({ id: prom.id, title: prom.title, body: 'Changed while the local text is dirty.' });
   answers.push(1); // Remove attachment
   await js('document.querySelector("[data-current] .attach-remove").click()');
   await until(`document.querySelector("[data-current] .doc-attachments")?.hidden === true && ${idle}`);
   assert.equal((await prototype.attachments(prom.id)).length, 0);
+  answers.push(0); // Cancel: detach must not have advanced the base of our text
+  await js(saveKey);
+  await until('document.querySelector("#status").textContent.startsWith("Not saved:")');
+  assert.equal((await prototype.get(prom.id)).body.trim(), 'Changed while the local text is dirty.');
+  answers.push(2); // explicitly overwrite for the rest of this scenario
   await js(saveKey);
   await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
 
@@ -747,6 +775,17 @@ async function check() {
   await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Pulse" && document.querySelector("[data-current] .pulse-list")?.textContent.includes("Overdue filing") && ${idle}`);
   assert.match(await js('document.querySelector("[data-current] .pulse-pill[data-tone=alert]").textContent'), /^Overdue/);
 
+  section('Creating in an existing vault requires trust');
+  const untrusted = path.join(dir, 'Already exists', '.parc');
+  const existing = archive(untrusted); await existing.init(); existing.close();
+  const dialog = require('electron').dialog, picker = dialog.showOpenDialog;
+  try {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path.dirname(untrusted)] });
+    answers.push(0);
+    assert.equal(await js('window.parc.createVault()'), null);
+    assert.equal(answers.length, 0, 'the trust question was asked');
+    assert.equal((await js('window.parc.vaults()')).some(v => v.path === untrusted), false);
+  } finally { dialog.showOpenDialog = picker; }
   section('Removing a vault');
   // Removing a secondary vault detaches it from parc without touching files on disk.
   await js(`document.querySelector('#vaultMenu aihio-dropdown-item[value=${JSON.stringify(second)}]').click()`);
@@ -901,6 +940,15 @@ async function check() {
   await until('document.documentElement.dataset.omarchy === "Catppuccin Latte" && document.documentElement.dataset.omarchyOpacity === "glassy" && document.documentElement.style.getPropertyValue("--aihio-radius-base") === "6px"');
   assert.equal(await js('matchMedia("(prefers-color-scheme: dark)").matches'), false);
   assert.match(await js('document.documentElement.style.getPropertyValue("--desk")'), /^rgba\(227, 228, 232, 0\.65\)$/);
+
+  section('Recovery of unlisted drafts alongside a damaged file');
+  const draftDir = path.join(dir, 'drafts');
+  fs.writeFileSync(path.join(draftDir, 'unlisted.json'), JSON.stringify({ title: 'Recovered without layout', body: 'Only copy' }));
+  fs.writeFileSync(path.join(draftDir, 'damaged.json'), 'incomplete json');
+  win.webContents.reload();
+  await until('Array.from(document.querySelectorAll(".doc-title")).some(t => t.value === "Recovered without layout")');
+  await until('document.querySelector("#status").textContent.includes("Could not read")');
+  assert.equal(fs.readFileSync(path.join(draftDir, 'damaged.json'), 'utf8'), 'incomplete json');
 
   section(null);
   sections.pop();

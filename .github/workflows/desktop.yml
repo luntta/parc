@@ -1,0 +1,49 @@
+name: Desktop CI
+
+on:
+  push:
+    branches: [main, desktop-workspace]
+    paths:
+      - 'parc-desktop/**'
+      - 'parc-core/**'
+      - 'parc-server/**'
+      - 'parc-cli/**'
+      - 'Cargo.*'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    paths:
+      - 'parc-desktop/**'
+      - 'parc-core/**'
+      - 'parc-server/**'
+      - 'parc-cli/**'
+      - 'Cargo.*'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: parc-desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: parc-desktop/package-lock.json
+      - run: cargo build --locked -p parc-cli -p parc-server
+      - run: npm ci
+      - run: npm run build && npm run lint:ui && npm test
+      - name: Prepare the virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libgtk-3-0 libasound2 libnss3
+          node_modules/.bin/install-electron
+      - run: xvfb-run -a npm run test:smoke

@@ -47,123 +47,106 @@ const SLOW = new Set(['vault.reindex', 'vault.doctor', 'attachment.text', 'attac
   'schema.save', 'inbox.sweep', 'recall.context', 'fragment.grep']);
 const MAX_REPLY = 32 * 1024 * 1024;
 
-// One persistent stdio JSON-RPC `parc-server` child per vault, started lazily on the first request, restarted if it
-// exits, and closed after an idle period (unless keepAlive says it still has work) or on explicit close().
-// The server answers one request at a time, in order, so only the oldest unanswered request is being worked on:
-// it alone is timed. Requests queued behind it wait without a clock, so one slow request can't time out the rest.
-// keepAlive(send) → whether an idle server should be left running for now. command: [file, ...args] to run instead
-// of parc-server (the tests' fake).
-function rpcClient(vault, { timeout = 15000, slowTimeout = 120000, idleMs = 30000, keepAlive = null, command = null } = {}) {
-  let child = null, buffer = '', stderr = '', seq = 0, idleTimer = null;
-  const waiting = new Map(); // id → { resolve, reject, method, timer }, oldest first
+// Only dispatch the head. A job waiting in this process is known not to have
+// reached the server, so it can safely continue after a hung read is retired.
+const WRITES = new Set(['fragment.create', 'fragment.update', 'fragment.promote', 'fragment.archive',
+  'fragment.delete', 'fragment.attach', 'fragment.detach', 'fragment.link', 'attachment.move', 'inbox.sweep',
+  'schema.save', 'schema.delete', 'settings.update', 'trash.restore', 'trash.purge', 'history.restore', 'vault.reindex']);
+const LONG_READS = new Set(['fragment.grep', 'attachment.text', 'attachment.locate', 'recall.context', 'vault.doctor']);
 
-  function failAll(err) {
-    for (const w of waiting.values()) { clearTimeout(w.timer); w.reject(err); }
-    waiting.clear();
-  }
-  // Start the clock on the request the server is working on now.
-  function timeHead() {
-    const head = waiting.entries().next().value;
-    if (!head || head[1].timer) return;
-    const [id, w] = head;
-    w.timer = setTimeout(() => {
-      waiting.delete(id);
-      w.reject(new Error(`parc-server failed (timeout${SLOW.has(w.method) ? '' : `: ${w.method}`}).`));
-      // A request that never finishes holds up every one behind it: start a fresh server for them to ask again.
-      close(new Error('parc-server was restarted after a request took too long. Try again.'));
-    }, SLOW.has(w.method) ? slowTimeout : timeout);
-  }
-  async function idle() {
-    idleTimer = null;
-    if (!child || waiting.size) return;
-    let keep = false;
-    if (keepAlive) { try { keep = await keepAlive(send); } catch { keep = false; } }
-    // Kept: the keepAlive request's own answer set the next idle check.
-    if (!keep && !waiting.size) close();
-  }
-  function setActive(active) {
-    clearTimeout(idleTimer); idleTimer = null;
-    if (!child) return;
-    const method = active ? 'ref' : 'unref';
-    child[method]?.(); child.stdout?.[method]?.(); child.stderr?.[method]?.(); child.stdin?.[method]?.();
-    if (!active && idleMs > 0) {
-      idleTimer = setTimeout(idle, idleMs);
-      idleTimer.unref?.();
-    }
-  }
-  function close(reason = new Error('parc-server closed.')) {
-    clearTimeout(idleTimer); idleTimer = null;
+function rpcClient(vault, { timeout = 15000, slowTimeout = 120000, idleMs = 30000, keepAlive = null, command = null, noBackground = false } = {}) {
+  let child = null, seq = 0, active = null, idleTimer = null;
+  const queue = [];
+  const unknown = (job, err) => new Error(`No confirmation for ${job.method}: the write may already have been applied. Check the vault before retrying. ${err.message}`);
+  const blocked = () => new Error('Request not sent: an earlier write still has no confirmation. Wait and check the vault.');
+  function stopChild() {
+    clearTimeout(idleTimer);
     const old = child;
-    child = null; buffer = ''; stderr = '';
-    if (old) {
-      liveChildren.delete(old);
-      try { old.stdin?.end(); } catch { /* ignore */ }
-      try { old.kill(); } catch { /* ignore */ }
-    }
-    failAll(reason);
+    child = null;
+    if (old) { old.stdin.end(); old.kill(); }
   }
-  function answer(line) {
-    if (!line.trim()) return;
-    let reply;
-    try { reply = JSON.parse(line); } catch { return; }
-    const w = waiting.get(reply.id);
-    if (!w) return;
-    waiting.delete(reply.id); clearTimeout(w.timer);
-    w.resolve(reply);
+  function close(err = new Error('parc-server closed.'), notStarted = false) {
+    stopChild();
+    if (active) {
+      clearTimeout(active.timer);
+      active.reject(!notStarted && WRITES.has(active.method) ? unknown(active, err) : err);
+      active = null;
+    }
+    for (const job of queue.splice(0)) job.reject(new Error(`Request not sent. ${err.message}`));
+  }
+  function refs(on) {
+    const op = on ? 'ref' : 'unref';
+    for (const handle of [child, child?.stdin, child?.stdout, child?.stderr]) handle?.[op]?.();
+  }
+  function scheduleIdle() {
+    const self = child;
+    refs(false);
+    if (idleMs <= 0) return;
+    idleTimer = setTimeout(async () => {
+      let keep = false;
+      try { if (keepAlive) keep = await keepAlive(send); } catch { /* idle check failed */ }
+      if (!keep && self === child && !active && !queue.length) stopChild();
+    }, idleMs);
+    idleTimer.unref();
   }
   function start() {
-    const [file, ...args] = command || [binary('parc-server'), '--vault', vault];
-    const self = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    child = self; buffer = ''; stderr = '';
+    const [file, ...args] = command || [binary('parc-server'), '--vault', vault, ...(noBackground ? ['--no-background'] : [])];
+    const self = child = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     trackChild(self);
-    self.stdout.setEncoding('utf8');
-    self.stderr.setEncoding('utf8');
+    let buffer = '', stderr = '';
+    self.stdout.setEncoding('utf8'); self.stderr.setEncoding('utf8');
     self.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096); });
-    self.stdout.on('data', chunk => {
-      if (child !== self) return;
-      // Look for line ends in the new text only: a long answer arrives in many pieces.
-      if (!chunk.includes('\n')) {
-        buffer += chunk;
-        if (buffer.length > MAX_REPLY) close(new Error('parc-server response exceeded size limit.'));
-        return;
-      }
-      const lines = (buffer + chunk).split('\n');
-      buffer = lines.pop();
-      for (const line of lines) answer(line);
-      if (buffer.length > MAX_REPLY) { close(new Error('parc-server response exceeded size limit.')); return; }
-      if (waiting.size) timeHead(); else setActive(false);
+    self.stdin.on('error', () => {}); // close reports the outcome, including any unconfirmed write
+    self.once('error', err => {
+      if (self === child) close(err.code === 'ENOENT' ? new Error('Cannot find parc-server. See desktop setup instructions.') : err, err.code === 'ENOENT');
     });
-    self.stdin.on('error', () => {});
-    self.on('error', err => {
-      if (child !== self) return;
-      child = null; buffer = ''; stderr = ''; liveChildren.delete(self); clearTimeout(idleTimer); idleTimer = null;
-      const msg = err?.code === 'ENOENT'
-        ? `Cannot find ${path.basename(file)}. See desktop setup instructions.`
-        : `parc-server failed. ${err.message}`;
-      failAll(new Error(msg));
-    });
-    self.on('exit', (code, signal) => {
+    self.once('close', (code, signal) => {
       liveChildren.delete(self);
-      if (child !== self) return;
-      const detail = stderr.trim().split('\n').slice(-3).join(' ').trim();
-      child = null; buffer = ''; stderr = ''; clearTimeout(idleTimer); idleTimer = null;
-      failAll(new Error(`parc-server failed${signal ? ` (${signal})` : code ? ` (exit ${code})` : ''}.${detail ? ` ${detail}` : ''}`));
+      if (self === child) close(new Error(`parc-server failed (${signal || 'exit ' + code}). ${stderr.trim().split('\n').slice(-3).join(' ')}`));
+    });
+    self.stdout.on('data', chunk => {
+      if (self !== child) return;
+      for (const [i, part] of chunk.split('\n').entries()) {
+        if (i) {
+          let reply;
+          try { reply = JSON.parse(buffer); } catch { /* no matching reply: head timeout will handle it */ }
+          buffer = '';
+          if (active && active.id === reply?.id) {
+            clearTimeout(active.timer); active.resolve(reply); active = null; pump();
+          }
+        }
+        buffer += part;
+        if (buffer.length > MAX_REPLY) { close(new Error('parc-server response exceeded size limit.')); return; }
+      }
     });
   }
-  function send(method, params) {
-    if (!child) start();
-    setActive(true);
-    const id = ++seq;
-    return new Promise((resolve, reject) => {
-      waiting.set(id, { resolve, reject, method, timer: null });
-      try {
-        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-        timeHead();
-      } catch (err) {
-        waiting.delete(id);
-        if (!waiting.size) setActive(false);
-        reject(new Error(`parc-server failed. ${err.message}`));
+  function pump() {
+    if (active) return;
+    clearTimeout(idleTimer);
+    if (!queue.length) { if (child) scheduleIdle(); return; }
+    const job = active = queue.shift();
+    try {
+      if (!child) start();
+      refs(true);
+      child.stdin.write(job.line);
+    } catch (err) { close(err); return; }
+    job.timer = setTimeout(() => {
+      const err = new Error(`parc-server failed (timeout: ${job.method}).`);
+      if (WRITES.has(job.method)) {
+        // Killing it or replaying the write could corrupt or duplicate work. Let it
+        // finish and accept new requests once the late reply confirms the outcome.
+        job.late = true; job.reject(unknown(job, err));
+        for (const pending of queue.splice(0)) pending.reject(blocked());
+      } else {
+        job.reject(err); active = null; stopChild(); pump();
       }
+    }, SLOW.has(job.method) ? slowTimeout : timeout);
+  }
+  function send(method, params) {
+    if (active?.late) return Promise.reject(blocked());
+    return new Promise((resolve, reject) => {
+      const id = ++seq, line = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
+      queue.push({ id, line, method, resolve, reject }); pump();
     });
   }
   return { send, close, pid: () => child?.pid ?? null };
@@ -265,8 +248,11 @@ function validAttachment(name) {
 function archive(vault, options) {
   if (!path.isAbsolute(vault) || path.basename(vault) !== '.parc') throw new Error('Expected an absolute .parc vault path');
   const client = rpcClient(vault, { keepAlive: whileBusy(), ...options });
+  // A slow document lookup must not block (or restart) the writer. This second
+  // process starts lazily and has no duplicate background extraction/index workers.
+  const reads = rpcClient(vault, { ...options, noBackground: true, keepAlive: null });
   async function request(method, params) {
-    const reply = await client.send(method, params);
+    const reply = await (LONG_READS.has(method) ? reads : client).send(method, params);
     if (reply.error?.code === CONFLICT) return { conflict: true, updated_at: reply.error.data?.updated_at ?? null };
     if (reply.error) throw new Error(typeof reply.error.data === 'string' ? reply.error.data : reply.error.message);
     return reply.result;
@@ -399,7 +385,7 @@ function archive(vault, options) {
     history: async id => request('history.list', { id: validId(id) }),
     version: async (id, timestamp) => request('history.get', { id: validId(id), timestamp: validStamp(timestamp) }),
     restoreVersion: async (id, timestamp) => request('history.restore', { id: validId(id), timestamp: validStamp(timestamp) }),
-    close: () => client.close(),
+    close: () => { client.close(); reads.close(); },
     pid: () => client.pid()
   };
 }

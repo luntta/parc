@@ -66,7 +66,7 @@ function openWindow() {
   });
   // Drafts survive a restart; only work that cannot be resumed holds the window open.
   window.webContents.on('will-prevent-unload', event => {
-    const choice = dialog.showMessageBoxSync(window, { message: 'Leave this workspace?', detail: 'A recording, transcription or save is still in progress and will be lost.', buttons: ['Stay', 'Leave'], defaultId: 0, cancelId: 0 });
+    const choice = dialog.showMessageBoxSync(window, { message: 'Leave this workspace?', detail: 'Some work is still in progress or could not be saved locally. Leaving may lose changes.', buttons: ['Stay', 'Leave'], defaultId: 0, cancelId: 0 });
     if (choice === 1) event.preventDefault();
   });
   window.on('focus', () => refreshDesktopTheme());
@@ -266,6 +266,36 @@ else app.whenReady().then(() => {
   const deletedFragment = (res, _p, id) => res?.deleted ? [fragmentFile(id)] : [];
   handle('vaults', async () => { await ready(); return vaults(); });
   handle('suggested-vaults', async () => { await ready(); return suggestions(); });
+  // Both entry points pass here before registration, watching or sweeping. Confirm
+  // even for a fresh destination: a folder can change between selection and init.
+  async function admitVault(owner, target, create = false) {
+    let p;
+    try { p = await fs.realpath(target); }
+    catch (err) {
+      if (!create || err.code !== 'ENOENT') throw new Error('No .parc vault in that folder.');
+      p = target;
+    }
+    const existed = await fs.stat(path.join(p, 'config.yml')).then(s => s.isFile(), err => {
+      if (err.code === 'ENOENT') return false;
+      throw err;
+    });
+    if (!existed && !create) throw new Error('Not a parc vault');
+    if (!stores.has(p)) {
+      const answer = await dialog.showMessageBox(owner, { type: 'question',
+        message: existed ? 'Open this trusted vault?' : 'Create a trusted vault here?',
+        detail: `${p}\nSaving fragments may run this vault’s local hooks.`,
+        buttons: ['Cancel', existed ? 'Open vault' : 'Create vault'], cancelId: 0, defaultId: 0 });
+      if (answer.response !== 1) return null;
+      const next = archive(p);
+      if (!existed) await next.init();
+      if (!(await fs.stat(path.join(p, 'config.yml'))).isFile()) throw new Error('Not a parc vault');
+      stores.set(p, next);
+      try { await saveRegistry(); } catch (err) { stores.delete(p); throw err; }
+      watcher.watch(p);
+      sweeper.background(p);
+    }
+    return { path: p, vaults: vaults(), existed };
+  }
   // With no argument, asks for a folder. A suggested vault can be opened by path; nothing else can.
   handle('open-vault', async function (suggested) {
     await ready();
@@ -278,18 +308,7 @@ else app.whenReady().then(() => {
       if (choice.canceled) return null;
       folder = choice.filePaths[0];
     }
-    const p = await fs.realpath(path.basename(folder) === '.parc' ? folder : path.join(folder, '.parc')).catch(() => { throw new Error('No .parc vault in that folder.'); });
-    if (!(await fs.stat(path.join(p, 'config.yml'))).isFile()) throw new Error('Not a parc vault');
-    if (!stores.has(p)) {
-      const answer = await dialog.showMessageBox(this, { type: 'question', message: 'Open this trusted vault?', detail: `${p}\nSaving fragments may run this vault’s local hooks.`, buttons: ['Cancel', 'Open vault'], cancelId: 0, defaultId: 0 });
-      if (!answer.response) return null;
-      const next = archive(p);
-      stores.set(p, next);
-      await saveRegistry();
-      watcher.watch(p);
-      sweeper.background(p);
-    }
-    return { path: p, vaults: vaults() };
+    return admitVault(this, path.basename(folder) === '.parc' ? folder : path.join(folder, '.parc'));
   });
   // Create a new .parc vault inside a user-picked folder (or open it if one already exists there).
   handle('create-vault', async function () {
@@ -301,16 +320,7 @@ else app.whenReady().then(() => {
     if (choice.canceled) return null;
     const folder = await fs.realpath(choice.filePaths[0]);
     const target = path.basename(folder) === '.parc' ? folder : path.join(folder, '.parc');
-    const exists = await fs.stat(path.join(target, 'config.yml')).then(s => s.isFile(), () => false);
-    if (!stores.has(target)) {
-      const next = archive(target);
-      if (!exists) await next.init();
-      stores.set(target, next);
-      await saveRegistry();
-      watcher.watch(target);
-      sweeper.background(target);
-    }
-    return { path: target, vaults: vaults(), existed: exists };
+    return admitVault(this, target, true);
   });
   // Remove an opened vault from the app's registry without deleting any files on disk.
   handle('close-vault', async function (p) {
@@ -532,20 +542,18 @@ else app.whenReady().then(() => {
   handle('save-draft', (id, draft) => drafts.save(id, draft));
   handle('load-draft', id => drafts.load(id));
   handle('delete-draft', id => drafts.remove(id));
-  handle('prune-drafts', keepIds => drafts.prune(keepIds));
+  handle('recoverable-drafts', () => drafts.recoverable());
   // Synchronous flush on beforeunload so a reload or quit never loses keystrokes still in the debounce window.
   ipcMain.on('flush-drafts', (event, entries) => {
     if (!trusted(event.sender) || event.senderFrame !== event.sender.mainFrame) { event.returnValue = false; return; }
-    try {
-      if (Array.isArray(entries)) {
-        for (const entry of entries.slice(0, 64)) {
-          if (!entry || typeof entry.id !== 'string') continue;
-          if (entry.draft == null) drafts.removeSync(entry.id);
-          else drafts.saveSync(entry.id, entry.draft);
-        }
-      }
-      event.returnValue = true;
-    } catch { event.returnValue = false; }
+    let ok = Array.isArray(entries);
+    if (ok) for (const entry of entries) {
+      try {
+        if (entry.draft == null) drafts.removeSync(entry.id);
+        else drafts.saveSync(entry.id, entry.draft);
+      } catch { ok = false; } // an oversized/unwritable draft must not prevent flushing other tabs
+    }
+    event.returnValue = ok;
   });
   handle('links', p => store(p).links());
   // Up to a whole fragment's worth; more is refused rather than cut short without a word.
@@ -555,6 +563,10 @@ else app.whenReady().then(() => {
     clipboard.writeText(value);
   });
   handle('open-capture', () => openCapture());
+  // Renderer-initiated navigation is blocked; retry only the registered workspace's current page.
+  handle('retry-workspace', function () {
+    if (this === window) this.webContents.reload();
+  });
   handle('settings', async () => { await ready(); return settingsView(); });
   const persist = () => writeJson(settingsFile, settings, { pretty: true });
   handle('save-settings', async input => {

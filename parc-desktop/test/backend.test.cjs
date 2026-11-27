@@ -422,7 +422,7 @@ test('persistent parc-server child is reused across pipelined calls and recovers
   assert.ok(store.pid() !== null);
 });
 
-test('disk draft store saves atomically, flushes synchronously, prunes orphans and validates IDs', async t => {
+test('disk draft store saves atomically, flushes synchronously, retains orphans and validates IDs', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'parc-drafts-test-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const store = draftStore(path.join(dir, 'drafts'));
@@ -440,8 +440,8 @@ test('disk draft store saves atomically, flushes synchronously, prunes orphans a
   await fs.writeFile(stale, 'partial');
   await fs.utimes(stale, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
   await fs.writeFile(fresh, 'in progress');
-  await store.prune(['tab-2']);
-  assert.equal(await store.load('tab-1'), null);
+  assert.deepEqual((await store.recoverable()).sort(), ['tab-1', 'tab-2']);
+  assert.equal((await store.load('tab-1')).body, 'Unsent text');
   assert.equal((await store.load('tab-2')).body, 'Saved on unload');
   await assert.rejects(fs.access(stale));
   await fs.access(fresh);

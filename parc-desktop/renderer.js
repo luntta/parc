@@ -13,7 +13,9 @@ import { workspace, FRAGMENT } from './tabs.js';
 import { agentChat } from './agent.js';
 import { sidebarList } from './sidebar.js';
 import { renderTrashView, renderDoctorView, pulseDailySections } from './views.js';
+import { workspacePersistence } from './workspace-persistence.mjs';
 import { canAdoptSourceTitle } from './source-revision.mjs';
+import { textBase, sameBaseText, saveDocumentText } from './document-revision.mjs';
 import { renderInboxView } from './inbox.js';
 import { sourceViewer } from './source-viewer.js';
 import { initSystemTheme } from './theme.js';
@@ -329,7 +331,7 @@ function discard(t) {
   if (t.kind === 'doc') {
     t.sourceViewer?.destroy();
     t.related.reset(); t.editor.destroy();
-    if (t.draftSaved) { t.draftSaved = false; api.deleteDraft(t.draftId).catch(() => {}); }
+    if (t.draftSaved) { t.draftSaved = false; api.deleteDraft(t.draftId).catch(draftError); }
   } else t.agent?.destroy();
 }
 // Ctrl+W closes the current tab, or the current group when it is empty and not the only one.
@@ -357,7 +359,7 @@ function reopenTab() {
 function draftPayload(t) {
   if (!t.dirty || isEmpty(t)) return null;
   t.draftAt ||= new Date().toISOString();
-  return { title: t.ui.title.value, body: t.editor.text(), base: t.opened?.revision ?? null, at: t.draftAt };
+  return { title: t.ui.title.value, body: t.editor.text(), base: t.textBase?.revision ?? null, at: t.draftAt };
 }
 function saveTab(t) {
   if (t.kind === 'view') {
@@ -365,10 +367,11 @@ function saveTab(t) {
     return { view: t.view, ...(t.viewType ? { type: t.viewType } : {}), ...(t.target ? { target: t.target } : {}), ...(t.view === 'search' ? { query: t.ui.query.value } : {}), ...(chat ? { chat } : {}) };
   }
   const hasDraft = t.dirty && !isEmpty(t);
-  const draft = hasDraft ? { id: t.draftId, base: t.opened?.revision ?? null, at: t.draftAt || (t.draftAt = new Date().toISOString()) } : null;
+  const draft = hasDraft ? { id: t.draftId, base: t.textBase?.revision ?? null, at: t.draftAt || (t.draftAt = new Date().toISOString()) } : null;
   return t.opened ? { vault: t.opened.vault, id: t.opened.id, draft } : { vault: destination(t) || '', fresh: t.fresh, draft };
 }
-let saveTimer = 0, restoring = true;
+let restoring = true;
+const draftError = err => status(new Error(`Couldn’t keep workspace changes on this computer: ${cleanError(err)}`));
 function persistDrafts(sync = false) {
   const entries = [];
   for (const d of docTabs()) {
@@ -382,24 +385,26 @@ function persistDrafts(sync = false) {
     }
   }
   if (!entries.length) return;
-  if (sync) { api.flushDrafts(entries); return; }
+  if (sync) {
+    if (!api.flushDrafts(entries)) throw new Error('Couldn’t flush drafts. Keep this window open and check disk space.');
+    return;
+  }
   for (const e of entries) {
-    if (e.draft) api.saveDraft(e.id, e.draft).catch(() => {});
-    else api.deleteDraft(e.id).catch(() => {});
+    if (e.draft) api.saveDraft(e.id, e.draft).catch(draftError);
+    else api.deleteDraft(e.id).catch(draftError);
   }
 }
-function rememberWorkspace(now = false, { syncDisk = false } = {}) {
-  clearTimeout(saveTimer);
-  if (restoring) return;
-  const write = () => {
-    remember.set(WORKSPACE, {
-      groups: ws.groups.map(g => ({ size: g.size, shown: g.tabs.indexOf(g.shown), tabs: g.tabs.map(t => ({ ...saveTab(t), ...(t.preview ? { preview: true } : {}) })) })),
-      current: ws.groups.indexOf(ws.group)
-    });
-    persistDrafts(syncDisk);
-  };
-  if (now) write(); else saveTimer = setTimeout(write, 300);
-}
+const unreadableDrafts = new Map(); // keep these references for a future restore, even if one file is unreadable
+const persistence = workspacePersistence({
+  snapshot: () => ({
+    groups: ws.groups.map(g => ({ size: g.size, shown: g.tabs.indexOf(g.shown), tabs: g.tabs.map(t => ({ ...saveTab(t), ...(t.preview ? { preview: true } : {}) })) })),
+    current: ws.groups.indexOf(ws.group),
+    ...(unreadableDrafts.size ? { unreadable: [...unreadableDrafts.values()] } : {})
+  }),
+  saveLayout: value => localStorage.setItem(WORKSPACE, JSON.stringify(value)),
+  saveDrafts: persistDrafts, report: draftError
+});
+function rememberWorkspace(now, options) { return persistence.remember(now, options); }
 // A tab as it was remembered, or null when it can't come back (its vault is gone, or its fragment without a draft).
 async function restoreTab(e) {
   const known = p => vaults.some(v => v.path === p);
@@ -414,7 +419,7 @@ async function restoreTab(e) {
   let draft = null, draftId = null;
   if (e.draft && typeof e.draft.id === 'string') {
     draftId = e.draft.id;
-    draft = await api.loadDraft(draftId).catch(() => null);
+    draft = await api.loadDraft(draftId);
   } else if (e.draft && typeof e.draft.body === 'string') {
     // Legacy draft stored inline in localStorage before drafts moved to disk.
     draft = e.draft;
@@ -424,7 +429,7 @@ async function restoreTab(e) {
   const d = docTab(full ? { ...full, vault: e.vault } : null, draftId);
   if (!full) { if (!scope && e.vault) d.dest = e.vault; d.fresh = { ...blankCapture(d), ...(e.fresh || {}) }; if (!draft) applyTemplate(d); meta(d); }
   if (draft) {
-    if (full) d.opened = { ...d.opened, revision: /^[0-9a-f]{16}$/.test(draft.base || '') ? draft.base : full.revision };
+    if (full) d.textBase = textBase(full, draft.base ?? null);
     d.ui.title.value = draft.title || ''; d.editor.load(draft.body); d.dirty = true;
     d.draftAt = draft.at || new Date().toISOString(); d.draftSaved = !!draftId;
     d.restored = { at: d.draftAt, orphan: !!e.id && !full };
@@ -433,18 +438,35 @@ async function restoreTab(e) {
 }
 async function restoreWorkspace(saved) {
   const shown = new Map(), groups = Array.isArray(saved?.groups) ? saved.groups : [];
+  const recover = async entry => {
+    try { return await restoreTab(entry); }
+    catch (err) {
+      if (!entry.draft?.id) throw err;
+      unreadableDrafts.set(entry.draft.id, entry);
+      return null;
+    }
+  };
   let wanted = null;
   for (const [i, sg] of groups.entries()) {
     const g = i < ws.groups.length ? ws.groups[i] : ws.addGroup();
     g.size = Number(sg?.size) > 0 ? Number(sg.size) : 1;
     if (i === saved.current) wanted = g;
     for (const [j, entry] of (Array.isArray(sg?.tabs) ? sg.tabs : []).entries()) {
-      const t = await restoreTab(entry || {}).catch(() => null);
+      const t = await recover(entry || {});
       if (!t) continue;
-      if (t.kind === 'doc' && t.opened && tabOf(t.opened)) { discard(t); continue; }
+      if (t.kind === 'doc' && t.opened && tabOf(t.opened)) { t.draftSaved = false; discard(t); continue; }
       ws.open(t, { group: g, preview: !!entry.preview && !t.dirty, activate: false });
       if (j === sg.shown) shown.set(g, t);
     }
+  }
+  const restored = new Set(docTabs().map(d => d.draftId));
+  let recovered = 0;
+  const previous = new Map((Array.isArray(saved?.unreadable) ? saved.unreadable : []).map(e => [e?.draft?.id, e]));
+  for (const id of await api.recoverableDrafts()) {
+    if (restored.has(id) || unreadableDrafts.has(id)) continue;
+    const t = await recover(previous.get(id) ?? { draft: { id } });
+    if (t?.dirty) { ws.open(t, { group: ws.groups[0], activate: false }); recovered++; }
+    else if (t) discard(t);
   }
   ws.prune(); // groups whose tabs couldn't come back go
   const current = ws.groups.includes(wanted) ? wanted : ws.groups[0];
@@ -452,9 +474,10 @@ async function restoreWorkspace(saved) {
   const t = shown.get(current) ?? current.shown;
   if (t?.group) ws.activate(t); else ws.focusGroup(ws.groups.indexOf(current));
   for (const d of docTabs()) { loadNeighbors(d).catch(() => {}); loadAttachments(d).catch(() => {}); }
-  api.pruneDrafts(docTabs().filter(d => d.dirty).map(d => d.draftId)).catch(() => {});
   const drafts = docTabs().filter(d => d.restored);
-  if (drafts.length === 1) {
+  if (unreadableDrafts.size) status(new Error(`Could not read ${unreadableDrafts.size} draft(s). Their files were kept in the local drafts folder for recovery.`));
+  else if (recovered) status(`Recovered ${recovered} unlisted draft(s) as new captures. Review before saving.`);
+  else if (drafts.length === 1) {
     const { at, orphan } = drafts[0].restored;
     status(orphan ? 'Restored your unsaved draft. Its fragment was deleted, so it will save as a new capture.' : `Restored your unsaved draft from ${stamp.format(new Date(at))}.`);
   } else if (drafts.length) status(`Restored ${drafts.length} unsaved drafts.`);
@@ -1321,20 +1344,25 @@ function toggleArchive(d = cur()) {
     archived ? 'Archived: it leaves default searches; find it with is:archived.' : 'Unarchived.',
     { label: 'Undo', run: () => { const t = tabOf(f); if (t) toggleArchive(t); } });
 }
-// A field-level save names the revision it was based on. If the file moved on and the text is clean, reload
-// and apply the change to the newer file. If the text has edits, apply the change (it touches nothing else)
-// but keep the text's base, so saving the text still asks before overwriting.
+// A metadata response contains the whole saved fragment. A clean editor can load it;
+// a dirty editor may adopt its revision only if its original text is provably unchanged.
+function acceptMetadata(d, note) {
+  if (!d.dirty && !d.saving) { load(d, note, { keep: true }); return; }
+  d.opened = note;
+  if (sameBaseText(d.textBase, note)) d.textBase = textBase(note);
+  meta(d); ws.update(d); d.related.changed();
+}
 function applyChange(d, send, done, undo) {
   const run = () => action(async () => {
     const f = d.opened;
     if (!f) return;
-    let note = await send(f.revision), base = null;
-    if (note.conflict && !d.dirty) { await reload(d); note = await send(d.opened.revision); }
-    else if (note.conflict) { base = f.revision; note = await send(null); }
+    let note = await send(f.revision);
+    if (note.conflict) { const latest = await api.note(f.vault, f.id); note = await send(latest.revision); }
     if (note.conflict) throw new Error('This fragment keeps changing on disk. Try again in a moment.');
-    d.opened = { ...note, vault: f.vault, ...(base ? { revision: base } : {}) };
-    meta(d); paint(); ws.update(d); d.related.changed();
-    status(note.warnings?.join('; ') || (base ? `${done} It also changed outside parc: saving your text will ask before overwriting.` : done), undo);
+    acceptMetadata(d, { ...note, vault: f.vault });
+    paint();
+    status(note.warnings?.join('; ') || (d.dirty && d.textBase.revision !== note.revision
+      ? `${done} It also changed outside parc: saving your text will ask before overwriting.` : done), undo);
     await refreshRows(f.vault, [f.id]);
   });
   d.metaQueue = (d.metaQueue || Promise.resolve()).then(run, run);
@@ -1352,7 +1380,7 @@ function load(d, note, { keep = false } = {}) {
     d.sourceViewer?.sync();
   }
   d.ui.document.toggleAttribute('data-saved', !!note);
-  d.opened = note; d.loadedTextRevision = note?.revision; d.dirty = false; d.draftAt = null; d.dest = ''; d.templateBody = '';
+  d.opened = note; d.textBase = textBase(note); d.dirty = false; d.draftAt = null; d.dest = ''; d.templateBody = '';
   d.fresh = note ? null : blankCapture(d); d.ui.title.value = note?.title || '';
   const body = (note?.body || '').replace(/^\n/, '');
   if (keep) d.editor.sync(body); else d.editor.load(body);
@@ -1421,37 +1449,25 @@ async function openFragment(r, how = {}) {
 }
 // Saves a tab's text; resolves true when it did. Locks only this tab while the write RPC itself runs,
 // unlocking immediately once saved so typing never waits on the sidebar/graph refresh.
-async function commit(d) {
+async function commit(d, transform = body => body) {
   if (d.saving) return false;
   d.saving = true; savingDocs++;
   d.ui.title.readOnly = true; d.editor.lock(true);
   syncPhase();
   let savedNote = null;
   try {
-    for (let force = false; ; force = true) {
-      const p = destination(d), f = d.opened, title = d.ui.title.value, body = d.editor.text();
-      let note = await api.save(p, f
-        ? { id: f.id, title, body, expected: force ? null : f.revision }
-        : { title, body, type: d.fresh.type, fields: d.fresh.fields, tags: d.fresh.tags });
-      if (note.conflict && f?.type === 'source' && !force) {
-        const latest = await api.note(p, f.id);
-        if (canAdoptSourceTitle(f, d.loadedTextRevision, title, latest)) {
-          // Still compare revisions on retry: another intervening write must prompt.
-          note = await api.save(p, { id: f.id, title: latest.title, body, expected: latest.revision });
-        }
-      }
-      if (note.conflict) {
-        const choice = await api.conflict({ title: title || f.title });
-        if (choice === 'overwrite') continue;
-        if (choice === 'reload') { await reload(d); await Promise.all([loadNeighbors(d), loadAttachments(d)]); status('Reloaded the version saved outside parc.'); }
-        else status('Not saved: this fragment changed outside parc. Save again to choose.');
-        return false;
-      }
-      savedNote = { ...note, vault: p };
-      load(d, { ...note, vault: p }, { keep: true }); d.ui.title.value = note.title; ws.update(d);
-      status(note.warnings?.join('; ') || `Saved to ${name(p)}.`);
-      break;
+    const p = destination(d), title = d.ui.title.value, body = transform(d.editor.text());
+    const { note, choice } = d.opened
+      ? await saveDocumentText(api, p, d.textBase, title, body)
+      : { note: await api.save(p, { title, body, type: d.fresh.type, fields: d.fresh.fields, tags: d.fresh.tags }) };
+    if (!note) {
+      if (choice === 'reload') { await reload(d); await Promise.all([loadNeighbors(d), loadAttachments(d)]); status('Reloaded the version saved outside parc.'); }
+      else status('Not saved: this fragment changed outside parc. Save again to choose.');
+      return false;
     }
+    savedNote = { ...note, vault: p };
+    load(d, savedNote, { keep: true }); ws.update(d);
+    status(note.warnings?.join('; ') || `Saved to ${name(p)}.`);
   } finally {
     d.saving = false; savingDocs--;
     d.ui.title.readOnly = false; d.editor.lock(false);
@@ -1533,11 +1549,11 @@ async function refreshDoc(d) {
     if (d.opened === f) status(`${which} was moved to the trash outside parc. Copy anything you need; saving it will fail.`);
     return;
   }
-  if (d.opened !== f || latest.revision === f.revision) return;
-  if (d.dirty && !d.saving && canAdoptSourceTitle(f, d.loadedTextRevision, d.ui.title.value, latest)) {
+  if (d.opened !== f || latest.revision === d.textBase?.revision) return;
+  if (d.dirty && !d.saving && canAdoptSourceTitle(d.textBase, d.textBase?.revision, d.ui.title.value, latest)) {
     // Keep the editor, selection and unsaved notes in place.
     d.opened = { ...latest, vault: f.vault };
-    d.loadedTextRevision = latest.revision;
+    d.textBase = textBase(latest);
     d.ui.title.value = latest.title;
     meta(d); ws.update(d); rememberWorkspace();
     return;
@@ -1931,7 +1947,7 @@ async function drainMoves() {
         moves.shift(); last = m;
         // A tab on the fragment follows the move, unless its text has edits: then saving them still asks first.
         const d = tabOf(m);
-        if (d && !d.dirty) { d.opened = { ...note, vault: m.vault }; meta(d); ws.update(d); }
+        if (d && !d.dirty && !d.saving) load(d, { ...note, vault: m.vault }, { keep: true });
         if (note.warnings?.length) status(note.warnings.join('; '));
       }
     } catch (err) {
@@ -2232,22 +2248,18 @@ async function applyAnalyze(d, selected) {
   if (!f) return;
   const applied = [];
   if (selected.summary) {
-    const baseBody = (d.editor.text() || '').trimEnd();
-    const nextBody = baseBody ? `${baseBody}\n\n## Summary\n\n${selected.summary}` : `## Summary\n\n${selected.summary}`;
-    const saved = await api.save(f.vault, { id: f.id, title: d.ui.title.value || f.title, body: nextBody, expected: null });
-    if (d.opened === f && !saved?.conflict) {
-      load(d, { ...saved, vault: f.vault });
-    }
+    const ok = await commit(d, body => [body.trimEnd(), `## Summary\n\n${selected.summary}`].filter(Boolean).join('\n\n'));
+    if (!ok) return; // cancellation/reload also cancels the remaining proposals
     applied.push('summary');
   }
   if (selected.tags?.length) {
     const fresh = await api.note(f.vault, f.id);
     const merged = [...(fresh.tags || [])];
     for (const t of selected.tags) if (!merged.some(x => x.toLowerCase() === t.toLowerCase())) merged.push(t);
-    const updated = await api.update(f.vault, f.id, { tags: merged }, null);
+    const updated = await api.update(f.vault, f.id, { tags: merged }, fresh.revision);
+    if (updated.conflict) throw new Error('Tags changed outside parc. Review them before applying again.');
     if (d.opened?.id === f.id && !updated?.conflict) {
-      d.opened = { ...updated, vault: f.vault };
-      meta(d);
+      acceptMetadata(d, { ...updated, vault: f.vault });
     }
     applied.push(`${selected.tags.length} ${selected.tags.length === 1 ? 'tag' : 'tags'}`);
   }
@@ -2599,7 +2611,7 @@ document.addEventListener('keydown', e => {
   else if (k === 't' && cur()) { e.preventDefault(); toggleField(); }
 });
 // Drafts are flushed atomically to disk on unload, so only work that cannot resume holds the window.
-window.addEventListener('beforeunload', e => { rememberWorkspace(true, { syncDisk: true }); if (speechPhase !== 'idle' || savingDocs > 0 || moving) e.returnValue = false; });
+window.addEventListener('beforeunload', e => { const kept = rememberWorkspace(true, { syncDisk: true }); if (!kept || speechPhase !== 'idle' || savingDocs > 0 || moving) e.returnValue = false; });
 applySide(); viewMenu();
 (async () => {
   try {
@@ -2618,10 +2630,17 @@ applySide(); viewMenu();
       saved = { groups: [{ tabs: [{ vault: legacy.vault || '', id: legacy.id || undefined, fresh: legacy.fresh, draft: legacy }], shown: 0 }], current: 0 };
     }
     ws.addGroup();
-    const any = saved ? await restoreWorkspace(saved) : false;
-    restoring = false; remember.set(DRAFT, null);
+    const any = await restoreWorkspace(saved);
     await syncOutside();
     if (!any) await openView('pulse'); // Pulse is home
-  } catch (err) { status(err); $('empty').textContent = 'Unable to load fragments.'; }
-  finally { restoring = false; rememberWorkspace(true); syncPhase(); }
+    if (persistence.activate({ syncDisk: !!legacy })) remember.set(DRAFT, null);
+  } catch (err) {
+    status(err, { label: 'Retry opening workspace', run: () => api.retryWorkspace().catch(status) });
+    $('empty').textContent = 'Unable to load fragments.';
+    // Do not accept new edits into a workspace whose persistence is still suspended.
+    for (const id of ['sidebar', 'groups', 'sidebarShow', 'docActions']) $(id).inert = true;
+    document.addEventListener('keydown', e => e.stopImmediatePropagation(), true);
+    $('status').querySelector('button')?.focus();
+  }
+  finally { restoring = false; syncPhase(); }
 })();

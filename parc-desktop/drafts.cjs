@@ -25,15 +25,21 @@ function cleanDraft(draft) {
 
 function draftStore(dir) {
   const file = id => path.join(dir, `${validId(id)}.json`);
+  const latest = new Map();
 
   async function save(id, draft) {
     const target = file(id), payload = JSON.stringify(cleanDraft(draft));
-    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-    await writeAtomic(target, payload);
+    const token = Symbol();
+    latest.set(id, token); // before the first await, including directory creation
+    try {
+      await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+      if (latest.get(id) === token) await writeAtomic(target, payload, { publish: () => latest.get(id) === token });
+    } finally { if (latest.get(id) === token) latest.delete(id); }
   }
 
   function saveSync(id, draft) {
     const target = file(id), payload = JSON.stringify(cleanDraft(draft));
+    latest.delete(id);
     fss.mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeAtomicSync(target, payload);
   }
@@ -41,24 +47,28 @@ function draftStore(dir) {
   async function load(id) {
     try {
       const raw = JSON.parse(await fs.readFile(file(id), 'utf8'));
-      if (!raw || typeof raw !== 'object' || typeof raw.body !== 'string') return null;
+      if (!raw || typeof raw !== 'object' || typeof raw.body !== 'string') throw new Error('Invalid draft file');
       return cleanDraft(raw);
-    } catch { return null; }
-  }
-
-  async function remove(id) {
-    await fs.rm(file(id), { force: true }).catch(() => {});
+    } catch (err) {
+      if (err.code === 'ENOENT') return null;
+      // A JSON parse error can quote private draft text in Electron's IPC logs.
+      if (err instanceof SyntaxError) throw new Error('Draft file contains invalid JSON.');
+      throw err;
+    }
   }
 
   function removeSync(id) {
-    try { fss.rmSync(file(id), { force: true }); } catch { /* ignore */ }
+    const target = file(id);
+    latest.delete(id);
+    fss.rmSync(target, { force: true });
   }
 
-  // Drop stale draft files (and interrupted .tmp files) not referenced by any open tab.
-  async function prune(keepIds = []) {
-    const keep = new Set(Array.isArray(keepIds) ? keepIds.filter(id => typeof id === 'string' && DRAFT_ID.test(id)) : []);
-    let names = [];
-    try { names = await fs.readdir(dir); } catch { return; }
+  // The layout is a separate file and can be lost. Unreferenced drafts are recoverable
+  // documents, not garbage. Only explicit save/discard may remove a completed draft.
+  async function recoverable() {
+    let names;
+    try { names = await fs.readdir(dir); } catch (err) { if (err.code === 'ENOENT') return []; throw err; }
+    const ids = [];
     for (const name of names) {
       if (name.endsWith('.tmp')) {
         if (await isStaleTemp(path.join(dir, name))) await fs.rm(path.join(dir, name), { force: true }).catch(() => {});
@@ -66,11 +76,12 @@ function draftStore(dir) {
       }
       if (!name.endsWith('.json')) continue;
       const id = name.slice(0, -5);
-      if (!keep.has(id)) await fs.rm(path.join(dir, name), { force: true }).catch(() => {});
+      if (DRAFT_ID.test(id)) ids.push(id);
     }
+    return ids;
   }
 
-  return { save, saveSync, load, remove, removeSync, prune };
+  return { save, saveSync, load, remove: removeSync, removeSync, recoverable };
 }
 
 module.exports = { draftStore, DRAFT_ID };
