@@ -1295,7 +1295,9 @@ mod tests {
         assert_eq!(att_count, 1);
 
         // Create a sidecar next to the attachment and verify move_attachment moves both
-        let sidecar = attachment::sidecar_dir(&vault, &a.id).join("report.txt.txt");
+        let sidecar = attachment::sidecar_dir(&vault, &a.id)
+            .unwrap()
+            .join("report.txt.txt");
         secure_fs::create_private_dir_all(sidecar.parent().unwrap()).unwrap();
         secure_fs::write_private(&sidecar, "extracted").unwrap();
 
@@ -1309,6 +1311,7 @@ mod tests {
             .join("report.txt")
             .exists());
         assert!(attachment::sidecar_dir(&vault, &b.id)
+            .unwrap()
             .join("report.txt.txt")
             .exists());
 
@@ -1411,7 +1414,9 @@ mod tests {
         w.attach(&a.id, &f1, AttachMode::Copy).unwrap();
         w.attach(&b.id, &f2, AttachMode::Copy).unwrap();
         // Add a .text sidecar too
-        let sidecar = attachment::sidecar_dir(&vault, &a.id).join("a.txt.txt");
+        let sidecar = attachment::sidecar_dir(&vault, &a.id)
+            .unwrap()
+            .join("a.txt.txt");
         secure_fs::create_private_dir_all(sidecar.parent().unwrap()).unwrap();
         secure_fs::write_private(&sidecar, "text").unwrap();
 

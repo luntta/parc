@@ -58,7 +58,10 @@ pub fn read_sidecar(
         return SidecarState::Missing;
     }
 
-    for path in sidecar_paths(vault, fragment_id, filename) {
+    let Ok(paths) = sidecar_paths(vault, fragment_id, filename) else {
+        return SidecarState::Missing;
+    };
+    for path in paths {
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
             continue;
         };
@@ -109,13 +112,13 @@ pub fn write_sidecar(
         read_sidecar(vault, fragment_id, filename, sha256),
         SidecarState::NewerVersion(_)
     ) {
-        return Ok(sidecar_path(vault, fragment_id, filename, extracted.format));
+        return sidecar_path(vault, fragment_id, filename, extracted.format);
     }
 
-    let dir = sidecar_dir(vault, fragment_id);
+    let dir = sidecar_dir(vault, fragment_id)?;
     secure_fs::create_private_dir_all(&dir)?;
 
-    let target = sidecar_path(vault, fragment_id, filename, extracted.format);
+    let target = sidecar_path(vault, fragment_id, filename, extracted.format)?;
     let body = render_sidecar(sha256, extracted)?;
     secure_fs::write_private_atomic(&target, body)?;
 
@@ -149,8 +152,9 @@ pub fn sidecar_path(
     fragment_id: &str,
     filename: &str,
     format: TextFormat,
-) -> PathBuf {
-    attachment::sidecar_dir(vault, fragment_id).join(format!("{filename}.{}", format.sidecar_ext()))
+) -> Result<PathBuf, ParcError> {
+    Ok(attachment::sidecar_dir(vault, fragment_id)?
+        .join(format!("{filename}.{}", format.sidecar_ext())))
 }
 
 fn render_sidecar(sha256: &str, extracted: &Extracted) -> Result<String, ParcError> {

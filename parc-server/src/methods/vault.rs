@@ -35,6 +35,26 @@ pub fn links(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
 /// Rebuild the index from scratch. Every method already reads an index synced
 /// with the files, so this is only for recovery; `problems` lists the files
 /// that could not be indexed.
+/// `vault.background`: the work this server still has to do in the background — attachments waiting for their
+/// text, and fragments the meaning model hasn't read (0 when no model can run here) — so a client that closes an
+/// idle server can wait for it to finish.
+pub fn background(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
+    let conn = index::open_index(vault_path).map_err(map_parc_error)?;
+    let extract = parc_core::extract::pending_count(&conn).map_err(map_parc_error)?;
+    let spec = parc_core::embed::MODEL;
+    let usable = parc_core::embed::model_dir(spec)
+        .as_deref()
+        .is_some_and(|d| parc_core::embed::is_installed(spec, d))
+        && parc_core::embed::load_error().is_none();
+    let meaning = if usable {
+        let c = parc_core::embed::coverage(&conn, spec).map_err(map_parc_error)?;
+        c.total.saturating_sub(c.embedded)
+    } else {
+        0
+    };
+    Ok(serde_json::json!({ "extract": extract, "meaning": meaning }))
+}
+
 pub fn reindex(vault_path: &Path, _params: Value) -> Result<Value, RpcError> {
     let report = index::reindex(vault_path).map_err(map_parc_error)?;
     let conn = index::open_index(vault_path).map_err(map_parc_error)?;

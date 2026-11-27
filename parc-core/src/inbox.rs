@@ -224,8 +224,9 @@ fn sweep_impl(
             Err(err) => {
                 // A transfer may have failed after acquiring bytes. Never purge
                 // on this path, even if rollback or storage inspection fails.
-                if matches!(std::fs::symlink_metadata(vault_path.join("attachments").join(&created.id).join(&name)),
-                            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound)
+                let stored = crate::attachment::attachment_path(&vault_path, &created.id, &name);
+                if matches!(stored.map(std::fs::symlink_metadata),
+                            Ok(Err(ref e)) if e.kind() == std::io::ErrorKind::NotFound)
                 {
                     if let Err(e) = writer.delete(&created.id) {
                         writer.warn(format!("Could not trash empty source {}: {e}", created.id));
@@ -446,7 +447,7 @@ mod tests {
         assert_eq!(first.created.len(), 16);
         assert!(first.more);
         let id = &first.created[0].id;
-        assert!(!crate::attachment::sidecar_dir(&vault, id).exists());
+        assert!(!crate::attachment::sidecar_dir(&vault, id).unwrap().exists());
         let mut edited = fragment::read_fragment(&vault, id).unwrap();
         edited.title = "My own title".into();
         writer.update(edited).unwrap();

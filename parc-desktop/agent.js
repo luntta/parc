@@ -142,7 +142,7 @@ export function agentChat(host, deps) {
       const value = el('strong', 'agent-code-value', code.code);
       value.setAttribute('aria-label', `Code ${code.code.split('').join(' ')}`);
       box.append(el('span', 'agent-code-text', 'Enter this code on GitHub:'), value,
-        button('Copy', { variant: 'outline', glyph: 'copy', onClick: () => { api.copyText(code.code); notify('Copied the code.'); } }),
+        button('Copy', { variant: 'outline', glyph: 'copy', onClick: () => api.copyText(code.code).then(() => notify('Copied the code.'), notify) }),
         button('Open GitHub', { variant: 'outline', onClick: () => api.copilotOpen() }),
         el('span', 'agent-waiting-note', 'Waiting for GitHub…'));
     }

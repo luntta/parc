@@ -63,7 +63,20 @@ async function check() {
   }
   const prototype = archive(path.join(dir, 'prototype', '.parc'));
   const saveKey = 'document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true }))';
+  // Each part of the run is named: a failure says which feature broke, and a pass lists what it covered. The parts
+  // build on each other (later ones use what earlier ones saved), so the run stops at its first failure.
+  const section = name => { const now = Date.now(); if (sections.at(-1)) sections.at(-1).ms = now - sections.at(-1).start; sections.push({ name, start: now }); };
+  const press = (keyCode, modifiers) => { for (const type of ['keyDown', 'keyUp']) win.webContents.sendInputEvent({ type, keyCode, modifiers }); };
   await until(`document.querySelector("#empty")?.textContent.startsWith("No fragments yet") && ${idle}`);
+  section('Page security: a fresh style nonce');
+  // The page's style nonce is a fresh one, not the one index.html names: a <style> carrying that one isn't applied,
+  // while the editor's own styles are.
+  const probe = `(() => { const s = document.createElement('style'); s.setAttribute('nonce', 'parc-editor');
+    s.textContent = 'body { --nonce-probe: 1; }'; document.head.append(s);
+    const v = getComputedStyle(document.body).getPropertyValue('--nonce-probe').trim(); s.remove(); return v; })()`;
+  assert.equal(await js(probe), '');
+  assert.equal(await js('[...document.querySelectorAll("style")].some(s => s.nonce && s.nonce !== "parc-editor" && s.textContent.includes(".cm-"))'), true);
+  section('Pulse as home');
   // Pulse is home: the first item in the nav, and the view the app opens on.
   assert.equal(await js('document.querySelector("nav button").dataset.view'), 'pulse');
   assert.equal(await js('document.querySelector("[data-current] .tool-title")?.textContent'), 'Pulse');
@@ -72,6 +85,7 @@ async function check() {
   await until(`!!document.querySelector("[data-current] .doc") && ${idle}`);
   assert.equal(await js('document.querySelector("#save:defined > button").disabled'), true);
   assert.equal(await js('getComputedStyle(document.querySelector("[data-current] .draft")).getPropertyValue("--aihio-color-page-bg").trim() !== ""'), true);
+  section('Dictation, and Related as it lands');
   // The Related panel waits for words; a dictation is searched for as soon as it lands.
   await until('document.querySelector("[data-current] .related-empty")?.textContent === "Related notes appear here as you write."');
   await js('document.querySelector("#record").click()');
@@ -91,10 +105,21 @@ async function check() {
   await until('document.querySelector("[data-current] .doc-title")?.value === ""');
   await js('document.querySelector("#recent .row").click()');
   await until('document.querySelector("[data-current] .doc-title")?.value === "Ferry desk"');
+  section('Live Markdown; saving keeps Undo; search');
+  // The tab was already open, so its caret is still where the dictation left it: at the end. Ctrl+End makes sure.
   await js('document.querySelector("[data-current] .cm-content").focus()');
-  await win.webContents.insertText('## Questions\n');
+  press('End', ['control']);
+  await win.webContents.insertText('\n## Questions\n');
   await until('!!document.querySelector(".cm-line.md-h2")');
   await js('document.querySelector("#save").click()');
+  await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
+  // Saving keeps the editor as it was: what was typed before the save is still in Undo (and Redo brings it back).
+  await js('document.querySelector("[data-current] .cm-content").focus()');
+  press('Z', ['control']);
+  await until('!document.querySelector(".cm-line.md-h2")');
+  press('Y', ['control']);
+  await until('!!document.querySelector(".cm-line.md-h2")');
+  await js(saveKey);
   await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
   assert.equal(await js('document.querySelectorAll("#recent .row").length'), 1);
   await js('document.querySelector("[data-view=search]").click()');
@@ -102,6 +127,7 @@ async function check() {
   await js('document.querySelector("[data-current] .query").value = "Questions"; document.querySelector("[data-current] .search-form").requestSubmit()');
   await until('document.querySelector("[data-current] .view-out button")?.textContent.includes("Ferry desk")');
 
+  section('Typed capture and field edits');
   // A typed capture: pick todo, save with Ctrl+S, then flip its status with the schema's toggle.
   await js('document.querySelector("[data-view=capture]").click()');
   await until(`document.querySelector("[data-current] .doc-title")?.value === "" && ${idle}`);
@@ -120,6 +146,7 @@ async function check() {
   // A save from elsewhere reloads the clean open fragment.
   await prototype.update(todo.id, { fields: { priority: 'low' } });
   await until('document.querySelector("[data-current] .prop[data-field=priority]")?.textContent.includes("Low priority")');
+  section('Drafts on disk across a reload');
   // Unsaved text is stored on disk (not inline in localStorage) and outlives a reload of the window; closing it asks first.
   await js('document.querySelector("[data-current] .cm-content").focus()');
   await win.webContents.insertText('Unsent thought');
@@ -131,6 +158,7 @@ async function check() {
   assert.equal(await js('document.querySelector("[data-current] .doc-title")?.value'), 'Call the ferry office');
   const tabNames = 'JSON.stringify([...document.querySelectorAll(".pane")].map(p => [...p.querySelectorAll(".tab")].map(t => t.getAttribute("aria-label"))))';
   assert.deepEqual(JSON.parse(await js(tabNames)), [['Ferry desk', 'Call the ferry office, unsaved']]);
+  section('Switching vaults; aggregate vaults');
   // Switching vaults keeps the tabs: a fragment stays in its own vault, and its draft stays unsaved.
   const other = archive(second); await other.init();
   const old = await other.save({ title: 'Old observation', body: 'People asked privately.' });
@@ -146,6 +174,7 @@ async function check() {
   await js('document.querySelector("[data-view=capture]").click()');
   await until(`!!document.querySelector("[data-current] .doc") && ${idle}`);
   await js('document.querySelector("[data-current] .cm-content").focus()');
+  section('[[ link picker');
   // The [[ picker ranks fragments in memory and inserts the shortest unique ID on Enter.
   await win.webContents.insertText('See [[Old obs');
   await until('document.querySelector(".cm-linkoption")?.textContent.includes("Old observation")');
@@ -157,11 +186,13 @@ async function check() {
   await js(`document.querySelector('#destination').value=${JSON.stringify(second)}; document.querySelector('#destination').dispatchEvent(new Event('change')); document.querySelector('#save').click()`);
   await until(`document.querySelectorAll("#recent .row").length === 4 && ${idle}`);
   assert.equal((await other.list()).length, 2);
+  section('Fragment and vault graphs');
   // The saved fragment's own Graph section, then the whole scope as a graph.
   await until('document.querySelector("[data-current] .doc-graph:not([hidden]) .node:not(.center)")?.textContent.includes("Old observation")');
   await js('document.querySelector("[data-view=graph]").click()');
   await until('[...document.querySelectorAll("[data-current] .view-out .vg-node")].some(n => n.getAttribute("aria-label").startsWith("Old observation"))');
   assert.equal(await js('document.querySelectorAll("[data-current] .view-out .vg-edges line").length'), 1);
+  section('Go to… and grep');
   // Go to… (Ctrl+K) finds a fragment by title, shows it on the right as it reads, and opens it with the caret in its text.
   const goTo = async text => {
     await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))');
@@ -190,6 +221,7 @@ async function check() {
   await until('document.querySelector(".palette-none")?.textContent.startsWith("No fragment contains")');
   await paletteKey('Escape');
   await until('document.querySelector(".palette").hidden');
+  section('Sidebar filter, grouping and order');
   // The sidebar filters by words, by the search language, and to open work.
   const filter = async text => { await js(`{ const f = document.querySelector("#filter"); f.value = ${JSON.stringify(text)}; f.dispatchEvent(new Event("input", { bubbles: true })); }`); await delay(400); };
   const shown = () => js('[...document.querySelectorAll("#recent .row-title")].map(t => t.textContent)');
@@ -229,6 +261,7 @@ async function check() {
   await listView('sort:updated'); await listView('group:type');
   assert.equal(await js('document.querySelector("#listView").hasAttribute("data-active")'), false);
   assert.deepEqual(JSON.parse(await js('localStorage.getItem("parc.listView")')), { group: 'type', sort: 'updated', dir: 'desc' });
+  section('Todo board');
   // A type's header opens its own view: the todo board, a lane per status. Cards move by drag and drop and by
   // Shift+arrows, and Undo moves them back.
   const dragTo = (from, to) => js(`{
@@ -255,6 +288,7 @@ async function check() {
   await js('document.querySelector(".status-action").click()'); // Undo
   await eventually(async () => (await prototype.get(todo.id)).status === 'in-progress');
   await until(`JSON.parse(${lanes})[1][1][0] === "Call the ferry office" && ${idle}`);
+  section('Risk matrix');
   // Risks open on their matrix: likelihood × impact, a tray of unassessed ones, and a ranking. Dropping a risk
   // on a cell sets both fields; Shift+↓ lowers its likelihood. The board lens is remembered.
   const strike = await prototype.save({ title: 'Ferry strike', body: '', type: 'risk', fields: { likelihood: 'high', impact: 'high' } });
@@ -279,12 +313,14 @@ async function check() {
   await until('document.querySelector(".type-view")?.dataset.lens === "board"');
   assert.deepEqual(JSON.parse(await js(lanes))[0], ['identified', ['Fog delays', 'Ferry strike']]);
   assert.deepEqual(JSON.parse(await js('localStorage.getItem("parc.typeViews")')), { risk: { lens: 'board' } });
+  section('Pulse counts');
   // Pulse's counts of open work open the type's view.
   await js('document.querySelector("[data-view=pulse]").click()');
   await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Pulse" && ${idle}`);
   await js('[...document.querySelectorAll(".figure")].find(f => f.textContent.startsWith("Open risks")).click()');
   await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Risks" && ${idle}`);
   assert.equal((await prototype.get(strike.id)).likelihood, 'high');
+  section('History restore');
   // History lists the version before "## Questions" was added; restoring it brings that text back.
   await js('[...document.querySelectorAll("#recent .row")].find(r => r.textContent.includes("Ferry desk")).click()');
   await until(`document.querySelector("[data-current] .doc-title")?.value === "Ferry desk" && ${idle}`);
@@ -294,6 +330,7 @@ async function check() {
   await until('document.querySelector(".diff")?.textContent.includes("Questions")');
   await js('document.querySelector(".compare-head aihio-button").click()');
   await until(`document.querySelector("[data-current] .doc-title")?.value === "Ferry desk" && document.querySelector("[data-current] .cm-content")?.textContent.includes("Questions") === false && ${idle}`);
+  section('Archive, and trash with Undo');
   // Archive, then trash with Undo.
   const ferry = (await prototype.list()).find(r => r.title === 'Ferry desk');
   await js('document.querySelector("#fragmentMenu aihio-dropdown-item[value=archive]").click()');
@@ -309,10 +346,12 @@ async function check() {
   await js('document.querySelector(".status-action").click()'); // Undo
   await until(`document.querySelector("[data-current] .doc-title")?.value === "Ferry desk" && ${idle}`);
   assert.equal((await prototype.get(ferry.id)).title, 'Ferry desk');
+  section('Live search');
   // Live search as you type.
   await js('document.querySelector("[data-view=search]").click()'); await until(idle);
   await js('{ const q = document.querySelector("[data-current] .query"); q.value = "ferry office"; q.dispatchEvent(new Event("input", { bubbles: true })); }');
   await until('document.querySelector("[data-current] .view-out .row-title")?.textContent === "Call the ferry office"');
+  section('Quick capture window');
   // The quick capture window saves a typed fragment and closes.
   await js('document.querySelector("#quickCapture").click()');
   let quick; await eventually(async () => !!(quick = BrowserWindow.getAllWindows().find(w => w !== win)));
@@ -322,6 +361,7 @@ async function check() {
   await eventually(async () => quick.isDestroyed());
   const idea = (await prototype.list()).find(r => r.title === 'Ferry timetable as a widget');
   assert.equal(idea?.type, 'idea');
+  section('Settings: theme, meaning model, capture command, dictation');
   // Settings: a theme shows as soon as it is picked; Cancel puts the saved one back.
   await js('document.querySelector("[data-view=capture]").click()'); await until(idle);
   const dark = 'matchMedia("(prefers-color-scheme: dark)").matches';
@@ -368,6 +408,7 @@ async function check() {
   assert.deepEqual(saved.speechLanguages, ['fi', 'en']);
   assert.equal(saved.theme, 'dark');
   assert.equal(await js(dark), true);
+  section('Vault settings');
   // Vault settings: turn a type off, rename a status (its fragments follow), add a type.
   const invoice = await prototype.save({ title: 'Settle the invoice', body: '', type: 'todo', fields: { status: 'in-progress' } });
   await until(idle);
@@ -394,6 +435,7 @@ async function check() {
   assert.deepEqual(kinds.find(k => k.name === 'bug').fields[0].categories, { open: 'open', done: 'done' });
   await js('[...document.querySelectorAll("#vsFooter aihio-button")].find(b => b.textContent.includes("Done")).click()');
   await until('!document.querySelector("#vaultSettings").hasAttribute("open")');
+  section('Related as you write');
   // Related: as you write, fragments that share your words, tags or links appear beside the text, saying why and
   // quoting where. Typing on keeps those still related in their places; newcomers join below. One opens in place,
   // and Link puts it in the draft at the caret.
@@ -421,6 +463,7 @@ async function check() {
   await until(`${ferryItem}.querySelector(".rel-why").textContent.startsWith("Linked · ")`);
   // The link shows what it resolves to: as a chip, or as a hint beside its source while the caret is on its line.
   await until('[...document.querySelectorAll("[data-current] .cm-content :is(.md-wiki, .md-wikihint)")].some(n => n.textContent.includes("Ferry desk"))');
+  section('Tabs and groups');
   // Tabs and groups, as in a code editor. Start from one empty group: Close all asks about each unsaved tab.
   assert.equal(await js('document.querySelectorAll(".pane").length'), 1);
   for (let n = await js('document.querySelectorAll(".tab[data-dirty]").length'); n > 0; n--) answers.push(1); // Discard / Don't save
@@ -499,6 +542,7 @@ async function check() {
   await tabsAre([['~Pulse', 'Settle the invoice'], ['Old observation', 'Call the ferry office']]);
   await js('document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", code: "Digit1", ctrlKey: true, bubbles: true }))');
   await until(`document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[0] && document.querySelector("[data-current] .tool-title")?.textContent === "Pulse"`);
+  section('Layout and drafts across a reload');
   // Unsaved text in a tab that isn't current shows on its tab; the window's layout and the draft come back after a reload.
   await js('document.querySelectorAll(".pane")[1].querySelector(".tab[aria-selected=true]").click()');
   await until(`document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[1] && ${idle}`);
@@ -513,6 +557,7 @@ async function check() {
   await tabsAre([['~Pulse', 'Settle the invoice'], ['Old observation', 'Call the ferry office']]);
   assert.equal(await js('document.querySelector(".pane[data-active]") === document.querySelectorAll(".pane")[0]'), true);
   assert.equal(await js('document.querySelectorAll(".pane")[1].querySelector(".scroll:not([hidden]) .cm-content").textContent.includes("Unsent in a split.")'), true);
+  section('Agent with ChatGPT');
   // The Agent: signed out, it says what signing in means; Continue with ChatGPT goes through the browser and back.
   // A question shows the search the agent made and an answer whose citation reads as a title and opens the fragment.
   const openai = await fakeOpenAI();
@@ -541,6 +586,7 @@ async function check() {
   assert.match(cited, /ferry/i);
   await js('document.querySelector("[data-current] .agent-text .md-wiki").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }))');
   await until(`document.querySelector("[data-current] .doc-title")?.value === ${JSON.stringify(cited)}`);
+  section('Saved chats');
   // Chats are saved. The chat's tab is named for its first question and kept; New chat opens another, which lists
   // the saved ones. Picking one shows the tab it is open in, or, once that is closed, shows it in place, as it was;
   // a follow-up goes on from it, and it comes back after a reload. Deleting it closes its tab; Undo brings it back.
@@ -580,6 +626,7 @@ async function check() {
   await until(`!${tabNamed(question)} && !document.querySelector("[data-current] .agent-chat-open") && !!document.querySelector("#status .status-action")`);
   await js('document.querySelector("#status .status-action").click()');
   await until('[...document.querySelectorAll("[data-current] .agent-chat-title")].map(n => n.textContent).join() === "Where did I note the ferry?"');
+  section('Agent with GitHub Copilot');
   // GitHub Copilot: a new chat switched to it offers its sign-in; the code to type at GitHub is shown while parc
   // waits; signed in, the plan's models are offered and a question runs parc's tools on Copilot.
   const github = await fakeGitHub();
@@ -616,6 +663,7 @@ async function check() {
   github.close();
   openai.close();
 
+  section('Templates, field editors, promote');
   // Step 2 parity: templates, list & string field editors, promote/convert type, drop-to-attach with
   // inline parc-attach:// raster preview, Trash view restore, Vault health + reindex, Pulse daily review,
   // and removing a secondary vault without deleting disk files.
@@ -652,6 +700,7 @@ async function check() {
   await eventually(async () => (await prototype.get(prom.id)).assignee === 'Raine');
   await until(`document.querySelector("[data-current] .prop-text[data-field=assignee]")?.textContent.includes("Assignee: Raine") && ${idle}`);
 
+  section('Drop to attach, inline image, detach');
   // Drop a PNG onto the fragment: attaches, inserts ![[attach:dot.png]], renders inline via parc-attach://, then detaches.
   const pngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
   await js(`{
@@ -670,6 +719,7 @@ async function check() {
   await js(saveKey);
   await until(`document.querySelector("#revision").textContent === "Saved" && ${idle}`);
 
+  section('Trash view');
   // Trash view lists trashed fragments and restores them.
   answers.push(1); // Move to trash
   await js('document.querySelector("#fragmentMenu aihio-dropdown-item[value=trash]").click()');
@@ -680,6 +730,7 @@ async function check() {
   await until(`document.querySelector("[data-current] .doc-title")?.value === "Promote me" && ${idle}`);
   assert.equal((await prototype.get(prom.id)).title, 'Promote me');
 
+  section('Vault health and reindex');
   // Vault health detects broken links and rebuilds the SQLite index.
   await prototype.save({ title: 'Broken ref note', body: 'Points to [[01AAAAAAAAAAAAAAAAAAAAAAAA]].' });
   await until(`!!${rowNamed('Broken ref note')} && ${idle}`);
@@ -688,6 +739,7 @@ async function check() {
   await js('[...document.querySelectorAll("[data-current] .doctor-actions aihio-button")].find(b => b.textContent.includes("Rebuild index")).click()');
   await until(`document.querySelector("#status").textContent.startsWith("Rebuilt index") && ${idle}`);
 
+  section('Pulse daily review');
   // Pulse daily review highlights overdue items in Needs attention.
   await prototype.save({ title: 'Overdue filing', body: 'Do now', type: 'todo', fields: { due: '2020-01-01' } });
   await until(`!!${rowNamed('Overdue filing')} && ${idle}`);
@@ -695,6 +747,7 @@ async function check() {
   await until(`document.querySelector("[data-current] .tool-title")?.textContent === "Pulse" && document.querySelector("[data-current] .pulse-list")?.textContent.includes("Overdue filing") && ${idle}`);
   assert.match(await js('document.querySelector("[data-current] .pulse-pill[data-tone=alert]").textContent'), /^Overdue/);
 
+  section('Removing a vault');
   // Removing a secondary vault detaches it from parc without touching files on disk.
   await js(`document.querySelector('#vaultMenu aihio-dropdown-item[value=${JSON.stringify(second)}]').click()`);
   await until(`document.querySelector("#vaultName").textContent === "Research" && ${idle}`);
@@ -703,6 +756,7 @@ async function check() {
   await until(`document.querySelector("#vaultName").textContent === "Prototype" && document.querySelector("#status").textContent.includes("files on disk were not changed") && ${idle}`);
   assert.equal(fs.existsSync(path.join(second, 'config.yml')), true, 'removing a vault leaves its files on disk');
 
+  section('Inbox: import and triage');
   // Step 3 & 4 Inbox: drop a real PDF & Markdown doc into <vault>/inbox/, sweep, triage in Inbox view,
   // verify pdfjs-dist renders canvas + textLayer under strict CSP (no wasm-unsafe-eval), verify quote
   // highlight + promote comment to todo, verify Markdown viewer, and verify `in:files` search hits.
@@ -723,6 +777,7 @@ async function check() {
   await until('document.querySelectorAll("[data-current] .inbox-row").length === 2 && document.querySelector("#inboxBadge")?.textContent === "2"');
   assert.equal(fs.existsSync(droppedPdf), false, 'PDF moved out of inbox/');
 
+  section('PDF viewer: render, zoom, select, quote');
   // Open the PDF source: verify pdf.js renders real canvas + textLayer under strict CSP.
   await js('[...document.querySelectorAll("[data-current] .inbox-row")].find(r => r.textContent.includes("PDF")).click()');
   await until('document.querySelector("[data-current] .scroll, [data-current]")?.dataset.sourceMode === "true" && !!document.querySelector("[data-current] .pdfViewer .page canvas") && !!document.querySelector("[data-current] .pdfViewer .textLayer span")');
@@ -754,7 +809,16 @@ async function check() {
   // (which would bypass Chromium's hit-testing during the drag).
   const pdfLine = `[...document.querySelectorAll('[data-current] .page[data-page-number="1"] .textLayer span')]
     .find(s => s.textContent.startsWith('Icebreaker escort') && s.getBoundingClientRect().width)`;
-  await until(`!!(${pdfLine})`);
+  // Fit width re-renders the pages, text layers last: wait until the line has stopped moving before dragging across
+  // it, or the drag can land on a layer that is about to be replaced.
+  let lastSpot = '';
+  await eventually(async () => {
+    const spot = await js(`(() => { const l = ${pdfLine}; if (!l?.closest('.page[data-loaded]')) return '';
+      const r = l.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(); })()`);
+    const settled = !!spot && spot === lastSpot;
+    lastSpot = spot;
+    return settled;
+  });
   const { start, end } = await js(`(() => {
     const line = ${pdfLine};
     line.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -770,6 +834,8 @@ async function check() {
   win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...start });
   win.webContents.sendInputEvent({ type: 'mouseMove', modifiers: ['leftbuttondown'], ...end });
   win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...end });
+  // Input events reach the page in their own time: wait for the drag to have selected something, then check what.
+  await until('window.getSelection().toString().length > 0').catch(() => {});
   assert.equal(await js('window.getSelection().toString()'), 'breaker escort starts', 'drag selects precisely the requested PDF text');
 
   // Quote the actual selection and promote the comment to a todo.
@@ -783,6 +849,7 @@ async function check() {
   await js('document.querySelector("[data-current] .quote-promote-menu aihio-dropdown-item[value=todo]").click()');
   await until(`document.querySelector("#status").textContent.includes("Promoted comment to todo") && ${idle}`);
 
+  section('Markdown viewer; grep in documents');
   // Open the Markdown source: verify safe DOM viewer renders sections.
   await js('document.querySelector("nav [data-view=inbox]").click()');
   await until('document.querySelectorAll("[data-current] .inbox-row").length === 2');
@@ -805,12 +872,14 @@ async function check() {
   await paletteKey('Enter');
   await until('document.querySelector("[data-current] mark.sv-find-hl[data-current]")?.closest(".sv-part")?.dataset.part === "2"');
 
+  section('in:files search');
   // Search inside attachments with `in:files` and verify clickable file_hits render.
   await js('document.querySelector("nav [data-view=search]").click()');
   await until(idle);
   await js('{ const q = document.querySelector("[data-current] .query"); q.value = "in:files telemetry"; q.dispatchEvent(new Event("input", { bubbles: true })); }');
   await until('document.querySelector("[data-current] .file-hit")?.textContent.includes("briefing.md")');
 
+  section('Omarchy live theme');
   // Omarchy System theme: switch back to System, verify Tokyo Night tokens apply, then swap
   // themes and toggle Glassy + Rounded corners live on disk and verify the window follows immediately.
   await js('document.querySelector("#openSettings").click()');
@@ -833,9 +902,17 @@ async function check() {
   assert.equal(await js('matchMedia("(prefers-color-scheme: dark)").matches'), false);
   assert.match(await js('document.documentElement.style.getPropertyValue("--desk")'), /^rgba\(227, 228, 232, 0\.65\)$/);
 
-  console.log('PASS: Pulse as home (with daily review), dictation, live Markdown, [[ link picker, search, typed capture (templates, string & list fields, toggle, promote), attachments (drop, strip, inline parc-attach:// preview, detach), external reload, draft restore, aggregate vaults, scoped save, fragment and vault graphs, Go to… with preview and grep (fragments and their documents), sidebar filters, grouping and sorting, type boards and the risk matrix (drag, keys, undo), history restore, archive and trash view with undo/restore, vault health and reindex, remove vault, Omarchy live System theme (colors, mode, rounding, glass), live search, quick capture, copying the capture command, theme preview and save, dictation languages and model list, vault settings, related notes as you write and dictate, tabs and the layout and drafts across a reload, and the Agent (ChatGPT + GitHub Copilot)');
+  section(null);
+  sections.pop();
+  console.log(`PASS: ${sections.length} sections\n${sections.map(x => `  ✔ ${x.name} (${(x.ms / 1000).toFixed(1)} s)`).join('\n')}`);
 }
-check().then(() => finish(0), err => { console.error(err); finish(1); });
+const sections = [];
+check().then(() => finish(0), err => {
+  const at = sections.at(-1);
+  console.error(err);
+  console.error(at ? `FAIL in “${at.name}”, after ${sections.length - 1} sections passed.` : 'FAIL before the first section.');
+  finish(1);
+});
 function finish(code) {
   for (const win of BrowserWindow.getAllWindows()) win.destroy();
   app.exit(code);

@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const fss = require('node:fs');
 const path = require('node:path');
+const { writeAtomic, writeAtomicSync, isStaleTemp } = require('./files.cjs');
 
 const DRAFT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_TEXT = 1_000_000;
@@ -28,17 +29,13 @@ function draftStore(dir) {
   async function save(id, draft) {
     const target = file(id), payload = JSON.stringify(cleanDraft(draft));
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-    const tmp = `${target}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, payload, { mode: 0o600 });
-    await fs.rename(tmp, target);
+    await writeAtomic(target, payload);
   }
 
   function saveSync(id, draft) {
     const target = file(id), payload = JSON.stringify(cleanDraft(draft));
     fss.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const tmp = `${target}.${process.pid}.tmp`;
-    fss.writeFileSync(tmp, payload, { mode: 0o600 });
-    fss.renameSync(tmp, target);
+    writeAtomicSync(target, payload);
   }
 
   async function load(id) {
@@ -63,7 +60,10 @@ function draftStore(dir) {
     let names = [];
     try { names = await fs.readdir(dir); } catch { return; }
     for (const name of names) {
-      if (name.endsWith('.tmp')) { await fs.rm(path.join(dir, name), { force: true }).catch(() => {}); continue; }
+      if (name.endsWith('.tmp')) {
+        if (await isStaleTemp(path.join(dir, name))) await fs.rm(path.join(dir, name), { force: true }).catch(() => {});
+        continue;
+      }
       if (!name.endsWith('.json')) continue;
       const id = name.slice(0, -5);
       if (!keep.has(id)) await fs.rm(path.join(dir, name), { force: true }).catch(() => {});

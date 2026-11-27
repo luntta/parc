@@ -93,6 +93,7 @@ impl Router {
             "vault.links" => methods::vault::links(vault, params),
             "vault.reindex" => methods::vault::reindex(vault, params),
             "vault.doctor" => methods::vault::doctor(vault, params),
+            "vault.background" => methods::vault::background(vault, params),
 
             // Schema methods
             "schema.list" => methods::schema::list(vault, params),

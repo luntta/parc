@@ -4,7 +4,7 @@ contextBridge.exposeInMainWorld('parc', {
   vaults: invoke('vaults'), suggestedVaults: invoke('suggested-vaults'), openVault: invoke('open-vault'),
   createVault: invoke('create-vault'), closeVault: invoke('close-vault'),
   discard: invoke('discard'), conflict: invoke('conflict'),
-  list: invoke('list'), grep: invoke('grep'), recall: invoke('recall'), note: invoke('note'), save: invoke('save'), update: invoke('update'), promote: invoke('promote'),
+  list: invoke('list'), rows: invoke('rows'), grep: invoke('grep'), recall: invoke('recall'), note: invoke('note'), save: invoke('save'), update: invoke('update'), promote: invoke('promote'),
   attachments: invoke('attachments'), pickAttachment: invoke('pick-attachment'), attachBytes: invoke('attach-bytes'), detach: invoke('detach'), openAttachment: invoke('open-attachment'),
   attachmentText: invoke('attachment-text'), attachmentLocate: invoke('attachment-locate'), attachmentBytes: invoke('attachment-bytes'), moveAttachment: invoke('move-attachment'),
   linkFragments: invoke('link-fragments'),

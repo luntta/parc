@@ -61,28 +61,45 @@ pub struct AttachmentRef {
     pub display_text: Option<String>,
 }
 
-/// Path to the `.text/` sidecar directory for a fragment.
-pub fn sidecar_dir(vault: &Path, full_id: &str) -> PathBuf {
-    vault
-        .join("attachments")
-        .join(full_id)
-        .join(TEXT_SIDECAR_DIR)
+/// A fragment's `attachments/<full_id>/` folder, which may not exist yet. Neither
+/// `attachments/` nor the fragment's folder may be a symlink: a cloned vault could
+/// otherwise point parc at files outside it, to list, read, send to the Agent, or
+/// write sidecars into. Every path to an attachment goes through here.
+pub fn attachment_dir(vault: &Path, full_id: &str) -> Result<PathBuf, ParcError> {
+    fragment::validate_id(full_id)?;
+    secure_fs::real_dir(vault, &["attachments", full_id])
+}
+
+/// The path of one attachment, checked as [`attachment_dir`] checks its folder.
+pub fn attachment_path(vault: &Path, full_id: &str, filename: &str) -> Result<PathBuf, ParcError> {
+    validate_attachment_filename(filename)?;
+    Ok(attachment_dir(vault, full_id)?.join(filename))
+}
+
+/// Path to the `.text/` sidecar directory for a fragment, checked as [`attachment_dir`].
+pub fn sidecar_dir(vault: &Path, full_id: &str) -> Result<PathBuf, ParcError> {
+    fragment::validate_id(full_id)?;
+    secure_fs::real_dir(vault, &["attachments", full_id, TEXT_SIDECAR_DIR])
 }
 
 /// Sidecar paths a given attachment filename could have (`.txt` or `.md`).
-pub fn sidecar_paths(vault: &Path, full_id: &str, filename: &str) -> [PathBuf; 2] {
-    let dir = sidecar_dir(vault, full_id);
-    [
+pub fn sidecar_paths(
+    vault: &Path,
+    full_id: &str,
+    filename: &str,
+) -> Result<[PathBuf; 2], ParcError> {
+    let dir = sidecar_dir(vault, full_id)?;
+    Ok([
         dir.join(format!("{filename}.txt")),
         dir.join(format!("{filename}.md")),
-    ]
+    ])
 }
 
 /// Remove any `.text/` sidecars belonging to `filename`, and clean up `.text/`
 /// if it is now empty.
 pub fn remove_sidecars(vault: &Path, full_id: &str, filename: &str) -> Result<(), ParcError> {
     validate_attachment_filename(filename)?;
-    for path in sidecar_paths(vault, full_id, filename) {
+    for path in sidecar_paths(vault, full_id, filename)? {
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if !meta.file_type().is_symlink() && meta.is_file() => {
                 std::fs::remove_file(&path)?;
@@ -90,7 +107,7 @@ pub fn remove_sidecars(vault: &Path, full_id: &str, filename: &str) -> Result<()
             Ok(_) | Err(_) => {}
         }
     }
-    cleanup_empty_dir(&sidecar_dir(vault, full_id));
+    cleanup_empty_dir(&sidecar_dir(vault, full_id)?);
     Ok(())
 }
 
@@ -103,8 +120,8 @@ pub fn move_sidecars(
     filename: &str,
 ) -> Result<(), ParcError> {
     validate_attachment_filename(filename)?;
-    let from_paths = sidecar_paths(vault, from_id, filename);
-    let to_paths = sidecar_paths(vault, to_id, filename);
+    let from_paths = sidecar_paths(vault, from_id, filename)?;
+    let to_paths = sidecar_paths(vault, to_id, filename)?;
     for (src, dst) in from_paths.iter().zip(to_paths.iter()) {
         if let Ok(meta) = std::fs::symlink_metadata(src) {
             if !meta.file_type().is_symlink() && meta.is_file() {
@@ -115,13 +132,14 @@ pub fn move_sidecars(
             }
         }
     }
-    cleanup_empty_dir(&sidecar_dir(vault, from_id));
-    cleanup_empty_dir(&vault.join("attachments").join(from_id));
+    cleanup_empty_dir(&sidecar_dir(vault, from_id)?);
+    cleanup_empty_dir(&attachment_dir(vault, from_id)?);
     Ok(())
 }
 
+/// Remove `dir` if it is an empty folder (never a symlink to one).
 fn cleanup_empty_dir(dir: &Path) {
-    if dir.is_dir() {
+    if std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) {
         if let Ok(mut entries) = std::fs::read_dir(dir) {
             if entries.next().is_none() {
                 let _ = std::fs::remove_dir(dir);
@@ -166,7 +184,7 @@ pub fn store_attachment_file(
         .to_string();
     validate_attachment_filename(&filename)?;
 
-    let attach_dir = vault.join("attachments").join(full_id);
+    let attach_dir = attachment_dir(vault, full_id)?;
     secure_fs::create_private_dir_all(&attach_dir)?;
 
     let dest = attach_dir.join(&filename);
@@ -208,7 +226,7 @@ pub fn remove_attachment_file(
     fragment::validate_id(full_id)?;
     validate_attachment_filename(filename)?;
 
-    let attach_path = vault.join("attachments").join(full_id).join(filename);
+    let attach_path = attachment_path(vault, full_id, filename)?;
     match std::fs::symlink_metadata(&attach_path) {
         Ok(_) => secure_fs::remove_private_file(&attach_path)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -218,7 +236,7 @@ pub fn remove_attachment_file(
     remove_sidecars(vault, full_id, filename)?;
 
     // Remove empty attachment directory
-    cleanup_empty_dir(&vault.join("attachments").join(full_id));
+    cleanup_empty_dir(&attachment_dir(vault, full_id)?);
     Ok(())
 }
 
@@ -234,7 +252,7 @@ pub fn move_attachment_file(
     fragment::validate_id(to_id)?;
     validate_attachment_filename(filename)?;
 
-    let src = vault.join("attachments").join(from_id).join(filename);
+    let src = attachment_path(vault, from_id, filename)?;
     if std::fs::symlink_metadata(&src).is_err() {
         return Err(ParcError::ValidationError(format!(
             "attachment '{}' not found on fragment '{}'",
@@ -243,7 +261,7 @@ pub fn move_attachment_file(
         )));
     }
 
-    let dest_dir = vault.join("attachments").join(to_id);
+    let dest_dir = attachment_dir(vault, to_id)?;
     secure_fs::create_private_dir_all(&dest_dir)?;
     let dest = dest_dir.join(filename);
     if dest.exists() || std::fs::symlink_metadata(&dest).is_ok() {
@@ -255,7 +273,7 @@ pub fn move_attachment_file(
     }
 
     secure_fs::rename_private_attachment(&src, &dest)?;
-    cleanup_empty_dir(&vault.join("attachments").join(from_id));
+    cleanup_empty_dir(&attachment_dir(vault, from_id)?);
     Ok(())
 }
 
@@ -311,13 +329,13 @@ pub fn list_attachments(
     list_attachments_by_id(vault, &full_id)
 }
 
-/// List attachments for a fragment whose full ID is already known.
+/// List attachments for a fragment whose full ID is already known. A symlinked
+/// attachment folder is an error, not a list of whatever it points at.
 pub fn list_attachments_by_id(
     vault: &Path,
     full_id: &str,
 ) -> Result<Vec<AttachmentInfo>, ParcError> {
-    fragment::validate_id(full_id)?;
-    let attach_dir = vault.join("attachments").join(full_id);
+    let attach_dir = attachment_dir(vault, full_id)?;
     if !attach_dir.is_dir() {
         return Ok(Vec::new());
     }

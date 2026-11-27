@@ -19,6 +19,8 @@ Attachments live under `<vault>/attachments/<fragment-id>/`, one folder per frag
 
 There is no central blob store, no de-duplication, no rename — what you put in is what's there.
 
+`attachments/`, each fragment's folder in it, and the files themselves must be real folders and files, not symlinks. A vault can arrive by `git clone`, and git carries symlinks: one pointing at, say, `~/.ssh` would otherwise let a vault show your private files as its attachments, hand their text to the Agent, or write into that folder. parc refuses to follow them, and `parc doctor` reports any it finds.
+
 ## Adding attachments
 
 ```bash

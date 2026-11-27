@@ -1,4 +1,4 @@
-import { EditorState, Compartment, StateEffect } from '@codemirror/state';
+import { EditorState, Compartment, StateEffect, Annotation, Transaction } from '@codemirror/state';
 import { EditorView, Decoration, ViewPlugin, WidgetType, keymap, placeholder } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 import { autocompletion, acceptCompletion } from '@codemirror/autocomplete';
@@ -6,6 +6,11 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { syntaxTree, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { icon, typeIcon } from './icons.js';
+import { textChange } from './text-change.mjs';
+
+// The nonce CodeMirror's <style> carries, as the page's CSP names it: main serves each load with a fresh one.
+const STYLE_NONCE = document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content
+  .match(/'nonce-([\w-]+)'/)?.[1] ?? '';
 
 // Decorations never rewrite the source. Moving the caret onto a line reveals its syntax.
 class Glyph extends WidgetType {
@@ -356,7 +361,7 @@ function liveView(getLinks) {
 export function markdownPreview(parent) {
   let links = NO_LINKS, hasHits = false;
   const hits = new Compartment();
-  const base = [EditorView.cspNonce.of('parc-editor'), markdown({ base: markdownLanguage }), liveView(() => links), syntaxHighlighting(style), EditorView.lineWrapping,
+  const base = [EditorView.cspNonce.of(STYLE_NONCE), markdown({ base: markdownLanguage }), liveView(() => links), syntaxHighlighting(style), EditorView.lineWrapping,
     EditorView.editable.of(false), EditorState.readOnly.of(true), EditorView.contentAttributes.of({ 'aria-label': 'Fragment preview' }), hits.of([])];
   const view = new EditorView({ state: EditorState.create({ extensions: base }), parent });
   return {
@@ -383,17 +388,25 @@ export function markdownPreview(parent) {
   };
 }
 
+// A change that is the saved text catching up, not an edit: it neither marks the tab edited nor joins Undo.
+const syncing = Annotation.define();
+
 export function markdownEditor(parent, onChange, links = NO_LINKS) {
   const lock = new Compartment();
   const live = liveView(() => links);
-  const extensions = [EditorView.cspNonce.of('parc-editor'), history(), markdown({ base: markdownLanguage }), live, syntaxHighlighting(style), EditorView.lineWrapping, linkCompletion(links),
+  const extensions = [EditorView.cspNonce.of(STYLE_NONCE), history(), markdown({ base: markdownLanguage }), live, syntaxHighlighting(style), EditorView.lineWrapping, linkCompletion(links),
     keymap.of([...defaultKeymap, ...historyKeymap]), placeholder('Write in Markdown, or dictate a thought…'),
     EditorView.contentAttributes.of({ 'aria-label': 'Fragment body, Markdown', spellcheck: 'true' }), lock.of(EditorView.editable.of(true)),
-    EditorView.updateListener.of(u => { if (u.docChanged) onChange(); })];
+    EditorView.updateListener.of(u => { if (u.docChanged && !u.transactions.some(t => t.annotation(syncing))) onChange(); })];
   const view = new EditorView({ state: EditorState.create({ extensions }), parent });
   return {
     text: () => view.state.doc.toString(), focus: () => view.focus(),
     load(doc) { view.setState(EditorState.create({ doc, extensions })); }, // reset undo history across fragments
+    // The same fragment, as just saved: keep the caret, selection, scroll and Undo, changing only what differs.
+    sync(doc) {
+      const changes = textChange(view.state.doc.toString(), doc);
+      if (changes) view.dispatch({ changes, annotations: [syncing.of(true), Transaction.addToHistory.of(false)] });
+    },
     // Insert at the caret (replacing a selection), spaced from the words around it, and put the caret after it.
     insert(text) {
       const { from, to } = view.state.selection.main, doc = view.state.doc;

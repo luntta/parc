@@ -435,11 +435,16 @@ test('disk draft store saves atomically, flushes synchronously, prunes orphans a
   store.saveSync('tab-2', { title: 'Sync draft', body: 'Saved on unload', base: null, at: '2026-11-25T00:01:00Z' });
   assert.equal((await store.load('tab-2')).body, 'Saved on unload');
 
-  await fs.writeFile(path.join(dir, 'drafts', 'stale.tmp'), 'partial');
+  // A temporary file left by an interrupted write goes; a fresh one may be a save in progress, and stays.
+  const stale = path.join(dir, 'drafts', 'stale.tmp'), fresh = path.join(dir, 'drafts', 'fresh.tmp');
+  await fs.writeFile(stale, 'partial');
+  await fs.utimes(stale, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+  await fs.writeFile(fresh, 'in progress');
   await store.prune(['tab-2']);
   assert.equal(await store.load('tab-1'), null);
   assert.equal((await store.load('tab-2')).body, 'Saved on unload');
-  await assert.rejects(fs.access(path.join(dir, 'drafts', 'stale.tmp')));
+  await assert.rejects(fs.access(stale));
+  await fs.access(fresh);
 
   store.removeSync('tab-2');
   assert.equal(await store.load('tab-2'), null);

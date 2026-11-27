@@ -170,6 +170,20 @@ fn test_fragment_lifecycle() {
     let results = result_of(&resp).as_array().unwrap();
     assert_eq!(results.len(), 1);
 
+    // Search, only the rows asked for by ID
+    let resp = h.send_rpc(rpc(
+        51,
+        "fragment.search",
+        serde_json::json!({ "query": "is:all", "ids": [&id] }),
+    ));
+    assert_eq!(result_of(&resp).as_array().unwrap().len(), 1);
+    let resp = h.send_rpc(rpc(
+        52,
+        "fragment.search",
+        serde_json::json!({ "query": "is:all", "ids": ["01JQ7V3XKP5GQZ2N8R6T1WBMVH"] }),
+    ));
+    assert_eq!(result_of(&resp).as_array().unwrap().len(), 0);
+
     // Delete
     let resp = h.send_rpc(rpc(6, "fragment.delete", serde_json::json!({ "id": &id })));
     let result = result_of(&resp);
@@ -374,6 +388,12 @@ fn test_vault_operations() {
     let resp = h.send_rpc(rpc(2, "vault.reindex", serde_json::json!({})));
     let result = result_of(&resp);
     assert!(result["indexed"].as_u64().is_some());
+
+    // vault.background: nothing to extract, and no meaning model here (PARC_MODELS_DIR is missing)
+    let resp = h.send_rpc(rpc(20, "vault.background", serde_json::json!({})));
+    let result = result_of(&resp);
+    assert_eq!(result["extract"], 0);
+    assert_eq!(result["meaning"], 0);
 
     // vault.doctor
     let resp = h.send_rpc(rpc(3, "vault.doctor", serde_json::json!({})));

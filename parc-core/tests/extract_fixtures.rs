@@ -126,7 +126,8 @@ fn sidecar_stale_newer_and_index_only_modes() {
     // Default mode is `sidecar`: attaching writes `.text/sample.html.md`
     let html_src = fixture_dir().join("sample.html");
     let (_, filename) = w.attach(&frag.id, &html_src, AttachMode::Copy).unwrap();
-    let sidecar_file = sidecar::sidecar_path(&vault, &frag.id, &filename, TextFormat::Markdown);
+    let sidecar_file =
+        sidecar::sidecar_path(&vault, &frag.id, &filename, TextFormat::Markdown).unwrap();
     assert!(sidecar_file.exists(), "sidecar should be written on attach");
     // `.text/` is never listed as an attachment
     let listed = attachment::list_attachments(&vault, &frag.id).unwrap();
@@ -176,7 +177,7 @@ fn sidecar_stale_newer_and_index_only_modes() {
     .unwrap();
     let pdf_src = fixture_dir().join("sample.pdf");
     let (_, pdf_name) = w.attach(&frag.id, &pdf_src, AttachMode::Copy).unwrap();
-    let pdf_sidecar = sidecar::sidecar_path(&vault, &frag.id, &pdf_name, TextFormat::Text);
+    let pdf_sidecar = sidecar::sidecar_path(&vault, &frag.id, &pdf_name, TextFormat::Text).unwrap();
     assert!(
         !pdf_sidecar.exists(),
         "index mode must not write a sidecar file"
@@ -521,4 +522,67 @@ fn crc32_repeat(b: u8, count: usize) -> u32 {
         }
     }
     !crc
+}
+
+/// A cloned vault can carry `attachments/<id>` (or `attachments/` itself) as a symlink to a folder outside the
+/// vault. parc must not list, read, extract or write sidecars through it.
+#[cfg(unix)]
+#[test]
+fn symlinked_attachment_folders_lead_nowhere() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let vault = tmp.path().join(".parc");
+    parc_core::vault::init_vault(&vault).unwrap();
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("id_test"), "PRIVATE KEY MATERIAL").unwrap();
+
+    let mut w = Writer::new(&vault, ScriptRunner::new(HookStderr::Capture));
+    let cfg = parc_core::config::load_config(&vault).unwrap();
+    let schemas = load_schemas(&vault).unwrap();
+    let frag = w
+        .create(new_fragment(
+            "note",
+            "Harmless",
+            schemas.resolve("note").unwrap(),
+            &cfg,
+        ))
+        .unwrap();
+    symlink(&outside, vault.join("attachments").join(&frag.id)).unwrap();
+
+    assert!(attachment::list_attachments(&vault, &frag.id).is_err());
+    let conn = index::open_index(&vault).unwrap();
+    assert!(extract::read_parts(&vault, &conn, &frag.id, "id_test").is_err());
+    extract::fill(&vault, &conn).unwrap();
+    let src = tmp.path().join("new.txt");
+    std::fs::write(&src, "hello").unwrap();
+    assert!(w.attach(&frag.id, &src, AttachMode::Copy).is_err());
+    assert!(
+        !outside.join(".text").exists(),
+        "no sidecar written outside the vault"
+    );
+    assert!(
+        !outside.join("new.txt").exists(),
+        "nothing attached outside the vault"
+    );
+    let findings = parc_core::doctor::check_attachments(
+        &vault,
+        &[fragment::read_fragment(&vault, &frag.id).unwrap()],
+    );
+    assert!(findings.iter().any(|f| matches!(f, parc_core::doctor::DoctorFinding::AttachmentMismatch { detail, .. } if detail.contains("symlink"))));
+
+    // The whole attachments/ folder as a symlink: the same.
+    std::fs::remove_file(vault.join("attachments").join(&frag.id)).unwrap();
+    std::fs::remove_dir_all(vault.join("attachments")).unwrap();
+    std::fs::create_dir(outside.join(&frag.id)).unwrap();
+    std::fs::write(
+        outside.join(&frag.id).join("id_test"),
+        "PRIVATE KEY MATERIAL",
+    )
+    .unwrap();
+    symlink(&outside, vault.join("attachments")).unwrap();
+    assert!(attachment::list_attachments(&vault, &frag.id).is_err());
+    assert!(extract::read_parts(&vault, &conn, &frag.id, "id_test").is_err());
+    assert!(w.attach(&frag.id, &src, AttachMode::Copy).is_err());
+    assert!(!outside.join(&frag.id).join(".text").exists());
 }

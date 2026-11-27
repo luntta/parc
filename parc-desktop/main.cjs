@@ -1,33 +1,35 @@
-const { sweepMessage, sweepVaults } = require('./inbox-report.cjs');
+const { sweepVaults, inboxSweeper } = require('./inbox-report.cjs');
 const { app, BrowserWindow, ipcMain, session, systemPreferences, dialog, nativeTheme, clipboard, globalShortcut, net, shell, safeStorage, protocol } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
-const { watch, readFileSync } = require('node:fs');
-const { pathToFileURL } = require('node:url');
-const { randomUUID, randomBytes, createHash } = require('node:crypto');
+const { readFileSync } = require('node:fs');
+const { pathToFileURL, fileURLToPath } = require('node:url');
+const { randomUUID, randomBytes } = require('node:crypto');
 const { archive, binary, speechConfig, transcribe } = require('./backend.cjs');
 const { draftStore } = require('./drafts.cjs');
 const agent = require('./agent.cjs');
 const copilot = require('./copilot.cjs');
 const models = require('./models.cjs');
 const { LANGUAGES } = require('./languages.cjs');
+const { cleanSettings, DEFAULTS } = require('./settings.cjs');
 const { omarchyTheme } = require('./omarchy.cjs');
+const { writeJson } = require('./files.cjs');
+const { attachmentFile, safeFile, ULID_RE } = require('./attachment-file.cjs');
+const { positionStore } = require('./positions.cjs');
+const { vaultWatcher } = require('./vault-watch.cjs');
 
 // Narrow scheme for raster image previews inside opened vaults' attachments/ directories (never arbitrary files).
 protocol.registerSchemesAsPrivileged([
   { scheme: 'parc-attach', privileges: { standard: true, secure: true, supportFetchAPI: false } }
 ]);
 const IMAGE_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif' };
-const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-const safeFile = name => typeof name === 'string' && name.length > 0 && name.length <= 255 && name !== '.' && name !== '..' && !/[/\\\0]/.test(name);
 
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
 const capturePage = pathToFileURL(path.join(__dirname, 'capture.html')).href;
 const QUICK = '--capture'; // `electron . --capture` opens the quick capture window, in the running app if there is one
 const webPreferences = { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true };
 const canvas = () => nativeTheme.shouldUseDarkColors ? '#000000' : '#ffffff';
-const THEMES = ['system', 'light', 'dark'];
 // Wayland compositors hand out global shortcuts through the desktop portal, and native Wayland enables real window transparency.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal');
@@ -95,7 +97,7 @@ else app.whenReady().then(() => {
   const stores = new Map([[vault, archive(vault)]]);
   let init, globalVault = null;
   const modelDir = path.join(app.getPath('userData'), 'models');
-  let settings = { whisperModel: '', whisperBin: '', quickCaptureShortcut: '', speechLanguages: [], speechLanguage: '', theme: 'system' }, shortcut = { active: false };
+  let settings = { ...DEFAULTS }, shortcut = { active: false };
   // Read before the first window, so a saved theme (and Omarchy palette) is the one it paints in.
   try { settings = clean(JSON.parse(readFileSync(settingsFile, 'utf8'))); }
   catch { /* none yet, or unreadable: defaults */ }
@@ -114,8 +116,8 @@ else app.whenReady().then(() => {
     catch (err) { if (err.code !== 'ENOENT') throw err; }
     for (const p of paths) if (!stores.has(p)) stores.set(p, archive(p));
     for (const p of stores.keys()) {
-      watchVault(p);
-      backgroundSweep(p);
+      watcher.watch(p);
+      sweeper.background(p);
     }
   }
   const ready = () => init ||= initialize().catch(err => { init = undefined; throw err; });
@@ -127,16 +129,16 @@ else app.whenReady().then(() => {
     return vaultToToken.get(p);
   }
   function dropToken(p) { const t = vaultToToken.get(p); if (t) { vaultToToken.delete(p); tokenToVault.delete(t); } }
-  async function resolveAttachmentFile(vaultPath, id, filename) {
-    if (!stores.has(vaultPath) || !ULID_RE.test(id) || !safeFile(filename)) return null;
-    try {
-      const dir = await fs.realpath(path.join(vaultPath, 'attachments', id));
-      const file = await fs.realpath(path.join(dir, filename));
-      if (!file.startsWith(dir + path.sep)) return null;
-      const stat = await fs.stat(file);
-      return stat.isFile() ? { file, size: stat.size } : null;
-    } catch { return null; }
-  }
+  const resolveAttachmentFile = (vaultPath, id, filename) => stores.has(vaultPath) ? attachmentFile(vaultPath, id, filename) : null;
+  // The workspace page's CSP lets CodeMirror's <style> in by a nonce. The file says 'nonce-parc-editor'; each load
+  // gets a fresh one in its place, so markup that found its way into the page couldn't know it. Every other file:
+  // request goes on as it would have.
+  protocol.handle('file', async req => {
+    if (req.url !== page) return net.fetch(req, { bypassCustomProtocolHandlers: true });
+    const html = await fs.readFile(fileURLToPath(page), 'utf8');
+    const nonce = randomBytes(18).toString('base64url');
+    return new Response(html.replace("'nonce-parc-editor'", `'nonce-${nonce}'`), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  });
   protocol.handle('parc-attach', async req => {
     try {
       const url = new URL(req.url);
@@ -156,10 +158,7 @@ else app.whenReady().then(() => {
     const entries = [...stores.keys()].map(p => ({ path: p, name: label(p), token: tokenFor(p), removable: p !== vault }));
     return entries.map(v => entries.some(other => other !== v && other.name === v.name) ? { ...v, name: path.dirname(v.path) } : v);
   }
-  async function saveRegistry() {
-    await fs.writeFile(registry + '.tmp', JSON.stringify([...stores.keys()].filter(x => x !== vault)), { mode: 0o600 });
-    await fs.rename(registry + '.tmp', registry);
-  }
+  const saveRegistry = () => writeJson(registry, [...stores.keys()].filter(x => x !== vault));
   // Vaults the app can offer by name. Only parc's own global vault: the machine is never scanned.
   async function suggestions() {
     if (!globalVault || stores.has(globalVault)) return [];
@@ -168,43 +167,13 @@ else app.whenReady().then(() => {
   }
   const store = p => {
     if (!stores.has(p)) throw new Error('Choose an opened vault');
-    watchVault(p); // a no-op once watched; picks up a vault whose fragments/ appeared after launch
+    watcher.watch(p); // a no-op once watched; picks up a vault whose fragments/ appeared after launch
     return stores.get(p);
   };
   const trusted = wc => !!wc && ((wc === window?.webContents && wc.getURL() === page) || (wc === captureWindow?.webContents && wc.getURL() === capturePage));
 
   // ── Settings: the theme, dictation (model, whisper-cli, languages) and the quick capture shortcut, kept beside the vault registry ──
-  function clean(input) {
-    const next = { ...settings };
-    for (const k of ['whisperModel', 'whisperBin']) {
-      if (input?.[k] === undefined) continue;
-      const v = String(input[k]).trim();
-      if (v && (!path.isAbsolute(v) || v.length > 4096)) throw new Error('Choose files by their full path.');
-      next[k] = v;
-    }
-    if (input?.speechLanguages !== undefined) {
-      const list = input.speechLanguages;
-      if (!Array.isArray(list) || list.length > 12 || !list.every(c => LANGUAGES.includes(c)) || new Set(list).size !== list.length) {
-        throw new Error('Choose languages from the list.');
-      }
-      next.speechLanguages = list;
-    }
-    if (input?.speechLanguage !== undefined) {
-      const v = String(input.speechLanguage);
-      if (v && v !== 'auto' && !LANGUAGES.includes(v)) throw new Error('Choose a language from the list.'); // '' = the first preferred
-      next.speechLanguage = v;
-    }
-    if (input?.theme !== undefined) {
-      if (!THEMES.includes(input.theme)) throw new Error('Choose System, Light or Dark.');
-      next.theme = input.theme;
-    }
-    if (input?.quickCaptureShortcut !== undefined) {
-      const v = String(input.quickCaptureShortcut).trim();
-      if (v && !/^[A-Za-z0-9+ ]{1,64}$/.test(v)) throw new Error('Write the shortcut like CommandOrControl+Shift+Space.');
-      next.quickCaptureShortcut = v;
-    }
-    return next;
-  }
+  function clean(input) { return cleanSettings(settings, input); } // hoisted: the settings file is read above
   // System follows Omarchy when present (or the desktop's dark/light setting otherwise).
   // Light and Dark override it for every window, prefers-color-scheme included.
   function effectiveOmarchy(theme = activeTheme) {
@@ -256,145 +225,15 @@ else app.whenReady().then(() => {
   };
   const settingsView = () => ({ ...settings, shortcut, captureCommand, omarchy: omarchySummary() });
 
-  // Saves from the CLI, the TUI, another window or a git pull land in fragments/, schemas/ or config.yml; tell the
-  // workspace which vault changed so it can refresh its list and notice when an open fragment moved on under it.
-  // Writes made by the main workspace itself record the resulting file's SHA-256 hash so its own watcher echo is
-  // suppressed without ever missing an external edit (even one made in the same millisecond).
-  const watchers = new Map(); // vault → { close(), ensureInbox() }
-  const sweepTimers = new Map(); // vault → timeout for retrying unsettled inbox files
-  const resweep = new Set();
-  const sweeping = new Map(); // vault → Promise
-  async function sweepVault(p) {
-    if (!stores.has(p)) throw new Error('Choose an opened vault');
-    if (sweeping.has(p)) return sweeping.get(p);
-    const run = (async () => {
-      const res = await store(p).inboxSweep();
-      watchers.get(p)?.ensureInbox?.();
-      if (res?.created?.length) {
-        window?.webContents.send('vault-changed', { vault: p, kind: 'inbox', created: res.created });
-      }
-      if (res.completed) window?.webContents.send('vault-changed', { vault: p, kind: 'attachments' });
-      if (res.failed?.length || res.warnings?.length) {
-        window?.webContents.send('vault-changed', { vault: p, kind: 'inbox-error', message: sweepMessage(res) });
-      }
-      const scanAgain = resweep.delete(p);
-      if (stores.has(p) && (res.waiting?.length || res.pending || res.more || scanAgain)) {
-        clearTimeout(sweepTimers.get(p));
-        const t = setTimeout(() => { sweepTimers.delete(p); backgroundSweep(p); }, res.more ? 0 : 1200);
-        sweepTimers.set(p, t);
-      }
-      return res;
-    })();
-    sweeping.set(p, run);
-    try { return await run; } finally { sweeping.delete(p); }
-  }
-  function backgroundSweep(p) {
-    if (sweeping.has(p)) { resweep.add(p); return; }
-    sweepVault(p).catch(err => {
-      if (stores.has(p)) window?.webContents.send('vault-changed', { vault: p, kind: 'inbox-error', message: String(err.message ?? err) });
-    });
-  }
-  const ownWrites = new Map(); // vault → Map<relPath, { hash: string | null, at: number }>
-  async function fileHash(filePath) {
-    try { return createHash('sha256').update(await fs.readFile(filePath)).digest('hex'); }
-    catch (err) { if (err.code === 'ENOENT') return null; return undefined; }
-  }
-  async function recordOwn(vaultPath, relPath) {
-    if (!ownWrites.has(vaultPath)) ownWrites.set(vaultPath, new Map());
-    const hash = await fileHash(path.join(vaultPath, relPath));
-    if (hash !== undefined) ownWrites.get(vaultPath).set(relPath, { hash, at: Date.now() });
-  }
-  async function isOnlyOwn(vaultPath, changed) {
-    if (!changed.size || changed.has(null)) return false;
-    const known = ownWrites.get(vaultPath);
-    if (!known || !known.size) return false;
-    const now = Date.now();
-    for (const [k, v] of known) if (now - v.at > 5000) known.delete(k);
-    for (const rel of changed) {
-      const entry = known.get(rel);
-      if (!entry) return false;
-      const current = await fileHash(path.join(vaultPath, rel));
-      if (current !== entry.hash) { known.delete(rel); return false; }
-    }
-    return true;
-  }
-  function watchVault(p) {
-    if (watchers.has(p)) return;
-    const handles = [];
-    let fragTimer, schemaTimer, closed = false;
-    const pendingFrags = new Set(), pendingSchemas = new Set();
-    const notify = (kind, pending) => {
-      const batch = new Set(pending);
-      pending.clear();
-      isOnlyOwn(p, batch).then(suppress => {
-        if (!suppress && !closed) window?.webContents.send('vault-changed', { vault: p, kind });
-      }, () => { if (!closed) window?.webContents.send('vault-changed', { vault: p, kind }); });
-    };
-    try {
-      const fw = watch(path.join(p, 'fragments'), (_event, name) => {
-        if (name && (name.startsWith('.') || name.endsWith('.tmp'))) return;
-        pendingFrags.add(name ? `fragments/${name}` : null);
-        clearTimeout(fragTimer);
-        fragTimer = setTimeout(() => notify('fragments', pendingFrags), 150);
-      });
-      fw.on('error', () => { closeAll(); });
-      handles.push(fw);
-    } catch { /* no fragments/ yet: the next request to this vault retries */ return; }
-    try {
-      const sw = watch(path.join(p, 'schemas'), (_event, name) => {
-        if (name && (name.startsWith('.') || name.endsWith('.tmp'))) return;
-        pendingSchemas.add(name ? `schemas/${name}` : null);
-        clearTimeout(schemaTimer);
-        schemaTimer = setTimeout(() => notify('schemas', pendingSchemas), 150);
-      });
-      sw.on('error', () => { sw.close(); });
-      handles.push(sw);
-    } catch { /* optional */ }
-    let cw = null;
-    function watchConfig() {
-      if (closed) return;
-      try {
-        cw = watch(path.join(p, 'config.yml'), event => {
-          pendingSchemas.add('config.yml');
-          clearTimeout(schemaTimer);
-          schemaTimer = setTimeout(() => notify('schemas', pendingSchemas), 150);
-          if (event === 'rename') { cw?.close(); cw = null; setTimeout(watchConfig, 50); }
-        });
-        cw.on('error', () => { cw?.close(); cw = null; });
-      } catch { /* optional */ }
-    }
-    watchConfig();
-    let iw = null, inboxTimer = null;
-    function ensureInbox() {
-      if (closed || iw) return;
-      try {
-        iw = watch(path.join(p, 'inbox'), (_event, name) => {
-          if (name && (name.startsWith('.') || /\.(part|crdownload|tmp)$/i.test(name))) return;
-          clearTimeout(inboxTimer);
-          inboxTimer = setTimeout(() => { if (!closed) backgroundSweep(p); }, 350);
-        });
-        iw.on('error', () => { try { iw?.close(); } catch { /* ignore */ } iw = null; });
-      } catch { /* inbox/ may not exist yet on older vaults */ }
-    }
-    ensureInbox();
-    function closeAll() {
-      closed = true;
-      resweep.delete(p);
-      clearTimeout(fragTimer); clearTimeout(schemaTimer); clearTimeout(inboxTimer);
-      clearTimeout(sweepTimers.get(p)); sweepTimers.delete(p);
-      for (const h of handles) { try { h.close(); } catch { /* ignore */ } }
-      try { cw?.close(); } catch { /* ignore */ }
-      try { iw?.close(); } catch { /* ignore */ }
-      watchers.delete(p);
-    }
-    watchers.set(p, { close: closeAll, ensureInbox });
-  }
+  // Outside changes to an opened vault, told to the workspace (vault-watch.cjs), and its inbox/, swept as files land.
+  const tell = (p, event) => window?.webContents.send('vault-changed', { vault: p, ...event });
+  const watcher = vaultWatcher({ changed: (p, kind) => tell(p, { kind }), inbox: p => sweeper.background(p) });
+  const sweeper = inboxSweeper({ sweep: p => store(p).inboxSweep(), isOpen: p => stores.has(p), after: p => watcher.ensureInbox(p), tell });
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
     omarchy.close();
-    for (const t of sweepTimers.values()) clearTimeout(t);
-    sweepTimers.clear();
-    for (const w of watchers.values()) w.close();
+    sweeper.closeAll();
+    watcher.closeAll();
     for (const s of stores.values()) s.close();
     for (const s of toolServers.values()) s.close();
     copilotRuntime.stop();
@@ -413,6 +252,18 @@ else app.whenReady().then(() => {
       return handler.call(BrowserWindow.fromWebContents(event.sender), ...args);
     });
   }
+  // A write from the main workspace records the files it changed, so the watcher's echo of it isn't reported back
+  // as a change made outside. touched(result, ...args) names them, relative to the vault (the first argument).
+  function handleWrite(name, handler, touched) {
+    handle(name, async function (...args) {
+      const res = await handler.apply(this, args);
+      if (this === window) for (const rel of touched(res, ...args)) await watcher.recordOwn(args[0], rel);
+      return res;
+    });
+  }
+  const fragmentFile = id => `fragments/${id}.md`;
+  const savedFragment = res => !res?.conflict && res?.id ? [fragmentFile(res.id)] : [];
+  const deletedFragment = (res, _p, id) => res?.deleted ? [fragmentFile(id)] : [];
   handle('vaults', async () => { await ready(); return vaults(); });
   handle('suggested-vaults', async () => { await ready(); return suggestions(); });
   // With no argument, asks for a folder. A suggested vault can be opened by path; nothing else can.
@@ -435,8 +286,8 @@ else app.whenReady().then(() => {
       const next = archive(p);
       stores.set(p, next);
       await saveRegistry();
-      watchVault(p);
-      backgroundSweep(p);
+      watcher.watch(p);
+      sweeper.background(p);
     }
     return { path: p, vaults: vaults() };
   });
@@ -456,8 +307,8 @@ else app.whenReady().then(() => {
       if (!exists) await next.init();
       stores.set(target, next);
       await saveRegistry();
-      watchVault(target);
-      backgroundSweep(target);
+      watcher.watch(target);
+      sweeper.background(target);
     }
     return { path: target, vaults: vaults(), existed: exists };
   });
@@ -471,12 +322,12 @@ else app.whenReady().then(() => {
       buttons: ['Cancel', 'Remove'], cancelId: 0, defaultId: 0
     });
     if (response !== 1) return { closed: false, vaults: vaults() };
-    watchers.get(p)?.close();
+    watcher.close(p);
+    sweeper.close(p);
     stores.get(p)?.close();
     stores.delete(p);
     toolServers.get(p)?.close();
     toolServers.delete(p);
-    ownWrites.delete(p);
     dropToken(p);
     await saveRegistry();
     return { closed: true, vaults: vaults() };
@@ -503,27 +354,16 @@ else app.whenReady().then(() => {
     return ['cancel', 'reload', 'overwrite'][response];
   });
   handle('list', (p, query) => query ? store(p).search(query) : store(p).list());
+  handle('rows', (p, ids) => store(p).rows(ids));
   handle('note', (p, id) => store(p).get(id));
   handle('grep', (p, pattern) => store(p).grep(pattern));
   handle('recall', (p, seed) => store(p).recall(seed));
-  handle('save', async function (p, data) {
-    const res = await store(p).save(data);
-    if (this === window && !res?.conflict && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
-    return res;
-  });
-  handle('update', async function (p, id, changes, expected) {
-    const res = await store(p).update(id, changes, expected);
-    if (this === window && !res?.conflict && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
-    return res;
-  });
-  handle('promote', async function (p, id, type, expected, fields) {
-    const res = await store(p).promote(id, type, expected, fields);
-    if (this === window && !res?.conflict && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
-    return res;
-  });
+  handleWrite('save', (p, data) => store(p).save(data), savedFragment);
+  handleWrite('update', (p, id, changes, expected) => store(p).update(id, changes, expected), savedFragment);
+  handleWrite('promote', (p, id, type, expected, fields) => store(p).promote(id, type, expected, fields), savedFragment);
   handle('inbox-attachments', p => store(p).inboxAttachments());
   handle('attachments', (p, id) => store(p).attachments(id));
-  handle('pick-attachment', async function (p, id) {
+  handleWrite('pick-attachment', async function (p, id) {
     const choice = await dialog.showOpenDialog(this, { title: 'Attach files to fragment', properties: ['openFile', 'multiSelections'] });
     if (choice.canceled || !choice.filePaths.length) return null;
     const attached = [], errors = [];
@@ -534,10 +374,9 @@ else app.whenReady().then(() => {
         attached.push(last.filename);
       } catch (err) { errors.push(`${path.basename(filePath)}: ${err.message}`); }
     }
-    if (this === window && last?.id) await recordOwn(p, `fragments/${last.id}.md`);
-    return { attached, errors, attachments: last?.attachments ?? null, revision: last?.revision ?? null };
-  });
-  handle('attach-bytes', async function (p, id, { name = 'attachment.bin', bytes } = {}) {
+    return { id: last?.id ?? null, attached, errors, attachments: last?.attachments ?? null, revision: last?.revision ?? null };
+  }, savedFragment);
+  handleWrite('attach-bytes', async function (p, id, { name = 'attachment.bin', bytes } = {}) {
     if (!(bytes instanceof Uint8Array) || !bytes.byteLength || bytes.byteLength > 25 * 1024 * 1024) {
       throw new Error('Attachments must be between 1 byte and 25 MB.');
     }
@@ -550,12 +389,10 @@ else app.whenReady().then(() => {
     const tmpFile = path.join(dir, finalName);
     try {
       await fs.writeFile(tmpFile, bytes, { mode: 0o600 });
-      const res = await store(p).attach(id, tmpFile);
-      if (this === window && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
-      return res;
+      return await store(p).attach(id, tmpFile);
     } finally { await fs.rm(dir, { recursive: true, force: true }); }
-  });
-  handle('detach', async function (p, id, filename) {
+  }, savedFragment);
+  handleWrite('detach', async function (p, id, filename) {
     if (!safeFile(filename)) throw new Error('Invalid attachment filename');
     const { response } = await dialog.showMessageBox(this, {
       message: `Remove attachment “${filename.slice(0, 80)}”?`,
@@ -563,10 +400,8 @@ else app.whenReady().then(() => {
       buttons: ['Cancel', 'Remove'], cancelId: 0, defaultId: 0
     });
     if (response !== 1) return { detached: false };
-    const res = await store(p).detach(id, filename);
-    if (this === window && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
-    return res;
-  });
+    return store(p).detach(id, filename);
+  }, savedFragment);
   handle('open-attachment', async (p, id, filename) => {
     const found = await resolveAttachmentFile(p, id, filename);
     if (!found) throw new Error('Attachment not found.');
@@ -584,26 +419,13 @@ else app.whenReady().then(() => {
     const buf = await fs.readFile(found.file);
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   });
-  handle('move-attachment', async function (p, fromId, toId, filename) {
-    const res = await store(p).moveAttachment(fromId, toId, filename);
-    if (this === window) {
-      await recordOwn(p, `fragments/${fromId}.md`);
-      await recordOwn(p, `fragments/${toId}.md`);
-    }
-    return res;
-  });
-  handle('link-fragments', async function (p, idA, idB) {
-    const res = await store(p).link(idA, idB);
-    if (this === window) {
-      await recordOwn(p, `fragments/${idA}.md`);
-      await recordOwn(p, `fragments/${idB}.md`);
-    }
-    return res;
-  });
+  handleWrite('move-attachment', (p, fromId, toId, filename) => store(p).moveAttachment(fromId, toId, filename),
+    (_res, _p, fromId, toId) => [fragmentFile(fromId), fragmentFile(toId)]);
+  handleWrite('link-fragments', (p, idA, idB) => store(p).link(idA, idB), (_res, _p, idA, idB) => [fragmentFile(idA), fragmentFile(idB)]);
   handle('inbox-sweep', async p => {
     await ready();
-    if (p) return sweepVault(p);
-    return sweepVaults([...stores.keys()], sweepVault, label);
+    if (p) return sweeper.run(p);
+    return sweepVaults([...stores.keys()], sweeper.run, label);
   });
   handle('inbox-path', async p => {
     await ready();
@@ -613,50 +435,20 @@ else app.whenReady().then(() => {
   handle('open-inbox-folder', async p => {
     await ready();
     if (!stores.has(p)) throw new Error('Choose an opened vault');
-    await sweepVault(p);
+    await sweeper.run(p);
     const dir = path.join(p, 'inbox');
     const stat = await fs.lstat(dir).catch(() => null);
     if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Inbox folder is not available.');
     const err = await shell.openPath(dir);
     if (err) throw new Error(err);
   });
-  // Reading positions: kept per computer in userData, never inside the vault.
-  const positionsFile = path.join(app.getPath('userData'), 'reading-positions.json');
-  let positionsCache = null, posSaveQueue = Promise.resolve();
-  async function loadPositions() {
-    if (positionsCache) return positionsCache;
-    try {
-      const parsed = JSON.parse(await fs.readFile(positionsFile, 'utf8'));
-      positionsCache = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-    } catch { positionsCache = {}; }
-    return positionsCache;
-  }
-  handle('reading-positions', async () => {
-    await ready();
-    const all = await loadPositions();
-    const out = {};
-    for (const [k, v] of Object.entries(all)) {
-      try { const [vp] = JSON.parse(k); if (stores.has(vp)) out[k] = v; } catch { /* skip */ }
-    }
-    return out;
-  });
+  // Reading positions: kept per computer in userData, never inside the vault (positions.cjs).
+  const positions = positionStore(path.join(app.getPath('userData'), 'reading-positions.json'));
+  handle('reading-positions', async () => { await ready(); return positions.list(p => stores.has(p)); });
   handle('set-reading-position', async (p, id, pos) => {
     await ready();
-    if (!stores.has(p) || !ULID_RE.test(id)) throw new Error('Invalid reading position target');
-    if (!pos || typeof pos !== 'object') throw new Error('Invalid reading position');
-    const part = Number(pos.part);
-    const total = pos.total != null ? Number(pos.total) : null;
-    const unit = ['page', 'slide', 'section'].includes(pos.unit) ? pos.unit : 'page';
-    const filename = pos.filename && safeFile(pos.filename) ? pos.filename : null;
-    if (!Number.isInteger(part) || part < 1 || part > 100000) throw new Error('Invalid page number');
-    if (total != null && (!Number.isInteger(total) || total < 1 || total > 100000)) throw new Error('Invalid page count');
-    const all = await loadPositions();
-    all[JSON.stringify([p, id])] = { part, total, unit, filename, updated: new Date().toISOString() };
-    posSaveQueue = posSaveQueue.then(async () => {
-      await fs.writeFile(positionsFile + '.tmp', JSON.stringify(all), { mode: 0o600 });
-      await fs.rename(positionsFile + '.tmp', positionsFile);
-    }, () => {});
-    await posSaveQueue;
+    if (!stores.has(p)) throw new Error('Invalid reading position target');
+    await positions.set(p, id, pos);
   });
   // Narrow external link opener for PDF / Markdown viewer links: only http, https, mailto.
   handle('open-external', async raw => {
@@ -665,13 +457,9 @@ else app.whenReady().then(() => {
     if (!['http:', 'https:', 'mailto:'].includes(url.protocol)) throw new Error('Only web and email links can be opened.');
     await shell.openExternal(url.toString());
   });
-  handle('archive', async function (p, id, archived, expected) {
-    const res = await store(p).archive(id, archived, expected);
-    if (this === window && !res?.conflict && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
-    return res;
-  });
+  handleWrite('archive', (p, id, archived, expected) => store(p).archive(id, archived, expected), savedFragment);
   // Asks first; resolves { deleted } so the workspace can offer Undo.
-  handle('delete', async function (p, id, title = '') {
+  handleWrite('delete', async function (p, id, title = '') {
     const name = String(title).trim().slice(0, 80) || 'this fragment';
     const { response } = await dialog.showMessageBox(this, {
       message: `Move “${name}” to the trash?`, detail: 'It leaves the vault’s lists and searches. Undo brings it back, or restore it from Trash.',
@@ -679,11 +467,10 @@ else app.whenReady().then(() => {
     });
     if (response !== 1) return { deleted: false };
     await store(p).remove(id);
-    if (this === window) await recordOwn(p, `fragments/${id}.md`);
     return { deleted: true };
-  });
+  }, deletedFragment);
   // One-key discard in Inbox: skips the dialog ONLY for a `source` fragment with no body notes.
-  handle('delete-quiet', async function (p, id, title = '', { onlyIfEmpty = false } = {}) {
+  handleWrite('delete-quiet', async function (p, id, title = '', { onlyIfEmpty = false } = {}) {
     const frag = await store(p).get(id);
     if (onlyIfEmpty && (frag.type !== 'source' || frag.attachments?.length || (await store(p).attachments(id)).length)) {
       return { deleted: false };
@@ -701,9 +488,8 @@ else app.whenReady().then(() => {
       if (response !== 1) return { deleted: false };
     }
     await store(p).remove(id);
-    if (this === window) await recordOwn(p, `fragments/${id}.md`);
     return { deleted: true };
-  });
+  }, deletedFragment);
   handle('trash-list', p => store(p).trashList());
   handle('trash-purge', async function (p, id = null, title = '') {
     const single = id != null;
@@ -718,46 +504,28 @@ else app.whenReady().then(() => {
     const res = await store(p).trashPurge(id);
     return { purged: true, ...res };
   });
-  handle('untrash', async function (p, id) {
-    const res = await store(p).untrash(id);
-    if (this === window && res?.id) await recordOwn(p, `fragments/${res.id}.md`);
-    return res;
-  });
+  handleWrite('untrash', (p, id) => store(p).untrash(id), savedFragment);
   handle('doctor', p => store(p).doctor());
   handle('reindex', p => store(p).reindex());
   handle('history', (p, id) => store(p).history(id));
   handle('version', (p, id, timestamp) => store(p).version(id, timestamp));
-  handle('restore-version', async function (p, id, timestamp) {
-    const res = await store(p).restoreVersion(id, timestamp);
-    if (this === window) await recordOwn(p, `fragments/${id}.md`);
-    return res;
-  });
+  handleWrite('restore-version', (p, id, timestamp) => store(p).restoreVersion(id, timestamp), (_res, _p, id) => [fragmentFile(id)]);
   handle('schemas', p => store(p).schemas());
   handle('vault-settings', p => store(p).vaultSettings());
-  handle('update-vault-settings', async function (p, changes) {
-    const res = await store(p).updateVaultSettings(changes);
-    if (this === window) await recordOwn(p, 'config.yml');
-    return res;
-  });
+  handleWrite('update-vault-settings', (p, changes) => store(p).updateVaultSettings(changes), () => ['config.yml']);
   handle('schema-usage', (p, type) => store(p).schemaUsage(type));
   handle('builtin-schema', (p, type) => store(p).builtinSchema(type));
-  handle('save-schema', async function (p, data) {
-    const res = await store(p).saveSchema(data);
-    if (this === window && res?.schema?.name) await recordOwn(p, `schemas/${res.schema.name}.yml`);
-    return res;
-  });
+  handleWrite('save-schema', (p, data) => store(p).saveSchema(data), res => res?.schema?.name ? [`schemas/${res.schema.name}.yml`] : []);
   // Asks first; resolves { deleted }. The server refuses a type that still has fragments.
-  handle('delete-schema', async function (p, type) {
+  handleWrite('delete-schema', async function (p, type) {
     const name = String(type).slice(0, 64);
     const { response } = await dialog.showMessageBox(this, {
       message: `Delete the type “${name}”?`, detail: 'No fragment uses it. Its schema file is removed from the vault; a new type can take its name later.',
       buttons: ['Cancel', 'Delete type'], cancelId: 0, defaultId: 0
     });
     if (response !== 1) return { deleted: false };
-    const res = await store(p).deleteSchema(type);
-    if (this === window && res?.deleted) await recordOwn(p, `schemas/${type}.yml`);
-    return res;
-  });
+    return store(p).deleteSchema(type);
+  }, (res, _p, type) => res?.deleted ? [`schemas/${type}.yml`] : []);
 
   // ── Drafts: unsaved tab text kept on disk (userData/drafts/) instead of bloating localStorage ──
   const drafts = draftStore(path.join(app.getPath('userData'), 'drafts'));
@@ -780,13 +548,15 @@ else app.whenReady().then(() => {
     } catch { event.returnValue = false; }
   });
   handle('links', p => store(p).links());
-  handle('copy-text', text => { clipboard.writeText(String(text).slice(0, 10000)); });
+  // Up to a whole fragment's worth; more is refused rather than cut short without a word.
+  handle('copy-text', text => {
+    const value = String(text);
+    if (value.length > 1_000_000) throw new Error('That is too long to copy (one million characters at most).');
+    clipboard.writeText(value);
+  });
   handle('open-capture', () => openCapture());
   handle('settings', async () => { await ready(); return settingsView(); });
-  async function persist() {
-    await fs.writeFile(settingsFile + '.tmp', JSON.stringify(settings, null, 2), { mode: 0o600 });
-    await fs.rename(settingsFile + '.tmp', settingsFile);
-  }
+  const persist = () => writeJson(settingsFile, settings, { pretty: true });
   handle('save-settings', async input => {
     await ready();
     settings = clean(input);
@@ -975,10 +745,7 @@ else app.whenReady().then(() => {
   const credentialFile = path.join(app.getPath('userData'), 'chatgpt.bin'); // the sealed sign-in
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   let agentPrefs = null;
-  async function savePrefs() {
-    await fs.writeFile(agentFile + '.tmp', JSON.stringify(agentPrefs, null, 2), { mode: 0o600 });
-    await fs.rename(agentFile + '.tmp', agentFile);
-  }
+  const savePrefs = () => writeJson(agentFile, agentPrefs, { pretty: true });
   async function prefs() {
     if (agentPrefs) return agentPrefs;
     try { agentPrefs = JSON.parse(await fs.readFile(agentFile, 'utf8')); } catch { agentPrefs = {}; }

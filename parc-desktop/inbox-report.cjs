@@ -26,4 +26,39 @@ async function sweepVaults(paths, sweep, name) {
     more: reports.some(r => r.more), pending: reports.reduce((n,r) => n + (r.pending || 0), 0) };
 }
 
-module.exports = { sweepMessage, sweepVaults };
+// Sweeping a vault's inbox/ in the main process: one sweep per vault at a time, a sweep asked for during one runs
+// after it, and a vault with files still settling, queued, or waiting for their text is swept again shortly.
+// sweep(vault) → the server's report; isOpen(vault); after(vault): once each sweep is done;
+// tell(vault, event): an event for the workspace ({ kind: 'inbox' | 'attachments' | 'inbox-error', … }).
+function inboxSweeper({ sweep, isOpen, after = () => {}, tell, retryMs = 1200 }) {
+  const timers = new Map(), again = new Set(), running = new Map();
+  function run(p) {
+    if (!isOpen(p)) return Promise.reject(new Error('Choose an opened vault'));
+    if (running.has(p)) return running.get(p);
+    const job = (async () => {
+      const res = await sweep(p);
+      after(p);
+      if (res?.created?.length) tell(p, { kind: 'inbox', created: res.created });
+      if (res?.completed) tell(p, { kind: 'attachments' });
+      if (res?.failed?.length || res?.warnings?.length) tell(p, { kind: 'inbox-error', message: sweepMessage(res) });
+      const asked = again.delete(p);
+      if (isOpen(p) && (res?.waiting?.length || res?.pending || res?.more || asked)) {
+        clearTimeout(timers.get(p));
+        timers.set(p, setTimeout(() => { timers.delete(p); background(p); }, res?.more ? 0 : retryMs));
+      }
+      return res;
+    })();
+    running.set(p, job);
+    const done = () => running.delete(p);
+    job.then(done, done);
+    return job;
+  }
+  function background(p) {
+    if (running.has(p)) { again.add(p); return; }
+    run(p).catch(err => { if (isOpen(p)) tell(p, { kind: 'inbox-error', message: String(err.message ?? err) }); });
+  }
+  function close(p) { again.delete(p); clearTimeout(timers.get(p)); timers.delete(p); }
+  return { run, background, close, closeAll() { for (const p of [...timers.keys()]) close(p); } };
+}
+
+module.exports = { sweepMessage, sweepVaults, inboxSweeper };

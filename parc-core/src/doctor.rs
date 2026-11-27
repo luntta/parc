@@ -187,8 +187,26 @@ pub fn check_attachments(vault: &Path, fragments: &[Fragment]) -> Vec<DoctorFind
     let mut findings = Vec::new();
     let mut referenced_dirs = HashSet::new();
 
+    // A symlinked attachments/ folder leads outside the vault; nothing in parc follows it.
+    if let Err(err) = crate::secure_fs::real_dir(vault, &["attachments"]) {
+        findings.push(DoctorFinding::AttachmentMismatch {
+            fragment_id: String::new(),
+            detail: format!("{err}; parc won't read or write attachments there"),
+        });
+        return findings;
+    }
+
     for frag in fragments {
-        let attach_dir = vault.join("attachments").join(&frag.id);
+        let attach_dir = match attachment::attachment_dir(vault, &frag.id) {
+            Ok(dir) => dir,
+            Err(err) => {
+                findings.push(DoctorFinding::AttachmentMismatch {
+                    fragment_id: frag.id.clone(),
+                    detail: format!("{err}; parc won't read or write attachments there"),
+                });
+                continue;
+            }
+        };
 
         // Check frontmatter attachments have corresponding files
         for filename in &frag.attachments {
@@ -251,7 +269,7 @@ pub fn check_attachments(vault: &Path, fragments: &[Fragment]) -> Vec<DoctorFind
     if attachments_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&attachments_dir) {
             for entry in entries.flatten() {
-                if entry.path().is_dir() {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
                     if let Some(dir_name) = entry.file_name().to_str() {
                         let in_trash = trash_dir.join(format!("{dir_name}.md")).is_file();
                         if !fragment_ids.contains(dir_name) && !in_trash {

@@ -423,6 +423,8 @@ pub struct SearchParams {
     pub query: String,
     pub limit: Option<usize>,
     pub sort: Option<String>,
+    /// Only these fragments' rows (full IDs): a client that keeps the list refreshes just what it changed.
+    pub ids: Option<Vec<String>>,
 }
 
 pub fn search(vault: &Path, params: Value) -> Result<Value, RpcError> {
@@ -436,8 +438,16 @@ pub fn search(vault: &Path, params: Value) -> Result<Value, RpcError> {
     let conn = index::open_index(vault).map_err(map_parc_error)?;
     let results = search::search(&conn, &query).map_err(map_parc_error)?;
 
+    let only: Option<std::collections::HashSet<&str>> = p
+        .ids
+        .as_ref()
+        .map(|ids| ids.iter().map(String::as_str).collect());
     let items: Vec<Value> = results
         .iter()
+        .filter(|r| {
+            only.as_ref()
+                .is_none_or(|only| only.contains(r.id.as_str()))
+        })
         .map(|r| {
             let mut obj = serde_json::json!({
                 "id": r.id,

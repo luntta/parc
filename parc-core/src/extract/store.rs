@@ -99,7 +99,9 @@ fn scan_vault_attachments(
 
     let mut on_disk = HashMap::new();
     for id in ids {
-        let dir = vault.join("attachments").join(&id);
+        let Ok(dir) = attachment::attachment_dir(vault, &id) else {
+            continue;
+        };
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             Err(_) => continue,
@@ -196,7 +198,9 @@ pub fn sync_attachments(conn: &Connection, vault: &Path) -> Result<bool, ParcErr
         }
         changed = true;
 
-        let path = vault.join("attachments").join(frag_id).join(filename);
+        let Ok(path) = attachment::attachment_path(vault, frag_id, filename) else {
+            continue;
+        };
         let Ok(sha256) = sha256_file(&path) else {
             continue;
         };
@@ -227,12 +231,17 @@ pub fn sync_attachments(conn: &Connection, vault: &Path) -> Result<bool, ParcErr
 
 /// Whether any attachment in the index is waiting for extraction.
 pub fn has_pending(conn: &Connection) -> Result<bool, ParcError> {
+    Ok(pending_count(conn)? > 0)
+}
+
+/// How many attachments are waiting for their text to be extracted.
+pub fn pending_count(conn: &Connection) -> Result<usize, ParcError> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM attachment_files WHERE status = 'pending'",
         [],
         |r| r.get(0),
     )?;
-    Ok(count > 0)
+    Ok(usize::try_from(count).unwrap_or(0))
 }
 
 /// Extract text for every pending attachment (and, in `sidecar` mode, backfill
@@ -354,13 +363,13 @@ fn fill_one_inner(
     fragment::validate_id(fragment_id)?;
     validate_attachment_filename(filename)?;
 
-    let path = vault.join("attachments").join(fragment_id).join(filename);
-    let meta = match std::fs::symlink_metadata(&path) {
-        Ok(m) if m.is_file() && !m.file_type().is_symlink() => m,
-        _ => {
-            delete_attachment_rows(conn, fragment_id, filename)?;
-            return Ok(FillOneOutcome::Missing);
-        }
+    let found = attachment::attachment_path(vault, fragment_id, filename)
+        .ok()
+        .and_then(|path| std::fs::symlink_metadata(&path).ok().map(|m| (path, m)))
+        .filter(|(_, m)| m.is_file() && !m.file_type().is_symlink());
+    let Some((path, meta)) = found else {
+        delete_attachment_rows(conn, fragment_id, filename)?;
+        return Ok(FillOneOutcome::Missing);
     };
     let stat = DiskStat {
         size: i64::try_from(meta.len()).unwrap_or(i64::MAX),
@@ -495,7 +504,7 @@ pub fn read_parts(
     let full_id = fragment::resolve_id(vault, fragment_id)?;
     validate_attachment_filename(filename)?;
 
-    let path = vault.join("attachments").join(&full_id).join(filename);
+    let path = attachment::attachment_path(vault, &full_id, filename)?;
     let meta = std::fs::symlink_metadata(&path).map_err(|_| {
         ParcError::ValidationError(format!(
             "attachment '{}' not found on fragment '{}'",
@@ -827,7 +836,7 @@ pub(crate) fn queue_import(
     id: &str,
     filename: &str,
 ) -> Result<(), ParcError> {
-    let meta = std::fs::symlink_metadata(vault.join("attachments").join(id).join(filename))?;
+    let meta = std::fs::symlink_metadata(attachment::attachment_path(vault, id, filename)?)?;
     let stat = DiskStat {
         size: i64::try_from(meta.len()).unwrap_or(i64::MAX),
         mtime_ns: system_time_ns(meta.modified()?),

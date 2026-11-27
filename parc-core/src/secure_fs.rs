@@ -197,6 +197,34 @@ fn remove_dir_contents(dir: &Path) -> Result<(), ParcError> {
     Ok(())
 }
 
+/// `base` joined with `parts`, where none of the folders named by `parts` may be a symlink (or
+/// anything but a folder). A vault arrives by git, which carries symlinks, so a folder inside it
+/// that parc reads or writes must not lead outside it. Folders that don't exist yet are fine:
+/// whoever creates them makes real ones. `base` itself is the caller's to trust.
+pub fn real_dir(base: &Path, parts: &[&str]) -> Result<PathBuf, ParcError> {
+    let mut path = base.to_path_buf();
+    for (i, part) in parts.iter().enumerate() {
+        path.push(part);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                reject_symlink_metadata(&path, &metadata)?;
+                if !metadata.is_dir() {
+                    return Err(ParcError::ValidationError(format!(
+                        "'{}' is not a folder",
+                        path.display()
+                    )));
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                path.extend(&parts[i + 1..]);
+                return Ok(path);
+            }
+            Err(err) => return Err(ParcError::Io(err)),
+        }
+    }
+    Ok(path)
+}
+
 pub fn set_private_file_permissions(path: &Path) -> Result<(), ParcError> {
     reject_existing_symlink(path)?;
     set_file_mode(path)
@@ -283,6 +311,34 @@ mod tests {
         write_private(&path, b"secret").unwrap();
 
         assert_eq!(mode(&path), 0o600);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_dir_refuses_symlinked_and_non_folder_parts() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(base.join("a")).unwrap();
+        fs::create_dir(&outside).unwrap();
+
+        // Missing parts are fine, and come back joined.
+        assert_eq!(
+            real_dir(&base, &["a", "b", "c"]).unwrap(),
+            base.join("a/b/c")
+        );
+        assert_eq!(real_dir(&base, &["a"]).unwrap(), base.join("a"));
+
+        symlink(&outside, base.join("a").join("b")).unwrap();
+        assert!(real_dir(&base, &["a", "b"]).is_err());
+        assert!(real_dir(&base, &["a", "b", "c"]).is_err());
+
+        symlink(&outside, base.join("link")).unwrap();
+        assert!(real_dir(&base, &["link", "x"]).is_err());
+
+        fs::write(base.join("file"), "").unwrap();
+        assert!(real_dir(&base, &["file"]).is_err());
     }
 
     #[test]

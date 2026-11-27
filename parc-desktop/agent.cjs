@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const { writeAtomic, writeJson } = require('./files.cjs');
 
 // Where requests go. The tests point these at local fakes; nothing else changes them.
 const ENDPOINTS = {
@@ -59,8 +60,7 @@ function sealedBox(file, keyring) {
       value = next;
       if (!await canSeal()) return;
       if (next == null) { await fs.rm(file, { force: true }); return; }
-      await fs.writeFile(`${file}.tmp`, await keyring.seal(JSON.stringify(next)), { mode: 0o600 });
-      await fs.rename(`${file}.tmp`, file);
+      await writeAtomic(file, await keyring.seal(JSON.stringify(next)));
     },
     get value() { return value; },
     remembered: () => !!remembered
@@ -795,8 +795,7 @@ function chatStore(dir) {
     load: id => read(`${check(id)}.json`),
     async save(chat) {
       await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-      await fs.writeFile(`${file(check(chat.id))}.tmp`, JSON.stringify(chat), { mode: 0o600 });
-      await fs.rename(`${file(chat.id)}.tmp`, file(chat.id));
+      await writeJson(file(check(chat.id)), chat);
       (await all()).set(chat.id, summary(chat));
     },
     async remove(id) {

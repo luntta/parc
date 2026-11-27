@@ -192,8 +192,9 @@ Search using the full DSL query language.
 | `query` | string | yes | DSL query (e.g. `type:todo status:open #backend`) |
 | `limit` | number | no | Max results |
 | `sort` | string | no | Sort order |
+| `ids` | string[] | no | Only these fragments (full IDs) among the results: a client that keeps the list refreshes just the rows it changed |
 
-Returns an array of search result objects with `id`, `type`, `title`, `status`, `tags`, `updated_at`, `created_at`, `snippet`, `archived`.
+Returns an array of search result objects with `id`, `type`, `title`, `status`, `tags`, `updated_at`, `created_at`, `snippet`, `archived`, `fields`.
 
 Words are matched as text even when they contain punctuation (`half-baked`, `parc_core::ops`); a word ending in `*` matches by prefix.
 
@@ -316,6 +317,14 @@ Every link in the index, for drawing the vault as a graph in one request. Links 
 
 **Result:** Array of `{ "source": "<full-id>", "target": "<full-id>" }`. Direction is the direction written; `fragment.link` writes both.
 
+### vault.background
+
+The work this server still has to do in the background, so a client that closes an idle server can wait for it.
+
+**Params:** `{}`
+
+**Result:** `{ "extract": <n>, "meaning": <n> }`: attachments waiting for their text, and fragments the meaning model hasn't read yet (`0` when no model is installed or it failed to load).
+
 ### vault.doctor
 
 Run vault health diagnostics.
@@ -324,7 +333,7 @@ Run vault health diagnostics.
 
 **Result:** `{ "fragments_checked": <n>, "healthy": true|false, "findings": [...] }`
 
-Each finding has a `type` field: `broken_link`, `ambiguous_link`, `orphan`, `schema_violation`, `attachment_mismatch`, `vault_size_warning`, `plugin_issue`, or `unreadable_fragment` (a file in `fragments/` that can't be read as a fragment, with `file` and `reason`; it is not in the index).
+Each finding has a `type` field: `broken_link`, `ambiguous_link`, `orphan`, `schema_violation`, `attachment_mismatch`, `vault_size_warning`, `plugin_issue`, or `unreadable_fragment` (a file in `fragments/` that can't be read as a fragment, with `file` and `reason`; it is not in the index). An `attachment_mismatch` also reports an attachment folder that is a symlink, which parc refuses to follow (its `fragment_id` is empty when `attachments/` itself is the symlink).
 
 ### schema.list
 
