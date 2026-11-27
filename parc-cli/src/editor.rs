@@ -39,3 +39,28 @@ pub fn ignored_note(config: &Config) -> Option<String> {
         )
     })
 }
+
+/// Only discard the private draft after the caller has successfully saved it.
+/// An explicit empty-file cancellation may remove the draft itself.
+pub fn with_draft<T>(initial: &str, edit: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+    let path = parc_core::secure_fs::write_private_temp("parc-edit", ".md", initial.as_bytes())?;
+    match edit(&path) {
+        Ok(result) => {
+            let _ = std::fs::remove_file(&path);
+            Ok(result)
+        }
+        Err(e) if path.exists() => Err(anyhow::anyhow!(
+            "{e:#}; your edits are kept in {}",
+            path.display()
+        )),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn check_edit_id(original: &str, edited: &str) -> Result<()> {
+    anyhow::ensure!(
+        original == edited,
+        "a fragment's id cannot be changed while editing"
+    );
+    Ok(())
+}

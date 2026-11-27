@@ -575,7 +575,7 @@ fn main() -> anyhow::Result<()> {
     match command {
         None => {
             let vault = resolve_cli_vault(cli.vault.as_deref(), cli.global_vault)?;
-            if !cli.no_tui && io::stdout().is_terminal() {
+            if !cli.no_tui && io::stdin().is_terminal() && io::stdout().is_terminal() {
                 commands::tui::run(&vault)
             } else {
                 sync_index(&vault);

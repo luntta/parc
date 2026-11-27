@@ -3308,3 +3308,58 @@ fn test_attachment_text_cli_in_files_and_isolated_child() {
     assert_eq!(results[0]["file_hits"][0]["filename"], "sample.pdf");
     assert_eq!(results[0]["file_hits"][0]["label"], "p. 1");
 }
+
+#[cfg(unix)]
+#[test]
+fn editor_drafts_survive_id_changes_and_failed_creates() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    let first = create_fragment_directly(&tmp, "note", "One", "keep one");
+    let other = create_fragment_directly(&tmp, "note", "Two", "keep two");
+    let editor = tmp.path().join("editor");
+    std::fs::write(
+        &editor,
+        format!(
+            r#"#!/bin/sh
+sed -i.bak -e 's/^id: .*/id: {other}/' -e 's/^title: .*/title: Draft/' "$1"
+echo 'unsaved work' >> "$1"
+echo "$1" > draft-path
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for args in [vec!["edit", &first], vec!["new", "note"]] {
+        parc()
+            .current_dir(tmp.path())
+            .env("HOME", tmp.path())
+            .env("EDITOR", &editor)
+            .env("TMPDIR", tmp.path())
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("your edits are kept in"));
+        let draft = std::fs::read_to_string(tmp.path().join("draft-path")).unwrap();
+        assert!(std::fs::read_to_string(draft.trim())
+            .unwrap()
+            .contains("unsaved work"));
+    }
+    for (id, body) in [(first, "keep one"), (other, "keep two")] {
+        let f = parc_core::fragment::read_fragment(&tmp.path().join(".parc"), &id).unwrap();
+        assert_eq!(f.body.trim(), body);
+    }
+}
+
+#[test]
+fn explicit_tui_requires_a_terminal() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    parc()
+        .current_dir(tmp.path())
+        .arg("tui")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stdin and stdout"))
+        .stdout("");
+}

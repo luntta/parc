@@ -522,22 +522,55 @@ impl LauncherPopup {
     }
 }
 
+// Restore the terminal before the previous panic hook prints its diagnostic.
+// Drop also covers ordinary errors, including partial setup.
+static TUI_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        use std::sync::{atomic::Ordering, Once};
+        static INSTALL: Once = Once::new();
+        INSTALL.call_once(|| {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                Self::restore();
+                previous(info);
+            }));
+        });
+        let guard = Self;
+        TUI_ACTIVE.store(true, Ordering::SeqCst);
+        terminal::enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen, Hide)?;
+        Ok(guard)
+    }
+
+    fn restore() {
+        if TUI_ACTIVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let _ = terminal::disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
+        }
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        Self::restore();
+    }
+}
+
 pub fn run(vault: &Path) -> Result<()> {
+    use io::IsTerminal;
+    anyhow::ensure!(
+        io::stdin().is_terminal() && io::stdout().is_terminal(),
+        "the TUI needs a terminal on both stdin and stdout"
+    );
     let config = load_config(vault)?;
     // Built before the alternate screen so plugin-load warnings stay readable.
     // Hook stderr is captured so it can't draw over the TUI.
     let writer = crate::hooks::writer(vault, parc_core::hook::HookStderr::Capture);
-    let mut stdout = io::stdout();
-
-    terminal::enable_raw_mode()?;
-    execute!(stdout, EnterAlternateScreen, Hide)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = app::run_loop(&mut terminal, vault, &config, writer);
-
-    execute!(terminal.backend_mut(), Show, LeaveAlternateScreen)?;
-    terminal::disable_raw_mode()?;
-
-    result
+    let _guard = TerminalGuard::enter()?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    app::run_loop(&mut terminal, vault, &config, writer)
 }

@@ -4,7 +4,6 @@ use anyhow::{bail, Result};
 use parc_core::config::load_config;
 use parc_core::fragment::{self, parse_fragment, serialize_fragment, validate_fragment};
 use parc_core::schema::{load_schemas, load_template};
-use parc_core::secure_fs;
 use serde_json::Value;
 
 use crate::hooks::{cli_writer, report_warnings};
@@ -79,6 +78,7 @@ pub fn run(
     // Decide whether to open editor (--body skips editor)
     let should_open_editor = body.is_none() && (!schema.editor_skip || title.is_none());
 
+    let mut writer = cli_writer(vault);
     let fragment = if should_open_editor {
         // Prepare template content
         let template = load_template(vault, resolved_type).unwrap_or_default();
@@ -86,14 +86,14 @@ pub fn run(
         // If we have a template, parse it and merge with our fragment data
         let editor_content = build_editor_content(&fragment, &template);
 
-        run_editor_loop(vault, &editor_content, schema, &config)?
+        crate::editor::with_draft(&editor_content, |tmp_path| {
+            let frag = run_editor_loop(vault, tmp_path, schema, &config)?;
+            Ok(writer.create(frag)?)
+        })?
     } else {
         validate_fragment(&fragment, schema)?;
-        fragment
+        writer.create(fragment)?
     };
-
-    let mut writer = cli_writer(vault);
-    let fragment = writer.create(fragment)?;
     report_warnings(&mut writer);
 
     print_result(&fragment, json)
@@ -137,12 +137,10 @@ fn parse_template_parts(template: &str) -> Result<(String, String)> {
 
 fn run_editor_loop(
     vault: &Path,
-    initial_content: &str,
+    tmp_path: &Path,
     schema: &parc_core::schema::Schema,
     config: &parc_core::config::Config,
 ) -> Result<fragment::Fragment> {
-    let tmp_path = secure_fs::write_private_temp("parc", ".md", initial_content.as_bytes())?;
-
     let mut last_error: Option<String> = None;
 
     loop {
@@ -151,18 +149,17 @@ fn run_editor_loop(
             eprintln!("Re-opening editor. Save empty file to abort.");
         }
 
-        let status = crate::editor::open(config, &tmp_path)?;
+        let status = crate::editor::open(config, tmp_path)?;
 
         if !status.success() {
-            let _ = std::fs::remove_file(&tmp_path);
             bail!("editor exited with non-zero status");
         }
 
-        let content = std::fs::read_to_string(&tmp_path)?;
+        let content = std::fs::read_to_string(tmp_path)?;
 
         // Abort if empty or unchanged
         if content.trim().is_empty() {
-            let _ = std::fs::remove_file(&tmp_path);
+            let _ = std::fs::remove_file(tmp_path);
             bail!("aborted: empty content");
         }
 
@@ -173,7 +170,6 @@ fn run_editor_loop(
                 let s = actual_schema.resolve(&frag.fragment_type).unwrap_or(schema);
                 match validate_fragment(&frag, s) {
                     Ok(()) => {
-                        let _ = std::fs::remove_file(&tmp_path);
                         return Ok(frag);
                     }
                     Err(e) => {

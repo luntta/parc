@@ -13,7 +13,6 @@ use parc_core::fragment::{
 };
 use parc_core::ops::Writer;
 use parc_core::schema::load_schemas;
-use parc_core::secure_fs;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use serde_json::Value;
@@ -69,46 +68,36 @@ fn run_editor(writer: &mut Writer, id: &str) -> Result<String> {
     let schemas = load_schemas(vault)?;
     let original = read_fragment(vault, id)?;
     let content = serialize_fragment(&original);
-    let tmp_path = secure_fs::write_private_temp("parc-edit", ".md", content.as_bytes())?;
-
-    // Shown with the result: a warning on stderr would vanish behind the editor.
-    let noted = |msg: String| match crate::editor::ignored_note(&config) {
-        Some(note) => format!("{} ({})", msg, note),
-        None => msg,
-    };
-    let status = crate::editor::launch(&config, &tmp_path);
-    let status = match status {
-        Ok(status) => status,
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e);
+    crate::editor::with_draft(&content, |tmp_path| {
+        // Shown with the result: a warning on stderr would vanish behind the editor.
+        let noted = |msg: String| match crate::editor::ignored_note(&config) {
+            Some(note) => format!("{} ({})", msg, note),
+            None => msg,
+        };
+        let status = crate::editor::launch(&config, tmp_path)?;
+        if !status.success() {
+            return Err(anyhow!("editor exited with non-zero status"));
         }
-    };
+        let edited = std::fs::read_to_string(tmp_path)?;
+        if edited == content {
+            return Ok(noted(format!("no changes to {}", short(&original.id))));
+        }
+        if edited.trim().is_empty() {
+            let _ = std::fs::remove_file(tmp_path);
+            return Err(anyhow!("aborted: empty content"));
+        }
 
-    if !status.success() {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(anyhow!("editor exited with non-zero status"));
-    }
-
-    let edited = std::fs::read_to_string(&tmp_path)?;
-    let _ = std::fs::remove_file(&tmp_path);
-
-    if edited == content {
-        return Ok(noted(format!("no changes to {}", short(&original.id))));
-    }
-    if edited.trim().is_empty() {
-        return Err(anyhow!("aborted: empty content"));
-    }
-
-    let frag = parse_fragment(&edited)?;
-    if let Some(s) = schemas.resolve(&frag.fragment_type) {
-        validate_fragment(&frag, s)?;
-    }
-    let frag = writer.update(frag)?;
-    Ok(with_warnings(
-        writer,
-        noted(format!("edited {}", short(&frag.id))),
-    ))
+        let frag = parse_fragment(&edited)?;
+        crate::editor::check_edit_id(&original.id, &frag.id)?;
+        if let Some(s) = schemas.resolve(&frag.fragment_type) {
+            validate_fragment(&frag, s)?;
+        }
+        let frag = writer.update(frag)?;
+        Ok(with_warnings(
+            writer,
+            noted(format!("edited {}", short(&frag.id))),
+        ))
+    })
 }
 
 /// Flip the field the type's schema declares with `toggle: [off, on]`
