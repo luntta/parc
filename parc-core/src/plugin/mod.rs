@@ -104,8 +104,11 @@ pub fn discover_plugins(vault: &Path) -> Result<Vec<DiscoveredPlugin>, ParcError
         if path.extension().and_then(|e| e.to_str()) == Some("toml") {
             if is_symlink(&path)? {
                 eprintln!(
-                    "Warning: skipping symlinked plugin manifest {}",
-                    path.display()
+                    "{}",
+                    crate::display::sanitize_terminal_line(&format!(
+                        "Warning: skipping symlinked plugin manifest {}",
+                        path.display()
+                    ))
                 );
                 continue;
             }
@@ -121,17 +124,23 @@ pub fn discover_plugins(vault: &Path) -> Result<Vec<DiscoveredPlugin>, ParcError
                     }
                     Err(e) => {
                         eprintln!(
-                            "Warning: skipping invalid plugin manifest {}: {}",
-                            path.display(),
-                            e
+                            "{}",
+                            crate::display::sanitize_terminal_line(&format!(
+                                "Warning: skipping invalid plugin manifest {}: {}",
+                                path.display(),
+                                e
+                            ))
                         );
                     }
                 },
                 Err(e) => {
                     eprintln!(
-                        "Warning: skipping plugin manifest {}: {}",
-                        path.display(),
-                        e
+                        "{}",
+                        crate::display::sanitize_terminal_line(&format!(
+                            "Warning: skipping plugin manifest {}: {}",
+                            path.display(),
+                            e
+                        ))
                     );
                 }
             }

@@ -153,7 +153,7 @@ fn open_search_result(app: &mut App, rows: Vec<Row>, query: String, id: &str) {
     select_row_by_id(app, id);
     app.focus = Focus::List;
     app.detail_scroll = 0;
-    app.set_status(format!("opened {}", short_id(id)));
+    app.set_status(format!("opened {}", short_id(id, app.id_len)));
     app.dirty = true;
 }
 
@@ -601,7 +601,7 @@ fn execute_intent_action(
                 return Ok(());
             };
 
-            let result = actions::set_field(&mut app.writer, &id, field, &value);
+            let result = actions::set_field(&mut app.writer, &id, field, &value, app.id_len);
             let what = format!("{} update", field.key());
             finish_write(app, vault, config, &id, &what, result);
         }
@@ -643,7 +643,7 @@ fn apply_tag_intent(
     update(&mut tags);
     let value = tags.join(" ");
 
-    let result = actions::set_field(&mut app.writer, &id, QuickField::Tags, &value);
+    let result = actions::set_field(&mut app.writer, &id, QuickField::Tags, &value, app.id_len);
     finish_write(app, vault, config, &id, "tags update", result);
     Ok(())
 }

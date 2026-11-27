@@ -105,8 +105,7 @@ pub fn read_version(
     if !snapshot_path.exists() {
         return Err(ParcError::ValidationError(format!(
             "version '{}' not found for fragment '{}'",
-            timestamp,
-            &fragment_id[..8.min(fragment_id.len())]
+            timestamp, fragment_id
         )));
     }
 
@@ -185,9 +184,13 @@ pub fn diff_versions(
 
     let diff = TextDiff::from_lines(&old_content, &current_content);
     let mut output = String::new();
+    let prefix = crate::display::short_id(
+        &full_id,
+        crate::config::load_config(vault)?.id_display_length,
+    );
 
-    output.push_str(&format!("--- {} ({})\n", &full_id[..8], ts));
-    output.push_str(&format!("+++ {} (current)\n", &full_id[..8]));
+    output.push_str(&format!("--- {} ({})\n", prefix, ts));
+    output.push_str(&format!("+++ {} (current)\n", prefix));
 
     for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
         output.push_str(&format!("{}", hunk.header()));

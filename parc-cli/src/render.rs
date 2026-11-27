@@ -7,11 +7,8 @@ use parc_core::tag;
 
 const TITLE_WIDTH: usize = 40;
 
-pub fn sanitize_terminal_text(s: &str) -> String {
-    s.chars()
-        .filter(|&ch| ch == '\n' || !ch.is_control())
-        .collect()
-}
+pub use parc_core::display::sanitize_terminal_text;
+use parc_core::display::{sanitize_terminal_line, short_id};
 
 pub fn print_table(results: &[SearchResult], id_len: usize) {
     print_table_header(id_len);
@@ -29,9 +26,9 @@ pub fn print_table(results: &[SearchResult], id_len: usize) {
         for hit in &result.file_hits {
             println!(
                 "  {} ({}): {}",
-                sanitize_terminal_text(&hit.filename),
-                sanitize_terminal_text(&hit.label),
-                sanitize_terminal_text(&hit.snippet),
+                sanitize_terminal_line(&hit.filename),
+                sanitize_terminal_line(&hit.label),
+                sanitize_terminal_line(&hit.snippet),
             );
         }
     }
@@ -76,12 +73,12 @@ fn print_row(
     highlight: bool,
     id_len: usize,
 ) {
-    let short_id = if id.len() > id_len { &id[..id_len] } else { id };
-    let fragment_type = sanitize_terminal_text(fragment_type);
-    let status = sanitize_terminal_text(status.unwrap_or("\u{2014}"));
+    let short_id = sanitize_terminal_line(short_id(id, id_len));
+    let fragment_type = sanitize_terminal_line(fragment_type);
+    let status = sanitize_terminal_line(status.unwrap_or("\u{2014}"));
     let (title_rendered, visible_chars) =
         render_title(title, title_match_indices, TITLE_WIDTH, highlight);
-    let tags_joined = sanitize_terminal_text(&tags.join(", "));
+    let tags_joined = sanitize_terminal_line(&tags.join(", "));
     let pad = TITLE_WIDTH.saturating_sub(visible_chars);
     println!(
         "{:<width$}  {:<10}  {:<12}  {}{:pad$}  {}",
@@ -100,7 +97,7 @@ fn print_row(
 /// matched character positions. Returns (rendered_string, visible_char_count)
 /// so the caller can pad the column without counting ANSI escapes.
 fn render_title(title: &str, indices: &[u32], width: usize, highlight: bool) -> (String, usize) {
-    let title = sanitize_terminal_text(title);
+    let title = sanitize_terminal_line(title);
     let chars: Vec<char> = title.chars().collect();
     let truncated = chars.len() > width;
     let visible_len = if truncated { width } else { chars.len() };
@@ -150,7 +147,7 @@ pub fn print_sections(sections: &[SearchSection], id_len: usize) {
     let mut printed_any = false;
 
     for section in sections {
-        println!("{}", sanitize_terminal_text(&section.title));
+        println!("{}", sanitize_terminal_line(&section.title));
         if section.results.is_empty() {
             println!("No fragments found.");
         } else {
@@ -181,35 +178,35 @@ pub fn print_fragment(
     // Metadata header
     println!(
         "--- {} ---",
-        sanitize_terminal_text(&fragment.fragment_type)
+        sanitize_terminal_line(&fragment.fragment_type)
     );
-    println!("ID:      {}", fragment.id);
-    println!("Title:   {}", sanitize_terminal_text(&fragment.title));
+    println!("ID:      {}", sanitize_terminal_line(&fragment.id));
+    println!("Title:   {}", sanitize_terminal_line(&fragment.title));
     if !merged_tags.is_empty() {
         println!(
             "Tags:    {}",
-            sanitize_terminal_text(&merged_tags.join(", "))
+            sanitize_terminal_line(&merged_tags.join(", "))
         );
     }
     if !fragment.links.is_empty() {
         println!(
             "Links:   {}",
-            sanitize_terminal_text(&fragment.links.join(", "))
+            sanitize_terminal_line(&fragment.links.join(", "))
         );
     }
     for (key, val) in &fragment.extra_fields {
         if let Some(s) = val.as_str() {
             println!(
                 "{}: {}",
-                sanitize_terminal_text(&capitalize(key)),
-                sanitize_terminal_text(s)
+                sanitize_terminal_line(&capitalize(key)),
+                sanitize_terminal_line(s)
             );
         }
     }
     println!("Created: {}", fragment.created_at.format("%Y-%m-%d %H:%M"));
     println!("Updated: {}", fragment.updated_at.format("%Y-%m-%d %H:%M"));
     if let Some(ref by) = fragment.created_by {
-        println!("By:      {}", sanitize_terminal_text(by));
+        println!("By:      {}", sanitize_terminal_line(by));
     }
     println!();
 
@@ -224,16 +221,12 @@ pub fn print_fragment(
         println!();
         println!("\u{2500}\u{2500}\u{2500} Backlinks \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
         for bl in backlinks {
-            let short = if bl.source_id.len() > id_len {
-                &bl.source_id[..id_len]
-            } else {
-                &bl.source_id
-            };
+            let short = sanitize_terminal_line(short_id(&bl.source_id, id_len));
             println!(
                 "  {}  {}  {}",
                 short,
-                sanitize_terminal_text(&bl.source_type),
-                sanitize_terminal_text(&bl.source_title)
+                sanitize_terminal_line(&bl.source_type),
+                sanitize_terminal_line(&bl.source_title)
             );
         }
     }
@@ -244,7 +237,7 @@ pub fn print_fragment(
         println!("\u{2500}\u{2500}\u{2500} Attachments \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
         for a in attachments {
             let size = format_size(a.size);
-            println!("  {} ({})", sanitize_terminal_text(&a.filename), size);
+            println!("  {} ({})", sanitize_terminal_line(&a.filename), size);
         }
     }
 }

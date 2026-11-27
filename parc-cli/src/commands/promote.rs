@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
+use parc_core::display::short_id;
 use parc_core::fragment;
 use parc_core::schema::load_schemas;
 use parc_core::ParcError;
@@ -22,6 +23,7 @@ pub fn run(
     assignee: Option<String>,
     json: bool,
 ) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)?.id_display_length;
     let mut overrides = BTreeMap::new();
 
     if let Some(s) = status {
@@ -71,7 +73,7 @@ pub fn run(
     } else {
         println!(
             "Promoted {} to {}",
-            &promoted.id[..8],
+            short_id(&promoted.id, id_len),
             promoted.fragment_type
         );
     }

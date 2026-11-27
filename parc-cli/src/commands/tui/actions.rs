@@ -8,6 +8,7 @@ use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use parc_core::config::load_config;
 use parc_core::config::Config;
+use parc_core::display::short_id;
 use parc_core::fragment::{
     self, parse_fragment, read_fragment, serialize_fragment, validate_fragment,
 };
@@ -27,10 +28,6 @@ pub(super) struct CaptureInput {
     pub due: String,
     pub priority: String,
     pub assignee: String,
-}
-
-fn short(id: &str) -> &str {
-    &id[..8.min(id.len())]
 }
 
 /// Append any hook warnings the writer collected to a status message.
@@ -65,6 +62,7 @@ fn run_editor(writer: &mut Writer, id: &str) -> Result<String> {
     let vault = writer.vault().to_path_buf();
     let vault = vault.as_path();
     let config = load_config(vault)?;
+    let id_len = config.id_display_length;
     let schemas = load_schemas(vault)?;
     let original = read_fragment(vault, id)?;
     let content = serialize_fragment(&original);
@@ -80,7 +78,10 @@ fn run_editor(writer: &mut Writer, id: &str) -> Result<String> {
         }
         let edited = std::fs::read_to_string(tmp_path)?;
         if edited == content {
-            return Ok(noted(format!("no changes to {}", short(&original.id))));
+            return Ok(noted(format!(
+                "no changes to {}",
+                short_id(&original.id, id_len)
+            )));
         }
         if edited.trim().is_empty() {
             let _ = std::fs::remove_file(tmp_path);
@@ -95,14 +96,14 @@ fn run_editor(writer: &mut Writer, id: &str) -> Result<String> {
         let frag = writer.update(frag)?;
         Ok(with_warnings(
             writer,
-            noted(format!("edited {}", short(&frag.id))),
+            noted(format!("edited {}", short_id(&frag.id, id_len))),
         ))
     })
 }
 
 /// Flip the field the type's schema declares with `toggle: [off, on]`
 /// (for todos, status open <-> done).
-pub(super) fn toggle_status(writer: &mut Writer, id: &str) -> Result<String> {
+pub(super) fn toggle_status(writer: &mut Writer, id: &str, id_len: usize) -> Result<String> {
     let mut frag = read_fragment(writer.vault(), id)?;
     let schemas = load_schemas(writer.vault())?;
     let toggle = schemas
@@ -127,7 +128,7 @@ pub(super) fn toggle_status(writer: &mut Writer, id: &str) -> Result<String> {
     let frag = writer.update(frag)?;
     Ok(with_warnings(
         writer,
-        format!("{} {} {}", short(&frag.id), toggle.field, next),
+        format!("{} {} {}", short_id(&frag.id, id_len), toggle.field, next),
     ))
 }
 
@@ -146,6 +147,7 @@ pub(super) fn toggle_checkbox(
     writer: &mut Writer,
     id: &str,
     source_range: std::ops::Range<usize>,
+    id_len: usize,
 ) -> Result<String> {
     let mut frag = read_fragment(writer.vault(), id)?;
     let bytes = frag.body.as_bytes();
@@ -167,7 +169,7 @@ pub(super) fn toggle_checkbox(
     let frag = writer.update(frag)?;
     let msg = format!(
         "{} checkbox {}",
-        short(&frag.id),
+        short_id(&frag.id, id_len),
         if next == "[x]" {
             "checked"
         } else {
@@ -177,7 +179,7 @@ pub(super) fn toggle_checkbox(
     Ok(with_warnings(writer, msg))
 }
 
-pub(super) fn archive(writer: &mut Writer, id: &str) -> Result<String> {
+pub(super) fn archive(writer: &mut Writer, id: &str, id_len: usize) -> Result<String> {
     let already = read_fragment(writer.vault(), id)?
         .extra_fields
         .get("archived")
@@ -185,35 +187,40 @@ pub(super) fn archive(writer: &mut Writer, id: &str) -> Result<String> {
         .unwrap_or(false);
     let frag = writer.set_archived(id, !already)?;
     let msg = if already {
-        format!("unarchived {}", short(&frag.id))
+        format!("unarchived {}", short_id(&frag.id, id_len))
     } else {
-        format!("archived {}", short(&frag.id))
+        format!("archived {}", short_id(&frag.id, id_len))
     };
     Ok(with_warnings(writer, msg))
 }
 
-pub(super) fn delete(writer: &mut Writer, id: &str) -> Result<String> {
+pub(super) fn delete(writer: &mut Writer, id: &str, id_len: usize) -> Result<String> {
     let frag = writer.delete(id)?;
     Ok(with_warnings(
         writer,
-        format!("deleted {} (trash)", short(&frag.id)),
+        format!("deleted {} (trash)", short_id(&frag.id, id_len)),
     ))
 }
 
-pub(super) fn yank(id: &str) -> Result<String> {
+pub(super) fn yank(id: &str, id_len: usize) -> Result<String> {
     let mut clipboard =
         arboard::Clipboard::new().map_err(|e| anyhow!("clipboard unavailable: {}", e))?;
     clipboard
         .set_text(id.to_string())
         .map_err(|e| anyhow!("clipboard write failed: {}", e))?;
-    Ok(format!("copied {} to clipboard", short(id)))
+    Ok(format!("copied {} to clipboard", short_id(id, id_len)))
 }
 
-pub(super) fn promote(writer: &mut Writer, id: &str, new_type: &str) -> Result<String> {
+pub(super) fn promote(
+    writer: &mut Writer,
+    id: &str,
+    new_type: &str,
+    id_len: usize,
+) -> Result<String> {
     let promoted = writer.promote(id, new_type, BTreeMap::new())?;
     let msg = format!(
         "promoted {} to {}",
-        short(&promoted.id),
+        short_id(&promoted.id, id_len),
         promoted.fragment_type
     );
     Ok(with_warnings(writer, msg))
@@ -224,6 +231,7 @@ pub(super) fn set_field(
     id: &str,
     field: QuickField,
     value: &str,
+    id_len: usize,
 ) -> Result<String> {
     let mut frag = read_fragment(writer.vault(), id)?;
     let trimmed = value.trim();
@@ -247,7 +255,7 @@ pub(super) fn set_field(
     let frag = writer.update(frag)?;
     Ok(with_warnings(
         writer,
-        format!("updated {} {}", short(&frag.id), field.key()),
+        format!("updated {} {}", short_id(&frag.id, id_len), field.key()),
     ))
 }
 
@@ -260,6 +268,7 @@ pub(super) fn capture(writer: &mut Writer, input: CaptureInput) -> Result<(Strin
     }
 
     let config = load_config(vault)?;
+    let id_len = config.id_display_length;
     let schemas = load_schemas(vault)?;
     let schema = schemas
         .resolve(&input.fragment_type)
@@ -273,7 +282,11 @@ pub(super) fn capture(writer: &mut Writer, input: CaptureInput) -> Result<(Strin
     validate_fragment(&frag, schema)?;
 
     let frag = writer.create(frag)?;
-    let msg = format!("captured {} {}", short(&frag.id), frag.fragment_type);
+    let msg = format!(
+        "captured {} {}",
+        short_id(&frag.id, id_len),
+        frag.fragment_type
+    );
     Ok((frag.id, with_warnings(writer, msg)))
 }
 
@@ -414,20 +427,36 @@ mod tests {
         )
         .unwrap();
 
-        set_field(&mut test_writer(&vault), &id, QuickField::Due, "2026-03-01").unwrap();
+        set_field(
+            &mut test_writer(&vault),
+            &id,
+            QuickField::Due,
+            "2026-03-01",
+            8,
+        )
+        .unwrap();
         set_field(
             &mut test_writer(&vault),
             &id,
             QuickField::Priority,
             "medium",
+            8,
         )
         .unwrap();
-        set_field(&mut test_writer(&vault), &id, QuickField::Assignee, "raine").unwrap();
+        set_field(
+            &mut test_writer(&vault),
+            &id,
+            QuickField::Assignee,
+            "raine",
+            8,
+        )
+        .unwrap();
         set_field(
             &mut test_writer(&vault),
             &id,
             QuickField::Tags,
             "ui #quick ui",
+            8,
         )
         .unwrap();
 
@@ -452,7 +481,7 @@ mod tests {
         );
         assert_eq!(fragment.tags, vec!["ui".to_string(), "quick".to_string()]);
 
-        set_field(&mut test_writer(&vault), &id, QuickField::Due, "").unwrap();
+        set_field(&mut test_writer(&vault), &id, QuickField::Due, "", 8).unwrap();
         let fragment = read_fragment(&vault, &id).unwrap();
         assert!(!fragment.extra_fields.contains_key("due"));
     }
@@ -484,12 +513,12 @@ mod tests {
         let (second_start, _) = occurrences.next().unwrap();
         let range = second_start..second_start + 3;
 
-        let msg = toggle_checkbox(&mut test_writer(&vault), &id, range.clone()).unwrap();
+        let msg = toggle_checkbox(&mut test_writer(&vault), &id, range.clone(), 8).unwrap();
         assert!(msg.contains("checked"));
         let frag = read_fragment(&vault, &id).unwrap();
         assert_eq!(&frag.body[range.clone()], "[x]");
 
-        let msg = toggle_checkbox(&mut test_writer(&vault), &id, range.clone()).unwrap();
+        let msg = toggle_checkbox(&mut test_writer(&vault), &id, range.clone(), 8).unwrap();
         assert!(msg.contains("unchecked"));
         let frag = read_fragment(&vault, &id).unwrap();
         assert_eq!(&frag.body[range], "[ ]");
@@ -516,9 +545,9 @@ mod tests {
         .unwrap();
 
         // Range that doesn't point at `[ ]`.
-        assert!(toggle_checkbox(&mut test_writer(&vault), &id, 0..3).is_err());
+        assert!(toggle_checkbox(&mut test_writer(&vault), &id, 0..3, 8).is_err());
         // Out-of-bounds.
-        assert!(toggle_checkbox(&mut test_writer(&vault), &id, 1_000..1_003).is_err());
+        assert!(toggle_checkbox(&mut test_writer(&vault), &id, 1_000..1_003, 8).is_err());
     }
 
     fn capture_type(writer: &mut Writer, fragment_type: &str, text: &str) -> String {
@@ -555,18 +584,18 @@ mod tests {
         let mut w = test_writer(&vault);
 
         let todo = capture_type(&mut w, "todo", "Ship it");
-        toggle_status(&mut w, &todo).unwrap();
+        toggle_status(&mut w, &todo, 8).unwrap();
         assert_eq!(status_of(&vault, &todo).as_deref(), Some("done"));
-        toggle_status(&mut w, &todo).unwrap();
+        toggle_status(&mut w, &todo, 8).unwrap();
         assert_eq!(status_of(&vault, &todo).as_deref(), Some("open"));
 
         let risk = capture_type(&mut w, "risk", "Disk fills up");
-        let msg = toggle_status(&mut w, &risk).unwrap();
+        let msg = toggle_status(&mut w, &risk, 8).unwrap();
         assert!(msg.ends_with("status resolved"), "{}", msg);
         assert_eq!(status_of(&vault, &risk).as_deref(), Some("resolved"));
 
         let idea = capture_type(&mut w, "idea", "Maybe later");
-        let err = toggle_status(&mut w, &idea).unwrap_err().to_string();
+        let err = toggle_status(&mut w, &idea, 8).unwrap_err().to_string();
         assert!(err.contains("idea has nothing to toggle"), "{}", err);
         assert_eq!(
             status_of(&vault, &idea).as_deref(),
@@ -582,9 +611,9 @@ mod tests {
         init_vault(&vault).unwrap();
         let mut w = test_writer(&vault);
         let todo = capture_type(&mut w, "todo", "Halfway");
-        set_field(&mut w, &todo, QuickField::Status, "in-progress").unwrap();
+        set_field(&mut w, &todo, QuickField::Status, "in-progress", 8).unwrap();
 
-        toggle_status(&mut w, &todo).unwrap();
+        toggle_status(&mut w, &todo, 8).unwrap();
 
         assert_eq!(status_of(&vault, &todo).as_deref(), Some("done"));
     }

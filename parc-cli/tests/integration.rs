@@ -3443,3 +3443,60 @@ fn read_only_mcp_leaves_vault_unchanged_even_for_uncached_text() {
         assert!(!dir.join(".text").exists());
     }
 }
+
+#[test]
+fn plugin_metadata_is_safe_in_the_terminal_but_lossless_in_json() {
+    let tmp = TempDir::new().unwrap();
+    init_vault(&tmp);
+    let plugins = tmp.path().join(".parc/plugins");
+    let description = "first\nsecond\u{1b}[31m\u{7}";
+    std::fs::write(plugins.join("example.wasm"), b"unused by list/info").unwrap();
+    std::fs::write(plugins.join("example.toml"),
+        "[plugin]\nname = \"example\"\nversion = \"1\"\nwasm = \"example.wasm\"\ndescription = \"first\\nsecond\\u001b[31m\\u0007\"\n[capabilities]\n").unwrap();
+    for args in [vec!["plugin", "list"], vec!["plugin", "info", "example"]] {
+        let out = parc()
+            .args(args)
+            .current_dir(tmp.path())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("first second"), "{text}");
+        assert!(!text.contains(['\u{1b}', '\u{7}']));
+    }
+    let out = parc()
+        .args(["plugin", "info", "example", "--json"])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&out).unwrap()["description"],
+        description
+    );
+}
+
+#[test]
+fn action_confirmations_use_the_configured_id_width() {
+    let tmp = TempDir::new().unwrap();
+    let vault = init_vault(&tmp);
+    let id = create_fragment_directly(&tmp, "note", "Width", "Body");
+    std::fs::write(
+        Path::new(&vault).join("config.yml"),
+        "id_display_length: 13\n",
+    )
+    .unwrap();
+    parc()
+        .args(["archive", &id])
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stdout(format!(
+            "Archived {}\n",
+            parc_core::display::short_id(&id, 13)
+        ));
+}

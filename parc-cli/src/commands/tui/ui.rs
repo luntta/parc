@@ -1,3 +1,4 @@
+use parc_core::display::{sanitize_terminal_line as cell, short_id};
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -170,7 +171,7 @@ fn list_items(
 
 fn section_header(section: &str, count: usize) -> Line<'static> {
     Line::from(Span::styled(
-        format!("{} ({})", section, count),
+        format!("{} ({})", cell(section), count),
         Style::default().fg(ACTIVE_TAB).add_modifier(Modifier::BOLD),
     ))
 }
@@ -197,7 +198,7 @@ fn format_row(row: &Row, id_len: usize, search_terms: &[String]) -> Line<'static
             Style::default().fg(MUTED_TEXT),
         ));
     }
-    Line::from(spans)
+    safe_line(Line::from(spans))
 }
 
 fn row_metadata(row: &Row) -> Option<String> {
@@ -378,17 +379,16 @@ fn format_backlinks(backlinks: &[BacklinkInfo]) -> String {
     for bl in backlinks {
         // Sanitize title for wiki-link alias: strip the bracket and pipe
         // characters that would otherwise re-enter wiki-link parsing.
-        let safe_title: String = bl
-            .source_title
+        let safe_title: String = cell(&bl.source_title)
             .chars()
             .filter(|c| *c != ']' && *c != '[' && *c != '|')
             .collect();
         let display = if safe_title.trim().is_empty() {
-            format!("({})", bl.source_type)
+            format!("({})", cell(&bl.source_type))
         } else {
-            format!("{} ({})", safe_title, bl.source_type)
+            format!("{} ({})", safe_title, cell(&bl.source_type))
         };
-        out.push_str(&format!("- [[{}|{}]]\n", bl.source_id, display));
+        out.push_str(&format!("- [[{}|{}]]\n", cell(&bl.source_id), display));
     }
     out
 }
@@ -480,6 +480,19 @@ fn detail_lines(
     }
 }
 
+fn safe_line(mut line: Line<'static>) -> Line<'static> {
+    for span in &mut line.spans {
+        if span
+            .content
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+        {
+            span.content = cell(&span.content).into();
+        }
+    }
+    line
+}
+
 fn render_detail_lines(
     frame: &mut Frame,
     area: Rect,
@@ -489,7 +502,7 @@ fn render_detail_lines(
     detail_max_scroll: &mut u16,
 ) {
     let inner = block.inner(area);
-    let paragraph = Paragraph::new(lines)
+    let paragraph = Paragraph::new(lines.into_iter().map(safe_line).collect::<Vec<_>>())
         .wrap(Wrap { trim: false })
         .block(block);
     let total = paragraph.line_count(inner.width) as u16;
@@ -568,7 +581,7 @@ fn draw_launcher_query(frame: &mut Frame, area: Rect, search_input: &str) {
         .title(" query ");
     let line = Line::from(vec![
         Span::styled("input ", Style::default().fg(ACTIVE_TAB)),
-        Span::raw(search_input.to_string()),
+        Span::raw(cell(search_input)),
         Span::styled("_", Style::default().fg(ACTIVE_TAB)),
     ]);
     let paragraph = Paragraph::new(line).block(block);
@@ -625,7 +638,7 @@ fn universal_result_items(popup: &LauncherPopup, config: &Config) -> Vec<ListIte
         )))]
     } else if let Some(err) = popup.error.as_ref().filter(|_| popup.items.is_empty()) {
         vec![ListItem::new(Line::from(Span::styled(
-            err.clone(),
+            cell(err),
             Style::default().fg(Color::Red),
         )))]
     } else if popup.items.is_empty() {
@@ -695,7 +708,7 @@ fn format_launcher_item(
                     .fg(if intent.valid { ACTIVE_TAB } else { Color::Red })
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(intent.label.clone()),
+            Span::raw(cell(&intent.label)),
         ]),
         LauncherItem::Fragment(row) => {
             let mut line = vec![Span::styled("• ", Style::default().fg(MUTED_TEXT))];
@@ -840,16 +853,16 @@ fn draw_intent_preview(frame: &mut Frame, area: Rect, intent: &LauncherIntent) {
 
     let mut lines = vec![
         Line::from(Span::styled(
-            intent.label.clone(),
+            cell(&intent.label),
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(intent.description.clone()),
+        Line::from(cell(&intent.description)),
     ];
     if let Some(detail) = &intent.detail {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            detail.clone(),
+            cell(detail),
             Style::default().fg(if intent.valid { MUTED_TEXT } else { Color::Red }),
         )));
     }
@@ -868,12 +881,9 @@ fn draw_intent_preview(frame: &mut Frame, area: Rect, intent: &LauncherIntent) {
 
 fn draw_launcher_footer(frame: &mut Frame, area: Rect, popup: &LauncherPopup, status: &str) {
     let text = if let Some(err) = &popup.error {
-        Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red)))
+        Line::from(Span::styled(cell(err), Style::default().fg(Color::Red)))
     } else if !status.is_empty() {
-        Line::from(Span::styled(
-            status.to_string(),
-            Style::default().fg(ACTIVE_TAB),
-        ))
+        Line::from(Span::styled(cell(status), Style::default().fg(ACTIVE_TAB)))
     } else {
         let help = match popup.kind() {
             LauncherKind::Universal => {
@@ -912,7 +922,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, status: &str, app: &App) {
         Line::from(Span::styled(context, context_style))
     } else {
         Line::from(vec![
-            Span::styled(status.to_string(), Style::default().fg(ACTIVE_TAB)),
+            Span::styled(cell(status), Style::default().fg(ACTIVE_TAB)),
             Span::styled("  ", muted),
             Span::styled(context, muted),
         ])
@@ -959,7 +969,11 @@ fn draw_attachment_pager(frame: &mut Frame, area: Rect, pager: &mut AttachmentPa
     } else {
         String::new()
     };
-    let title = format!(" {}{}  (j/k scroll  Esc close) ", pager.title, count_hint);
+    let title = format!(
+        " {}{}  (j/k scroll  Esc close) ",
+        cell(&pager.title),
+        count_hint
+    );
     let block = Block::bordered()
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(ACTIVE_TAB))
@@ -1056,7 +1070,7 @@ fn draw_confirm(frame: &mut Frame, area: Rect, prompt: &str) {
         .title(" confirm ");
     let body = vec![
         Line::from(""),
-        Line::from(prompt.to_string()),
+        Line::from(cell(prompt)),
         Line::from(""),
         Line::from(Span::styled(
             "y to confirm  -  n / Esc to cancel",
@@ -1073,12 +1087,12 @@ fn draw_input(frame: &mut Frame, area: Rect, prompt: &str, value: &str) {
     let block = Block::bordered()
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(ACTIVE_TAB))
-        .title(format!(" {} ", prompt));
+        .title(format!(" {} ", cell(prompt)));
     let body = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled("> ", Style::default().fg(ACTIVE_TAB)),
-            Span::raw(value.to_string()),
+            Span::raw(cell(value)),
             Span::styled("_", Style::default().fg(ACTIVE_TAB)),
         ]),
         Line::from(""),
@@ -1146,7 +1160,10 @@ fn capture_field_line(form: &CaptureForm, field: CaptureField, value: &str) -> L
     } else {
         display
     };
-    let value = fit_capture_value(&format!("{}{}", value, if active { "_" } else { "" }), 40);
+    let value = fit_capture_value(
+        &format!("{}{}", cell(&value), if active { "_" } else { "" }),
+        40,
+    );
 
     Line::from(vec![
         Span::raw("  "),
@@ -1193,14 +1210,6 @@ fn centered_rect_lines(percent_x: u16, lines: u16, area: Rect) -> Rect {
     }
 }
 
-fn short_id(id: &str, len: usize) -> &str {
-    if id.len() > len {
-        &id[..len]
-    } else {
-        id
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1239,7 +1248,7 @@ mod tests {
 
     #[test]
     fn format_row_highlights_exact_search_terms_in_title() {
-        let row = Row {
+        let mut row = Row {
             id: "01ABCDEF".into(),
             title: "TUI launcher".into(),
             fragment_type: "note".into(),
@@ -1258,5 +1267,12 @@ mod tests {
         assert!(line.spans.iter().any(|span| {
             span.content.as_ref() == "TUI" && span.style.fg == Some(Color::Yellow)
         }));
+        row.id = "abc🎵xyz".into();
+        row.title = "a\nb\x1b[2J".into();
+        row.tags = vec!["x\u{9b}\ny".into()];
+        row.fragment_type = "no\x07te".into();
+        let text = format_row(&row, 4, &[]).to_string();
+        assert!(text.starts_with("abc🎵"));
+        assert!(!text.chars().any(char::is_control), "{text:?}");
     }
 }

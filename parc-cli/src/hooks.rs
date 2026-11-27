@@ -3,7 +3,7 @@ use std::path::Path;
 use parc_core::hook::{HookStderr, ScriptRunner};
 use parc_core::ops::Writer;
 
-use crate::render::sanitize_terminal_text;
+use parc_core::display::sanitize_terminal_line;
 
 /// A fragment writer for one-shot CLI commands: hook scripts write straight
 /// to the terminal, and WASM plugins are loaded when the feature is enabled.
@@ -21,7 +21,10 @@ pub fn writer(vault: &Path, stderr: HookStderr) -> Writer {
         let plugins = parc_core::config::load_config(vault)
             .and_then(|config| PluginManager::load_all(vault, &config))
             .or_else(|e| {
-                eprintln!("Warning: failed to load plugins: {}", e);
+                eprintln!(
+                    "Warning: failed to load plugins: {}",
+                    parc_core::display::sanitize_terminal_line(&e.to_string())
+                );
                 PluginManager::empty()
             });
         match plugins {
@@ -36,6 +39,6 @@ pub fn writer(vault: &Path, stderr: HookStderr) -> Writer {
 /// Print any warnings the writer collected (e.g. failed post-hooks).
 pub fn report_warnings(writer: &mut Writer) {
     for warning in writer.take_warnings() {
-        eprintln!("warning: {}", sanitize_terminal_text(&warning));
+        eprintln!("warning: {}", sanitize_terminal_line(&warning));
     }
 }

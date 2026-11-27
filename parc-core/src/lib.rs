@@ -1,6 +1,7 @@
 pub mod attachment;
 pub mod config;
 pub mod date;
+pub mod display;
 pub mod doctor;
 pub mod embed;
 pub mod error;

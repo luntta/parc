@@ -64,7 +64,7 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
         {
             let mut manager = parc_core::plugin::manager::PluginManager::load_all(vault, &config)?;
             if let Ok(Some(rendered)) = manager.render(&fragment) {
-                println!("{}", rendered);
+                println!("{}", parc_core::display::sanitize_terminal_text(&rendered));
                 return Ok(());
             }
         }

@@ -191,8 +191,7 @@ pub fn store_attachment_file(
     if dest.exists() || std::fs::symlink_metadata(&dest).is_ok() {
         return Err(ParcError::ValidationError(format!(
             "attachment '{}' already exists for fragment '{}'",
-            filename,
-            &full_id[..8.min(full_id.len())]
+            filename, full_id
         )));
     }
 
@@ -256,8 +255,7 @@ pub fn move_attachment_file(
     if std::fs::symlink_metadata(&src).is_err() {
         return Err(ParcError::ValidationError(format!(
             "attachment '{}' not found on fragment '{}'",
-            filename,
-            &from_id[..8.min(from_id.len())]
+            filename, from_id
         )));
     }
 
@@ -267,8 +265,7 @@ pub fn move_attachment_file(
     if dest.exists() || std::fs::symlink_metadata(&dest).is_ok() {
         return Err(ParcError::ValidationError(format!(
             "attachment '{}' already exists for fragment '{}'",
-            filename,
-            &to_id[..8.min(to_id.len())]
+            filename, to_id
         )));
     }
 

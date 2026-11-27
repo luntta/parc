@@ -36,9 +36,12 @@ impl PluginManager {
         for disc in discovered {
             if !disc.wasm_path.exists() {
                 eprintln!(
-                    "Warning: plugin '{}' wasm not found at {}",
-                    disc.manifest.plugin.name,
-                    disc.wasm_path.display()
+                    "{}",
+                    crate::display::sanitize_terminal_line(&format!(
+                        "Warning: plugin '{}' wasm not found at {}",
+                        disc.manifest.plugin.name,
+                        disc.wasm_path.display()
+                    ))
                 );
                 continue;
             }
@@ -47,8 +50,11 @@ impl PluginManager {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!(
-                        "Warning: failed to read plugin '{}' wasm: {}",
-                        disc.manifest.plugin.name, e
+                        "{}",
+                        crate::display::sanitize_terminal_line(&format!(
+                            "Warning: failed to read plugin '{}' wasm: {}",
+                            disc.manifest.plugin.name, e
+                        ))
                     );
                     continue;
                 }
@@ -60,8 +66,11 @@ impl PluginManager {
                 Ok(instance) => plugins.push(instance),
                 Err(e) => {
                     eprintln!(
-                        "Warning: failed to load plugin '{}': {}",
-                        disc.manifest.plugin.name, e
+                        "{}",
+                        crate::display::sanitize_terminal_line(&format!(
+                            "Warning: failed to load plugin '{}': {}",
+                            disc.manifest.plugin.name, e
+                        ))
                     );
                 }
             }

@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use parc_core::config::Config;
+use parc_core::display::short_id;
 use parc_core::index;
 use parc_core::ops::Writer;
 use parc_core::schema::load_schemas;
@@ -103,6 +104,7 @@ struct TabViewState {
 }
 
 pub(super) struct App {
+    id_len: usize,
     pub tab: Tab,
     pub focus: Focus,
     pub list_state: ListState,
@@ -142,12 +144,13 @@ pub(super) struct App {
 }
 
 impl App {
-    fn new(rows: Vec<super::Row>, writer: Writer) -> Self {
+    fn new(rows: Vec<super::Row>, writer: Writer, id_len: usize) -> Self {
         let mut list_state = ListState::default();
         if !rows.is_empty() {
             list_state.select(Some(0));
         }
         Self {
+            id_len,
             tab: Tab::Today,
             focus: Focus::List,
             list_state,
@@ -389,7 +392,7 @@ fn jump_focused(app: &mut App, to_end: bool) {
 fn start_app(vault: &Path, config: &Config, writer: Writer) -> Result<App> {
     let stamp = VaultStamp::read(vault);
     let rows = data::load_rows(vault, Tab::Today, config)?;
-    let mut app = App::new(rows, writer);
+    let mut app = App::new(rows, writer, config.id_display_length);
     app.vault_stamp = stamp;
     Ok(app)
 }
@@ -516,7 +519,7 @@ fn handle_confirm(
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
             match action {
                 ConfirmAction::Delete { id } => {
-                    let result = actions::delete(&mut app.writer, &id);
+                    let result = actions::delete(&mut app.writer, &id, app.id_len);
                     finish_write(app, vault, config, &id, "delete", result);
                 }
             }
@@ -682,12 +685,13 @@ fn handle_input(
                         app.mode = Mode::Normal;
                         app.set_status("cancelled");
                     } else {
-                        let result = actions::promote(&mut app.writer, &id, &trimmed);
+                        let result = actions::promote(&mut app.writer, &id, &trimmed, app.id_len);
                         finish_write(app, vault, config, &id, "promote", result);
                     }
                 }
                 InputAction::SetField { id, field } => {
-                    let result = actions::set_field(&mut app.writer, &id, field, &trimmed);
+                    let result =
+                        actions::set_field(&mut app.writer, &id, field, &trimmed, app.id_len);
                     let what = format!("{} update", field.key());
                     finish_write(app, vault, config, &id, &what, result);
                 }
@@ -806,7 +810,7 @@ fn open_capture_form(app: &mut App, vault: &Path) {
 }
 
 fn open_delete_confirm(app: &mut App, id: String) {
-    let prompt = format!("Delete {}? (y/n)", &id[..8.min(id.len())]);
+    let prompt = format!("Delete {}? (y/n)", short_id(&id, app.id_len));
     app.mode = Mode::Confirm {
         prompt,
         action: ConfirmAction::Delete { id },
@@ -854,12 +858,12 @@ fn edit_id(app: &mut App, terminal: &mut Term, vault: &Path, config: &Config, id
 }
 
 fn toggle_status_id(app: &mut App, vault: &Path, config: &Config, id: &str) {
-    let result = actions::toggle_status(&mut app.writer, id);
+    let result = actions::toggle_status(&mut app.writer, id, app.id_len);
     finish_write(app, vault, config, id, "toggle", result);
 }
 
 fn archive_id(app: &mut App, vault: &Path, config: &Config, id: &str) {
-    let result = actions::archive(&mut app.writer, id);
+    let result = actions::archive(&mut app.writer, id, app.id_len);
     finish_write(app, vault, config, id, "archive", result);
 }
 
@@ -932,7 +936,7 @@ fn manual_reload(app: &mut App, vault: &Path, config: &Config) {
 }
 
 fn yank_id(app: &mut App, id: &str) {
-    match actions::yank(id) {
+    match actions::yank(id, app.id_len) {
         Ok(msg) => app.set_status(msg),
         Err(e) => app.set_status(format!("{} (id: {})", e, id)),
     }
@@ -1041,7 +1045,12 @@ fn invoke_actionable(
     };
     match (kind, &item.kind) {
         (OverlayKind::ToggleCheckbox, ActionKind::Checkbox { .. }) => {
-            let result = actions::toggle_checkbox(&mut app.writer, &id, item.source_range.clone());
+            let result = actions::toggle_checkbox(
+                &mut app.writer,
+                &id,
+                item.source_range.clone(),
+                app.id_len,
+            );
             finish_write(app, vault, config, &id, "toggle", result);
         }
         (OverlayKind::FollowLink, ActionKind::WikiLink { target, .. }) => {
@@ -1066,7 +1075,7 @@ fn follow_link_action(app: &mut App, vault: &Path, config: &Config, target: &str
     if jump_to_id(app, vault, config, &resolved).is_err() {
         app.set_status(format!(
             "follow failed: could not show {}",
-            short_id(&resolved)
+            short_id(&resolved, app.id_len)
         ));
         return;
     }
@@ -1075,7 +1084,7 @@ fn follow_link_action(app: &mut App, vault: &Path, config: &Config, target: &str
             app.nav_history.push(from);
         }
     }
-    app.set_status(format!("→ {}", short_id(&resolved)));
+    app.set_status(format!("→ {}", short_id(&resolved, app.id_len)));
 }
 
 fn nav_back(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
@@ -1089,10 +1098,10 @@ fn nav_back(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
     if jump_to_id(app, vault, config, &prev).is_err() {
         // Restore the stack — nothing happened.
         let _ = app.nav_history.forward(current);
-        app.set_status(format!("could not show {}", short_id(&prev)));
+        app.set_status(format!("could not show {}", short_id(&prev, app.id_len)));
         return Ok(());
     }
-    app.set_status(format!("← {}", short_id(&prev)));
+    app.set_status(format!("← {}", short_id(&prev, app.id_len)));
     Ok(())
 }
 
@@ -1106,10 +1115,10 @@ fn nav_forward(app: &mut App, vault: &Path, config: &Config) -> Result<()> {
     };
     if jump_to_id(app, vault, config, &next).is_err() {
         let _ = app.nav_history.back(current);
-        app.set_status(format!("could not show {}", short_id(&next)));
+        app.set_status(format!("could not show {}", short_id(&next, app.id_len)));
         return Ok(());
     }
-    app.set_status(format!("→ {}", short_id(&next)));
+    app.set_status(format!("→ {}", short_id(&next, app.id_len)));
     Ok(())
 }
 
@@ -1133,10 +1142,6 @@ fn jump_to_id(app: &mut App, vault: &Path, config: &Config, id: &str) -> Result<
     } else {
         Err(anyhow::anyhow!("not in current view"))
     }
-}
-
-fn short_id(id: &str) -> &str {
-    &id[..8.min(id.len())]
 }
 
 const LABEL_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
@@ -1464,7 +1469,7 @@ mod tests {
 
     fn test_app(vault: &Path) -> App {
         let writer = crate::hooks::writer(vault, parc_core::hook::HookStderr::Capture);
-        App::new(Vec::new(), writer)
+        App::new(Vec::new(), writer, 8)
     }
 
     fn status_text(app: &App) -> &str {
@@ -1624,7 +1629,7 @@ mod tests {
         let id = create_note(&vault, "Mine");
         reload_rows(&mut app, &vault, &config).unwrap();
 
-        let result = actions::archive(&mut app.writer, &id);
+        let result = actions::archive(&mut app.writer, &id, app.id_len);
         finish_write(&mut app, &vault, &config, &id, "archive", result);
         let status = status_text(&app).to_string();
 

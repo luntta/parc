@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use parc_core::display::sanitize_terminal_line as cell;
 use parc_core::plugin;
 use parc_core::secure_fs;
 
@@ -41,10 +42,10 @@ pub fn run_list(vault: &Path, json: bool) -> Result<()> {
             let caps = format_caps(&d.manifest.capabilities);
             println!(
                 "{:<20} {:<10} {:<30} {}",
-                d.manifest.plugin.name,
-                d.manifest.plugin.version,
+                cell(&d.manifest.plugin.name),
+                cell(&d.manifest.plugin.version),
                 caps,
-                d.manifest.plugin.description,
+                cell(&d.manifest.plugin.description),
             );
         }
     }
@@ -82,12 +83,18 @@ pub fn run_info(vault: &Path, name: &str, json: bool) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&val)?);
     } else {
-        println!("Name:        {}", m.plugin.name);
-        println!("Version:     {}", m.plugin.version);
-        println!("Description: {}", m.plugin.description);
-        println!("WASM:        {}", found.wasm_path.display());
+        println!("Name:        {}", cell(&m.plugin.name));
+        println!("Version:     {}", cell(&m.plugin.version));
+        println!("Description: {}", cell(&m.plugin.description));
+        println!(
+            "WASM:        {}",
+            cell(&found.wasm_path.display().to_string())
+        );
         println!("WASM exists: {}", found.wasm_path.exists());
-        println!("Manifest:    {}", found.manifest_path.display());
+        println!(
+            "Manifest:    {}",
+            cell(&found.manifest_path.display().to_string())
+        );
         println!();
         println!("Capabilities:");
         println!("  read_fragments:  {}", caps.read_fragments);
@@ -157,7 +164,8 @@ pub fn run_install(vault: &Path, wasm_path: &str, manifest_path: Option<&str>) -
 
     println!(
         "Installed plugin '{}' v{}",
-        manifest.plugin.name, manifest.plugin.version
+        cell(&manifest.plugin.name),
+        cell(&manifest.plugin.version)
     );
     Ok(())
 }
@@ -172,7 +180,8 @@ pub fn run_remove(vault: &Path, name: &str, force: bool) -> Result<()> {
     if !force {
         eprintln!(
             "Removing plugin '{}' v{}",
-            found.manifest.plugin.name, found.manifest.plugin.version
+            cell(&found.manifest.plugin.name),
+            cell(&found.manifest.plugin.version)
         );
     }
 

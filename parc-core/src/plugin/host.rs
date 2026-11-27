@@ -67,7 +67,13 @@ pub fn register_host_functions(linker: &mut Linker<PluginState>) -> Result<(), P
                     3 => "ERROR",
                     _ => "LOG",
                 };
-                eprintln!("[{}][{}] {}", plugin_name, level_str, msg);
+                eprintln!(
+                    "{}",
+                    crate::display::sanitize_terminal_line(&format!(
+                        "[{}][{}] {}",
+                        plugin_name, level_str, msg
+                    ))
+                );
             },
         )
         .map_err(|e| ParcError::PluginError(format!("failed to link parc_host_log: {}", e)))?;

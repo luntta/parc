@@ -504,8 +504,7 @@ fn read_parts_impl(
     let meta = std::fs::symlink_metadata(&path).map_err(|_| {
         ParcError::ValidationError(format!(
             "attachment '{}' not found on fragment '{}'",
-            filename,
-            &full_id[..8.min(full_id.len())]
+            filename, full_id
         ))
     })?;
     if meta.file_type().is_symlink() || !meta.is_file() {

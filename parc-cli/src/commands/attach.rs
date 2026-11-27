@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use parc_core::attachment::AttachMode;
+use parc_core::display::short_id;
 use parc_core::extract::{self, PartUnit};
 use parc_core::{fragment, index};
 
@@ -9,6 +10,7 @@ use crate::hooks::{cli_writer, report_warnings};
 use crate::render::sanitize_terminal_text;
 
 pub fn run_attach(vault: &Path, id: &str, file: &Path, mv: bool, json: bool) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)?.id_display_length;
     let mut writer = cli_writer(vault);
     let mode = if mv {
         AttachMode::Move
@@ -29,13 +31,14 @@ pub fn run_attach(vault: &Path, id: &str, file: &Path, mv: bool, json: bool) -> 
         println!(
             "Attached '{}' to {}",
             sanitize_terminal_text(&filename),
-            &frag.id[..8.min(frag.id.len())]
+            short_id(&frag.id, id_len)
         );
     }
     Ok(())
 }
 
 pub fn run_detach(vault: &Path, id: &str, filename: &str, json: bool) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)?.id_display_length;
     let mut writer = cli_writer(vault);
     let frag = writer.detach(id, filename)?;
     report_warnings(&mut writer);
@@ -51,7 +54,7 @@ pub fn run_detach(vault: &Path, id: &str, filename: &str, json: bool) -> Result<
         println!(
             "Detached '{}' from {}",
             sanitize_terminal_text(filename),
-            &frag.id[..8.min(frag.id.len())]
+            short_id(&frag.id, id_len)
         );
     }
     Ok(())
@@ -64,6 +67,7 @@ pub fn run_attachments(
     pages: Option<String>,
     json: bool,
 ) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)?.id_display_length;
     let full_id = fragment::resolve_id(vault, id)?;
     let conn = index::open_index(vault)?;
 
@@ -82,7 +86,7 @@ pub fn run_attachments(
     } else if attachments.is_empty() {
         println!(
             "No attachments for fragment {}.",
-            &full_id[..8.min(full_id.len())]
+            short_id(&full_id, id_len)
         );
     } else {
         println!("{:<30}  {:>8}  TEXT", "FILENAME", "SIZE");

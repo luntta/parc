@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use parc_core::display::short_id;
 use parc_core::fragment;
 
 use crate::render::sanitize_terminal_text;
@@ -25,6 +26,7 @@ pub fn run(
 }
 
 fn run_list(vault: &Path, json: bool) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)?.id_display_length;
     let trash_dir = parc_core::secure_fs::real_dir(vault, &["trash"])?;
     if !trash_dir.is_dir() {
         if json {
@@ -71,7 +73,7 @@ fn run_list(vault: &Path, json: bool) -> Result<()> {
             "ID", "TYPE", "TITLE", "DELETED"
         );
         for f in &entries {
-            let short_id = &f.id[..8.min(f.id.len())];
+            let short_id = short_id(&f.id, id_len);
             let safe_title = sanitize_terminal_text(&f.title);
             let title = if safe_title.chars().count() > 40 {
                 format!("{}...", safe_title.chars().take(37).collect::<String>())
@@ -93,6 +95,7 @@ fn run_list(vault: &Path, json: bool) -> Result<()> {
 }
 
 fn run_purge(vault: &Path, id: Option<&str>, json: bool) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)?.id_display_length;
     let mut writer = crate::hooks::cli_writer(vault);
 
     if let Some(prefix) = id {
@@ -103,7 +106,7 @@ fn run_purge(vault: &Path, id: Option<&str>, json: bool) -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&json_val)?);
         } else {
-            println!("Purged {}", &purged[..8.min(purged.len())]);
+            println!("Purged {}", short_id(&purged, id_len));
         }
     } else {
         let count = writer.empty_trash()?;
@@ -121,6 +124,7 @@ fn run_purge(vault: &Path, id: Option<&str>, json: bool) -> Result<()> {
 }
 
 fn run_restore(vault: &Path, id: &str, json: bool) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)?.id_display_length;
     let mut writer = crate::hooks::cli_writer(vault);
     let frag = writer.restore_from_trash(id)?;
     if json {
@@ -129,7 +133,7 @@ fn run_restore(vault: &Path, id: &str, json: bool) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        println!("Restored {}", &frag.id[..8.min(frag.id.len())]);
+        println!("Restored {}", short_id(&frag.id, id_len));
     }
     Ok(())
 }

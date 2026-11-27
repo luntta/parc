@@ -70,7 +70,7 @@ pub fn run(
     }
 
     let id_len = load_config(vault)?.id_display_length;
-    let short = |id: &str| id[..id_len.min(id.len())].to_string();
+    let short = |id: &str| parc_core::display::short_id(id, id_len).to_string();
     match (&ctx.seed.id, draft_of) {
         (Some(id), Some(true)) => println!("RELATED TO THE DRAFT OF {}", short(id)),
         (Some(id), _) => println!("RELATED TO {}", short(id)),

@@ -87,7 +87,7 @@ pub fn export_html(fragments: &[Fragment]) -> Result<Vec<(String, String)>, Parc
             id = &f.id,
             html_body = html_body,
         );
-        let filename = format!("{}.html", &f.id[..8.min(f.id.len())]);
+        let filename = format!("{}.html", crate::display::short_id(&f.id, 8));
         files.push((filename, html));
     }
 
@@ -98,7 +98,7 @@ pub fn export_html(fragments: &[Fragment]) -> Result<Vec<(String, String)>, Parc
          </head>\n<body>\n<h1>Parc Export</h1>\n<ul>\n",
     );
     for f in fragments {
-        let short = &f.id[..8.min(f.id.len())];
+        let short = crate::display::short_id(&f.id, 8);
         index_html.push_str(&format!(
             "<li><a href=\"{short}.html\">{title}</a> ({ftype})</li>\n",
             short = short,

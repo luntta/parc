@@ -562,7 +562,20 @@ enum UpdateCommands {
     },
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!(
+                "Error: {}",
+                parc_core::display::sanitize_terminal_text(&format!("{e:#}"))
+            );
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     parc_core::extract::dispatch_worker();
     let cli = parse_cli();
     let command = cli.command;
@@ -849,8 +862,8 @@ fn sync_index(vault: &std::path::Path) {
     for problem in &report.problems {
         eprintln!(
             "warning: fragments/{} is not indexed: {}",
-            render::sanitize_terminal_text(&problem.file_name),
-            render::sanitize_terminal_text(&problem.reason)
+            parc_core::display::sanitize_terminal_line(&problem.file_name),
+            parc_core::display::sanitize_terminal_line(&problem.reason)
         );
     }
 }
@@ -942,7 +955,7 @@ fn run_external_command(vault: &std::path::Path, args: Vec<String>) -> anyhow::R
             if pc.command == *cmd_name {
                 let output = manager.execute_command(&pc.plugin_name, cmd_name, &cmd_args)?;
                 if !output.is_empty() {
-                    print!("{}", output);
+                    print!("{}", parc_core::display::sanitize_terminal_text(&output));
                 }
                 return Ok(());
             }

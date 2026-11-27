@@ -5,7 +5,7 @@ use parc_core::config::load_config;
 use parc_core::fragment::read_fragment;
 use parc_core::index;
 
-use crate::render::sanitize_terminal_text;
+use parc_core::display::{sanitize_terminal_line, short_id};
 
 pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     let config = load_config(vault)?;
@@ -34,26 +34,22 @@ pub fn run(vault: &Path, id: &str, json: bool) -> Result<()> {
     }
 
     let id_len = config.id_display_length;
-    let short_id = &fragment.id[..id_len.min(fragment.id.len())];
+    let target = sanitize_terminal_line(short_id(&fragment.id, id_len));
     println!(
         "BACKLINKS TO {} \"{}\"",
-        short_id,
-        sanitize_terminal_text(&fragment.title)
+        target,
+        sanitize_terminal_line(&fragment.title)
     );
     println!();
     println!("{:<width$}  {:<10}  TITLE", "ID", "TYPE", width = id_len);
 
     for bl in &backlinks {
-        let short = if bl.source_id.len() > id_len {
-            &bl.source_id[..id_len]
-        } else {
-            &bl.source_id
-        };
+        let short = sanitize_terminal_line(short_id(&bl.source_id, id_len));
         println!(
             "{:<width$}  {:<10}  {}",
             short,
-            sanitize_terminal_text(&bl.source_type),
-            sanitize_terminal_text(&bl.source_title),
+            sanitize_terminal_line(&bl.source_type),
+            sanitize_terminal_line(&bl.source_title),
             width = id_len
         );
     }

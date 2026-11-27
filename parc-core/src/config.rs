@@ -329,7 +329,7 @@ fn load_config_as(vault: &Path, personal: bool) -> Result<Config, ParcError> {
         "short" => DateFormat::Short,
         _ => DateFormat::Relative,
     };
-    config.id_display_length = raw.id_display_length;
+    config.id_display_length = raw.id_display_length.clamp(1, 26); // ULID width, also bounds table padding
     config.color = match raw.color.as_str() {
         "always" => ColorMode::Always,
         "never" => ColorMode::Never,

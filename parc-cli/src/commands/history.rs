@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use parc_core::display::short_id;
 use parc_core::fragment;
 use parc_core::history;
 use parc_core::index;
@@ -16,6 +17,7 @@ pub fn run(
     restore: Option<String>,
     json: bool,
 ) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)?.id_display_length;
     let full_id = fragment::resolve_id(vault, id)?;
 
     if let Some(timestamp) = restore {
@@ -34,7 +36,7 @@ pub fn run(
         } else {
             println!(
                 "Restored {} to version {}",
-                &full_id[..8.min(full_id.len())],
+                short_id(&full_id, id_len),
                 timestamp
             );
         }
@@ -115,16 +117,13 @@ pub fn run(
     }
 
     if versions.is_empty() {
-        println!(
-            "No history for fragment {}.",
-            &full_id[..8.min(full_id.len())]
-        );
+        println!("No history for fragment {}.", short_id(&full_id, id_len));
         return Ok(());
     }
 
     println!(
         "History for {} ({} versions):\n",
-        &full_id[..8.min(full_id.len())],
+        short_id(&full_id, id_len),
         versions.len()
     );
     println!("{:<28}  {:>8}", "TIMESTAMP", "SIZE");

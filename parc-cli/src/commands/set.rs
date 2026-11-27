@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Result};
+use parc_core::display::short_id;
 use parc_core::fragment::read_fragment;
 use parc_core::schema::load_schemas;
 use serde_json::Value;
@@ -8,6 +9,7 @@ use serde_json::Value;
 use crate::hooks::{cli_writer, report_warnings};
 
 pub fn run(vault: &Path, id: &str, field: &str, value: &str, json: bool) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)?.id_display_length;
     let schemas = load_schemas(vault)?;
     let mut fragment = read_fragment(vault, id)?;
 
@@ -63,7 +65,7 @@ pub fn run(vault: &Path, id: &str, field: &str, value: &str, json: bool) -> Resu
     } else {
         println!(
             "Updated {} field '{}' to '{}'",
-            &fragment.id[..8],
+            short_id(&fragment.id, id_len),
             field,
             value
         );

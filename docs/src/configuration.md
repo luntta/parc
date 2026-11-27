@@ -71,7 +71,7 @@ Machine output (`--json`) always uses ISO 8601 regardless of this setting.
 
 ### `id_display_length`
 
-Integer. How many characters of the ULID to show in listings. Default `8`. Smaller is more readable, larger reduces ambiguity in vaults with many fragments. Internally parc always works with full IDs.
+Integer from 1 to 26. How many characters of the ULID to show in listings and action confirmations. Default `8`. Smaller is more readable, larger reduces ambiguity in vaults with many fragments. Internally parc always works with full IDs.
 
 ### `color`
 

@@ -1,11 +1,14 @@
 use std::path::Path;
 
 use anyhow::Result;
+use parc_core::display::{sanitize_terminal_line, short_id};
 use parc_core::doctor::{self, DoctorFinding};
 
-use crate::render::sanitize_terminal_text;
-
 pub fn run(vault: &Path, json: bool) -> Result<()> {
+    let id_len = parc_core::config::load_config(vault)
+        .unwrap_or_default()
+        .id_display_length;
+    let prefix = |id: &str| sanitize_terminal_line(short_id(id, id_len));
     if !json {
         println!("Checking vault health...");
         println!();
@@ -96,16 +99,16 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                     if target_ref.starts_with("[[") {
                         println!(
                             "\u{2717} Unresolved wiki-link: {} \"{}\" \u{2192} {} (no unique ID or title match)",
-                            &source_id[..8.min(source_id.len())],
-                            sanitize_terminal_text(source_title),
-                            sanitize_terminal_text(target_ref)
+                            prefix(source_id),
+                            sanitize_terminal_line(source_title),
+                            sanitize_terminal_line(target_ref)
                         );
                     } else {
                         println!(
                             "\u{2717} Broken link: {} \"{}\" \u{2192} {} (not found)",
-                            &source_id[..8.min(source_id.len())],
-                            sanitize_terminal_text(source_title),
-                            sanitize_terminal_text(target_ref)
+                            prefix(source_id),
+                            sanitize_terminal_line(source_title),
+                            sanitize_terminal_line(target_ref)
                         );
                     }
                 }
@@ -117,12 +120,12 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                 } => {
                     println!(
                         "\u{2717} Ambiguous wiki-link: {} \"{}\" \u{2192} {} (matches: {})",
-                        &source_id[..8.min(source_id.len())],
-                        sanitize_terminal_text(source_title),
-                        sanitize_terminal_text(target_ref),
+                        prefix(source_id),
+                        sanitize_terminal_line(source_title),
+                        sanitize_terminal_line(target_ref),
                         matches
                             .iter()
-                            .map(|id| &id[..8.min(id.len())])
+                            .map(|id| prefix(id))
                             .collect::<Vec<_>>()
                             .join(", ")
                     );
@@ -130,16 +133,16 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                 DoctorFinding::SchemaViolation { id, title, message } => {
                     println!(
                         "\u{2717} Schema violation: {} \"{}\" \u{2014} {}",
-                        &id[..8.min(id.len())],
-                        sanitize_terminal_text(title),
-                        sanitize_terminal_text(message)
+                        prefix(id),
+                        sanitize_terminal_line(title),
+                        sanitize_terminal_line(message)
                     );
                 }
                 DoctorFinding::OrphanFragment { id, title } => {
                     println!(
                         "! Orphan: {} \"{}\" (no links in or out)",
-                        &id[..8.min(id.len())],
-                        sanitize_terminal_text(title)
+                        prefix(id),
+                        sanitize_terminal_line(title)
                     );
                 }
                 DoctorFinding::AttachmentMismatch {
@@ -148,8 +151,8 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                 } => {
                     println!(
                         "\u{2717} Attachment: {} \u{2014} {}",
-                        &fragment_id[..8.min(fragment_id.len())],
-                        sanitize_terminal_text(detail)
+                        prefix(fragment_id),
+                        sanitize_terminal_line(detail)
                     );
                 }
                 DoctorFinding::VaultSizeWarning { total_bytes } => {
@@ -165,15 +168,15 @@ pub fn run(vault: &Path, json: bool) -> Result<()> {
                 } => {
                     println!(
                         "\u{2717} Plugin '{}': {}",
-                        sanitize_terminal_text(plugin_name),
-                        sanitize_terminal_text(detail)
+                        sanitize_terminal_line(plugin_name),
+                        sanitize_terminal_line(detail)
                     );
                 }
                 DoctorFinding::UnreadableFragment { file_name, reason } => {
                     println!(
                         "\u{2717} fragments/{} is not indexed: {}",
-                        sanitize_terminal_text(file_name),
-                        sanitize_terminal_text(reason)
+                        sanitize_terminal_line(file_name),
+                        sanitize_terminal_line(reason)
                     );
                 }
             }
