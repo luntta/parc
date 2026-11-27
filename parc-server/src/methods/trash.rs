@@ -17,8 +17,8 @@ pub fn list(vault: &Path, _params: Value) -> Result<Value, RpcError> {
     }
 
     let mut entries = Vec::new();
-    for entry in std::fs::read_dir(&trash_dir)
-        .map_err(|e| RpcError::internal_error(&e.to_string()))?
+    for entry in
+        std::fs::read_dir(&trash_dir).map_err(|e| RpcError::internal_error(&e.to_string()))?
     {
         let entry = entry.map_err(|e| RpcError::internal_error(&e.to_string()))?;
         let path = entry.path();

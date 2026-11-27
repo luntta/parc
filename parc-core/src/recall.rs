@@ -740,7 +740,11 @@ fn by_attachment_words(
             strength: acc.strength,
         });
     }
-    ranked.sort_by(|a, b| b.strength.total_cmp(&a.strength).then_with(|| a.id.cmp(&b.id)));
+    ranked.sort_by(|a, b| {
+        b.strength
+            .total_cmp(&a.strength)
+            .then_with(|| a.id.cmp(&b.id))
+    });
     ranked.truncate(POOL);
     Ok((ranked, hits))
 }

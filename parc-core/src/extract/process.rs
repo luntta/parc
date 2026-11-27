@@ -206,7 +206,9 @@ fn classify_exit(status: std::process::ExitStatus, stderr: &str) -> String {
         .map(str::trim)
         .filter(|s| !s.is_empty());
     match detail {
-        Some(msg) if msg.to_lowercase().contains("memory") || msg.to_lowercase().contains("alloc") => {
+        Some(msg)
+            if msg.to_lowercase().contains("memory") || msg.to_lowercase().contains("alloc") =>
+        {
             "too large or ran out of memory".to_string()
         }
         Some(msg) => format!("unreadable ({msg})"),
@@ -259,8 +261,8 @@ fn run_child_main() -> Result<(), String> {
         .read_to_end(&mut bytes)
         .map_err(|e| format!("failed to read input bytes: {e}"))?;
 
-    let outcome = in_process(&bytes, req.filename.as_deref(), &req.limits)
-        .map_err(|e| e.to_string())?;
+    let outcome =
+        in_process(&bytes, req.filename.as_deref(), &req.limits).map_err(|e| e.to_string())?;
     let json = serde_json::to_string(&ChildResponse::Ok { outcome })
         .map_err(|e| format!("failed to serialize extraction result: {e}"))?;
     let mut stdout = std::io::stdout().lock();

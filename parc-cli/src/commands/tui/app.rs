@@ -557,10 +557,7 @@ fn load_attachment_pager(
     attachments: Vec<String>,
     index: usize,
 ) -> AttachmentPagerState {
-    let filename = attachments
-        .get(index)
-        .cloned()
-        .unwrap_or_default();
+    let filename = attachments.get(index).cloned().unwrap_or_default();
     let mut lines = Vec::new();
     let mut title = filename.clone();
     if let Some(conn) = app.ensure_index(vault) {

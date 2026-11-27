@@ -434,7 +434,10 @@ fn detail_lines(
             }
             if !fragment.attachments.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    format!("Attachments: {}  (press v to read)", fragment.attachments.join(", ")),
+                    format!(
+                        "Attachments: {}  (press v to read)",
+                        fragment.attachments.join(", ")
+                    ),
                     muted,
                 )));
             }
@@ -948,7 +951,11 @@ fn draw_attachment_pager(frame: &mut Frame, area: Rect, pager: &mut AttachmentPa
     let popup = centered_rect(90, 88, area);
     frame.render_widget(Clear, popup);
     let count_hint = if pager.attachments.len() > 1 {
-        format!(" [{}/{}  [/] switch]", pager.index + 1, pager.attachments.len())
+        format!(
+            " [{}/{}  [/] switch]",
+            pager.index + 1,
+            pager.attachments.len()
+        )
     } else {
         String::new()
     };
@@ -964,9 +971,7 @@ fn draw_attachment_pager(frame: &mut Frame, area: Rect, pager: &mut AttachmentPa
             if l.starts_with("─── ") && l.ends_with(" ───") {
                 Line::from(Span::styled(
                     l.clone(),
-                    Style::default()
-                        .fg(ACTIVE_TAB)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(ACTIVE_TAB).add_modifier(Modifier::BOLD),
                 ))
             } else {
                 Line::from(l.clone())

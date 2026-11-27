@@ -156,13 +156,13 @@ pub struct ExtractLimits {
 impl Default for ExtractLimits {
     fn default() -> Self {
         Self {
-            max_file_bytes: 100 * 1024 * 1024,          // 100 MiB
-            max_content_size: 50 * 1024 * 1024,         // 50 MiB
-            max_archive_size: 100 * 1024 * 1024,        // 100 MiB
+            max_file_bytes: 100 * 1024 * 1024,   // 100 MiB
+            max_content_size: 50 * 1024 * 1024,  // 50 MiB
+            max_archive_size: 100 * 1024 * 1024, // 100 MiB
             max_files_in_archive: 4_000,
             max_compression_ratio: 100,
             max_pages: 2_000,
-            max_memory_bytes: 2 * 1024 * 1024 * 1024,   // 2 GiB virtual address space
+            max_memory_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB virtual address space
             max_cpu_secs: 30,
             wall_timeout_secs: 45,
         }
@@ -214,10 +214,8 @@ enum SupportedKind {
 }
 
 const MIME_PDF: &str = "application/pdf";
-const MIME_DOCX: &str =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-const MIME_PPTX: &str =
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+const MIME_DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const MIME_PPTX: &str = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const MIME_HTML: &str = "text/html";
 
 /// Extract text from raw file bytes in the current process.

@@ -99,7 +99,10 @@ fn golden_pdf_docx_pptx_html() {
     };
     assert_eq!(html.title.as_deref(), Some("Harbor Operations Handbook"));
     assert!(!html.parts.iter().any(|p| p.contains("## title:")));
-    assert!(html.parts.len() >= 3, "HTML should split into heading sections");
+    assert!(
+        html.parts.len() >= 3,
+        "HTML should split into heading sections"
+    );
 }
 
 #[test]
@@ -112,7 +115,12 @@ fn sidecar_stale_newer_and_index_only_modes() {
     let cfg = parc_core::config::load_config(&vault).unwrap();
     let schemas = load_schemas(&vault).unwrap();
     let frag = w
-        .create(new_fragment("note", "Reading", schemas.resolve("note").unwrap(), &cfg))
+        .create(new_fragment(
+            "note",
+            "Reading",
+            schemas.resolve("note").unwrap(),
+            &cfg,
+        ))
         .unwrap();
 
     // Default mode is `sidecar`: attaching writes `.text/sample.html.md`
@@ -138,8 +146,8 @@ fn sidecar_stale_newer_and_index_only_modes() {
     assert!(refreshed.contains("Harbor Operations Handbook"));
 
     // A newer-version sidecar is left untouched on disk and still indexed
-    let sha = extract::sha256_file(&vault.join("attachments").join(&frag.id).join(&filename))
-        .unwrap();
+    let sha =
+        extract::sha256_file(&vault.join("attachments").join(&frag.id).join(&filename)).unwrap();
     let future_v = TEXT_FORMAT + 5;
     let future_content = format!(
         "<!-- parc-text {{\"v\":{future_v},\"sha256\":\"{sha}\",\"unit\":\"section\",\"format\":\"markdown\",\"title\":\"Future Title\"}} -->\nFuture section text"
@@ -198,8 +206,16 @@ fn sync_on_open_never_extracts_and_failures_are_remembered() {
     // Simulate a `git pull` landing attachments without sidecars
     let att_dir = vault.join("attachments").join(&frag.id);
     std::fs::create_dir_all(&att_dir).unwrap();
-    std::fs::copy(fixture_dir().join("sample.html"), att_dir.join("pulled.html")).unwrap();
-    std::fs::write(att_dir.join("broken.pdf"), b"%PDF-1.4\nthis is corrupted garbage\n").unwrap();
+    std::fs::copy(
+        fixture_dir().join("sample.html"),
+        att_dir.join("pulled.html"),
+    )
+    .unwrap();
+    std::fs::write(
+        att_dir.join("broken.pdf"),
+        b"%PDF-1.4\nthis is corrupted garbage\n",
+    )
+    .unwrap();
 
     // open_index syncs attachment_files as pending, never extracting or writing sidecars
     let conn = index::open_index(&vault).unwrap();
@@ -217,7 +233,10 @@ fn sync_on_open_never_extracts_and_failures_are_remembered() {
     let conn2 = index::open_index(&vault).unwrap();
     assert!(!extract::has_pending(&conn2).unwrap());
     let statuses = extract::list_status(&conn2, &vault, &frag.id).unwrap();
-    let broken = statuses.iter().find(|s| s.filename == "broken.pdf").unwrap();
+    let broken = statuses
+        .iter()
+        .find(|s| s.filename == "broken.pdf")
+        .unwrap();
     assert_eq!(broken.status, "error");
     assert!(broken.error.is_some());
 }
@@ -260,19 +279,35 @@ fn in_files_search_and_attachment_recall_name_pages() {
     let cfg = parc_core::config::load_config(&vault).unwrap();
     let schemas = load_schemas(&vault).unwrap();
     let pdf_frag = w
-        .create(new_fragment("note", "Winter filing", schemas.resolve("note").unwrap(), &cfg))
+        .create(new_fragment(
+            "note",
+            "Winter filing",
+            schemas.resolve("note").unwrap(),
+            &cfg,
+        ))
         .unwrap();
     let plain_frag = w
-        .create(new_fragment("note", "Grocery list", schemas.resolve("note").unwrap(), &cfg))
+        .create(new_fragment(
+            "note",
+            "Grocery list",
+            schemas.resolve("note").unwrap(),
+            &cfg,
+        ))
         .unwrap();
-    w.attach(&pdf_frag.id, &fixture_dir().join("sample.pdf"), AttachMode::Copy)
-        .unwrap();
+    w.attach(
+        &pdf_frag.id,
+        &fixture_dir().join("sample.pdf"),
+        AttachMode::Copy,
+    )
+    .unwrap();
 
     let conn = index::open_index(&vault).unwrap();
 
     // Plain search without in:files must NOT match text that only exists inside attachments.
     let plain_q = parc_core::search::parse_query("icebreaker").unwrap();
-    assert!(parc_core::search::search(&conn, &plain_q).unwrap().is_empty());
+    assert!(parc_core::search::search(&conn, &plain_q)
+        .unwrap()
+        .is_empty());
 
     // `in:files` finds the fragment and returns page-labeled file_hits.
     let files_q = parc_core::search::parse_query("in:files crew rotation").unwrap();

@@ -144,9 +144,13 @@ pub fn strip_header(content: &str) -> &str {
     content
 }
 
-pub fn sidecar_path(vault: &Path, fragment_id: &str, filename: &str, format: TextFormat) -> PathBuf {
-    attachment::sidecar_dir(vault, fragment_id)
-        .join(format!("{filename}.{}", format.sidecar_ext()))
+pub fn sidecar_path(
+    vault: &Path,
+    fragment_id: &str,
+    filename: &str,
+    format: TextFormat,
+) -> PathBuf {
+    attachment::sidecar_dir(vault, fragment_id).join(format!("{filename}.{}", format.sidecar_ext()))
 }
 
 fn render_sidecar(sha256: &str, extracted: &Extracted) -> Result<String, ParcError> {

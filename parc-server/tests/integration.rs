@@ -1132,7 +1132,10 @@ fn test_promote_templates_and_trash_management() {
     let resp = h.send_rpc(rpc(1, "schema.list", serde_json::json!({})));
     let schemas = result_of(&resp).as_array().unwrap();
     let decision = schemas.iter().find(|s| s["name"] == "decision").unwrap();
-    assert!(decision["template"].as_str().unwrap().contains("## Context"));
+    assert!(decision["template"]
+        .as_str()
+        .unwrap()
+        .contains("## Context"));
     let note_schema = schemas.iter().find(|s| s["name"] == "note").unwrap();
     assert!(note_schema["template"].is_null());
 
@@ -1200,9 +1203,11 @@ fn inbox_rpc_stays_responsive_while_a_batch_waits_for_extraction() {
     // Hold the worker lease instead of sleeping or relying on a slow parser.
     assert!(parc_core::extract::claim_lease(&conn, "test-controlled-delay", 60).unwrap());
     for i in 0..8 {
-        let file = std::fs::File::create(server.vault_path.join("inbox").join(format!("{i}.txt"))).unwrap();
+        let file = std::fs::File::create(server.vault_path.join("inbox").join(format!("{i}.txt")))
+            .unwrap();
         (&file).write_all(b"Original contents").unwrap();
-        file.set_modified(SystemTime::now() - Duration::from_secs(5)).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(5))
+            .unwrap();
     }
     let report = server.send_rpc(rpc(1, "inbox.sweep", serde_json::json!({})));
     assert_eq!(report["result"]["pending"], 8);
@@ -1212,8 +1217,12 @@ fn inbox_rpc_stays_responsive_while_a_batch_waits_for_extraction() {
     let snapshot = server.send_rpc(rpc(3, "inbox.attachments", serde_json::json!({})));
     assert_eq!(snapshot["result"].as_object().unwrap().len(), 8);
     assert_eq!(snapshot["result"][id][0]["status"], "pending");
-    let text = server.send_rpc(rpc(4, "attachment.text", serde_json::json!({
-        "id": id, "filename": "0.txt", "ready_only": true
-    })));
+    let text = server.send_rpc(rpc(
+        4,
+        "attachment.text",
+        serde_json::json!({
+            "id": id, "filename": "0.txt", "ready_only": true
+        }),
+    ));
     assert_eq!(text["result"]["status"], "pending");
 }

@@ -35,10 +35,16 @@ fn template_body(vault: &Path, type_name: &str) -> Option<String> {
     let raw = schema::load_template(vault, type_name)?;
     let trimmed = raw.trim_start();
     let body = if let Some(rest) = trimmed.strip_prefix("---") {
-        let rest = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n')).unwrap_or(rest);
+        let rest = rest
+            .strip_prefix("\r\n")
+            .or_else(|| rest.strip_prefix('\n'))
+            .unwrap_or(rest);
         if let Some(end) = rest.find("\n---") {
             let after = &rest[end + 4..];
-            after.strip_prefix("\r\n").or_else(|| after.strip_prefix('\n')).unwrap_or(after)
+            after
+                .strip_prefix("\r\n")
+                .or_else(|| after.strip_prefix('\n'))
+                .unwrap_or(after)
         } else {
             raw.as_str()
         }
@@ -122,7 +128,11 @@ pub fn get(vault: &Path, params: Value) -> Result<Value, RpcError> {
         .resolve(&p.type_name)
         .ok_or_else(|| RpcError::invalid_params(&format!("unknown type: {}", p.type_name)))?;
 
-    Ok(schema_to_json(vault, schema, &TypeState::load(vault, &registry)?))
+    Ok(schema_to_json(
+        vault,
+        schema,
+        &TypeState::load(vault, &registry)?,
+    ))
 }
 
 /// The definition parc ships for a built-in type, to put an edited one back.
@@ -132,7 +142,11 @@ pub fn builtin(vault: &Path, params: Value) -> Result<Value, RpcError> {
         RpcError::invalid_params(&format!("'{}' is not a built-in type", p.type_name))
     })?;
     let registry = load_schemas(vault).map_err(map_parc_error)?;
-    Ok(schema_to_json(vault, &schema, &TypeState::load(vault, &registry)?))
+    Ok(schema_to_json(
+        vault,
+        &schema,
+        &TypeState::load(vault, &registry)?,
+    ))
 }
 
 /// How many fragments a type has, and how many hold each value of each of

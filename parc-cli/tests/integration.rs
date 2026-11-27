@@ -3109,7 +3109,11 @@ fn test_only_the_global_vault_chooses_the_editor() {
 
     // The project vault names a program; $EDITOR runs instead, with a warning.
     let config = std::fs::read_to_string(vault.join("config.yml")).unwrap();
-    std::fs::write(vault.join("config.yml"), format!("{}editor: {}\n", config, evil)).unwrap();
+    std::fs::write(
+        vault.join("config.yml"),
+        format!("{}editor: {}\n", config, evil),
+    )
+    .unwrap();
     run(&["edit", &id[..10]])
         .env("EDITOR", retitle("FromEnv"))
         .assert()
@@ -3122,7 +3126,11 @@ fn test_only_the_global_vault_chooses_the_editor() {
     run(&["init", "-g", "-y"]).assert().success();
     let global = home.join(".parc/config.yml");
     let text = std::fs::read_to_string(&global).unwrap();
-    std::fs::write(&global, format!("{}editor: {}\n", text, retitle("FromGlobal"))).unwrap();
+    std::fs::write(
+        &global,
+        format!("{}editor: {}\n", text, retitle("FromGlobal")),
+    )
+    .unwrap();
     run(&["edit", &id[..10]])
         .env("EDITOR", retitle("FromEnv2"))
         .assert()
@@ -3235,15 +3243,15 @@ fn test_attachment_text_cli_in_files_and_isolated_child() {
         std::fs::set_permissions(&slow_exe, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut tight = parc_core::extract::ExtractLimits::default();
         tight.wall_timeout_secs = 1;
-        let err = parc_core::extract::isolated_with_exe(&slow_exe, &fixture_pdf, &tight)
-            .unwrap_err();
+        let err =
+            parc_core::extract::isolated_with_exe(&slow_exe, &fixture_pdf, &tight).unwrap_err();
         assert!(err.to_string().contains("took too long"), "{err}");
 
         let crash_exe = tmp.path().join("crash-extractor.sh");
         std::fs::write(&crash_exe, "#!/bin/sh\nkill -9 $$\n").unwrap();
         std::fs::set_permissions(&crash_exe, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let err = parc_core::extract::isolated_with_exe(&crash_exe, &fixture_pdf, &tight)
-            .unwrap_err();
+        let err =
+            parc_core::extract::isolated_with_exe(&crash_exe, &fixture_pdf, &tight).unwrap_err();
         assert!(!err.to_string().is_empty());
     }
 

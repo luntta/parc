@@ -168,7 +168,11 @@ pub fn normalize_with_map(input: &str) -> (String, Vec<usize>) {
             i += 1;
             continue;
         }
-        if is_dash(c) && joined.last().is_some_and(|(prev, _)| prev.is_alphanumeric()) {
+        if is_dash(c)
+            && joined
+                .last()
+                .is_some_and(|(prev, _)| prev.is_alphanumeric())
+        {
             // Look ahead for optional horizontal spaces, then a newline, then optional horizontal spaces, then an alphanumeric char.
             let mut j = i + 1;
             while j < n && (orig[j] == ' ' || orig[j] == '\t') {
@@ -289,7 +293,10 @@ pub fn locate(parts: &[String], quote: &str, part_hint: Option<usize>) -> Option
 fn search_order(len: usize, hint_1based: Option<usize>) -> Vec<usize> {
     let mut order = Vec::with_capacity(len);
     let mut seen = vec![false; len];
-    if let Some(hint) = hint_1based.and_then(|h| h.checked_sub(1)).filter(|&h| h < len) {
+    if let Some(hint) = hint_1based
+        .and_then(|h| h.checked_sub(1))
+        .filter(|&h| h < len)
+    {
         order.push(hint);
         seen[hint] = true;
         for delta in 1..len {

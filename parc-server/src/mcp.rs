@@ -689,10 +689,7 @@ fn get_fragment(vault: &Path, args: &Map<String, Value>) -> ToolResult {
                             format!("ready, {} {}", a.parts, unit)
                         }
                         "no_text" => "no extractable text".to_string(),
-                        "error" => format!(
-                            "error: {}",
-                            a.error.as_deref().unwrap_or("unreadable")
-                        ),
+                        "error" => format!("error: {}", a.error.as_deref().unwrap_or("unreadable")),
                         other => other.to_string(),
                     };
                     text.push_str(&format!(
@@ -1418,7 +1415,11 @@ mod tests {
         let fixture_pdf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../parc-core/tests/fixtures/attachments/sample.pdf");
         writer
-            .attach(&frag.id, &fixture_pdf, parc_core::attachment::AttachMode::Copy)
+            .attach(
+                &frag.id,
+                &fixture_pdf,
+                parc_core::attachment::AttachMode::Copy,
+            )
             .unwrap();
 
         let (text, is_error) = call(
